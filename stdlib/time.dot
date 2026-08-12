@@ -1,0 +1,23 @@
+// stdlib/time.dot — Time operations (Tier 2 — C-backed)
+// Re-exports from C runtime: time.h / time.c
+
+struct Timestamp {
+    seconds int
+    nanos   int
+}
+
+@extern("C")
+fn now() -> Timestamp
+@extern("C")
+fn sleep(milliseconds int)
+@extern("C")
+fn format(t Timestamp, fmt string) -> string
+@extern("C")
+fn since_ms(since Timestamp) -> int
+@extern("C")
+fn until_ms(until Timestamp) -> int
+
+fn ms(n int) -> int = n
+fn sec(n int) -> int = n * 1000
+fn minute(n int) -> int = n * 60 * 1000
+fn hour(n int) -> int = n * 60 * 60 * 1000

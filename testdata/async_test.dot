@@ -1,0 +1,21 @@
+import std.async
+import std.io
+
+fn task1() {
+    print_str("Task 1 running\n")
+    async_yield()
+    print_str("Task 1 finished\n")
+}
+
+fn task2() {
+    print_str("Task 2 running\n")
+    async_yield()
+    print_str("Task 2 finished\n")
+}
+
+fn main() {
+    print_str("Main starting\n")
+    async_spawn(task1)
+    async_spawn(task2)
+    print_str("Main ending\n")
+}

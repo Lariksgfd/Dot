@@ -1,0 +1,5 @@
+@extern("C")
+fn sha256(input string) -> string
+
+@extern("C")
+fn md5(input string) -> string

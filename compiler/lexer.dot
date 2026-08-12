@@ -1,0 +1,883 @@
+// compiler/lexer.dot — Dot source text into a stream of tokens (self-hosted).
+
+enum TokenType {
+	TkIllegal,
+	TkEOF,
+	TkNewline,
+	TkIdent,
+	TkUnderscore,
+	TkInt,
+	TkFloat,
+	TkString,
+	TkRawString,
+	TkFn,
+	TkStruct,
+	TkTrait,
+	TkImpl,
+	TkEnum,
+	TkIf,
+	TkElse,
+	TkFor,
+	TkIn,
+	TkMatch,
+	TkReturn,
+	TkBreak,
+	TkContinue,
+	TkImport,
+	TkFrom,
+	TkConst,
+	TkMut,
+	TkSelf,
+	TkSelfType,
+	TkSpawn,
+	TkAsync,
+	TkAwait,
+	TkDefer,
+	TkEmbed,
+	TkPub,
+	TkTrue,
+	TkFalse,
+	TkNil,
+	TkAnd,
+	TkOr,
+	TkNot,
+	TkAs,
+	TkIs,
+	TkDyn,
+	TkWeak,
+	TkMacro,
+	TkWhere,
+	TkYield,
+	TkTypeKw,
+	TkModule,
+	TkUnsafe,
+	TkExtern,
+	TkStatic,
+	TkVirtual,
+	TkOverride,
+	TkPlus,
+	TkMinus,
+	TkStar,
+	TkSlash,
+	TkPercent,
+	TkStarStar,
+	TkEqEq,
+	TkBangEq,
+	TkLt,
+	TkGt,
+	TkLtEq,
+	TkGtEq,
+	TkAmp,
+	TkPipe,
+	TkCaret,
+	TkTilde,
+	TkShl,
+	TkShr,
+	TkAssign,
+	TkPlusAssign,
+	TkMinusAssign,
+	TkStarAssign,
+	TkSlashAssign,
+	TkPercentAssign,
+	TkAmpAssign,
+	TkPipeAssign,
+	TkCaretAssign,
+	TkShlAssign,
+	TkShrAssign,
+	TkPipeArrow,
+	TkDotDot,
+	TkDotDotEq,
+	TkEllipsis,
+	TkArrow,
+	TkFatArrow,
+	TkQuestion,
+	TkDot,
+	TkComma,
+	TkColon,
+	TkAt,
+	TkLParen,
+	TkRParen,
+	TkLBracket,
+	TkRBracket,
+	TkLBrace,
+	TkRBrace,
+	TkComment,
+}
+
+struct Token {
+	Type TokenType,
+	Lexeme string,
+	Value string,
+	Base int,
+	Suffix string,
+	Pos int,
+	End int,
+}
+
+struct Lexer {
+	src string,
+	offset int,
+	line int,
+	col int,
+	tokens []Token,
+}
+
+fn byte_at(s string, i int) -> int {
+	return s[i] as uint8 as int
+}
+
+fn is_digit(b int) -> bool {
+	return b >= 48 and b <= 57
+}
+
+fn is_letter(b int) -> bool {
+	return (b >= 65 and b <= 90) or (b >= 97 and b <= 122)
+}
+
+fn is_ident_start(b int) -> bool {
+	return b == 95 or is_letter(b)
+}
+
+fn is_ident_part(b int) -> bool {
+	return b == 95 or is_letter(b) or is_digit(b)
+}
+
+fn is_space(b int) -> bool {
+	return b == 32 or b == 9 or b == 13 or b == 11 or b == 12
+}
+
+fn substr(s string, start int, stop int) -> string {
+	result = []byte{}
+	i = start
+	for i < stop {
+		result.push(s[i] as uint8)
+		i = i + 1
+	}
+	return result as string
+}
+
+fn is_base_digit(b int, base int) -> bool {
+	if base == 2 {
+		return b == 48 or b == 49
+	}
+	if base == 8 {
+		return b >= 48 and b <= 55
+	}
+	if base == 16 {
+		return is_digit(b) or (b >= 97 and b <= 102) or (b >= 65 and b <= 70)
+	}
+	return is_digit(b)
+}
+
+fn lookup_keyword(s string) -> TokenType {
+	if s == "fn" { return TokenType.TkFn }
+	if s == "struct" { return TokenType.TkStruct }
+	if s == "trait" { return TokenType.TkTrait }
+	if s == "impl" { return TokenType.TkImpl }
+	if s == "enum" { return TokenType.TkEnum }
+	if s == "if" { return TokenType.TkIf }
+	if s == "else" { return TokenType.TkElse }
+	if s == "for" { return TokenType.TkFor }
+	if s == "in" { return TokenType.TkIn }
+	if s == "match" { return TokenType.TkMatch }
+	if s == "return" { return TokenType.TkReturn }
+	if s == "break" { return TokenType.TkBreak }
+	if s == "continue" { return TokenType.TkContinue }
+	if s == "import" { return TokenType.TkImport }
+	if s == "from" { return TokenType.TkFrom }
+	if s == "const" { return TokenType.TkConst }
+	if s == "mut" { return TokenType.TkMut }
+	if s == "self" { return TokenType.TkSelf }
+	if s == "Self" { return TokenType.TkSelfType }
+	if s == "spawn" { return TokenType.TkSpawn }
+	if s == "async" { return TokenType.TkAsync }
+	if s == "await" { return TokenType.TkAwait }
+	if s == "defer" { return TokenType.TkDefer }
+	if s == "embed" { return TokenType.TkEmbed }
+	if s == "pub" { return TokenType.TkPub }
+	if s == "true" { return TokenType.TkTrue }
+	if s == "false" { return TokenType.TkFalse }
+	if s == "nil" { return TokenType.TkNil }
+	if s == "and" { return TokenType.TkAnd }
+	if s == "or" { return TokenType.TkOr }
+	if s == "not" { return TokenType.TkNot }
+	if s == "as" { return TokenType.TkAs }
+	if s == "is" { return TokenType.TkIs }
+	if s == "dyn" { return TokenType.TkDyn }
+	if s == "weak" { return TokenType.TkWeak }
+	if s == "macro" { return TokenType.TkMacro }
+	if s == "where" { return TokenType.TkWhere }
+	if s == "yield" { return TokenType.TkYield }
+	if s == "type" { return TokenType.TkTypeKw }
+	if s == "module" { return TokenType.TkModule }
+	if s == "unsafe" { return TokenType.TkUnsafe }
+	if s == "extern" { return TokenType.TkExtern }
+	if s == "static" { return TokenType.TkStatic }
+	if s == "virtual" { return TokenType.TkVirtual }
+	if s == "override" { return TokenType.TkOverride }
+	return TokenType.TkIdent
+}
+
+fn tokenize(source string) -> []Token {
+	l = Lexer{
+		src: source,
+		offset: 0,
+		line: 1,
+		col: 1,
+		tokens: []Token{},
+	}
+	return l.run()
+}
+
+impl Lexer {
+	fn at_eof(self) -> bool {
+		return self.offset >= self.src.len
+	}
+
+	fn peek(self) -> int {
+		if self.at_eof() {
+			return -1
+		}
+		return self.src[self.offset] as uint8 as int
+	}
+
+	fn peek_at(self, n int) -> int {
+		i = self.offset
+		k = 0
+		for k < n {
+			if i >= self.src.len {
+				return -1
+			}
+			i = i + 1
+			k = k + 1
+		}
+		if i >= self.src.len {
+			return -1
+		}
+		return self.src[i] as uint8 as int
+	}
+
+	fn advance(mut self) -> int {
+		if self.at_eof() {
+			return -1
+		}
+		b = self.src[self.offset] as uint8
+		self.offset = self.offset + 1
+		if b == 10 {
+			self.line = self.line + 1
+			self.col = 1
+		} else {
+			self.col = self.col + 1
+		}
+		return b as int
+	}
+
+	fn match_str(mut self, s string) -> bool {
+		if self.offset + s.len > self.src.len {
+			return false
+		}
+		k = 0
+		for k < s.len {
+			if self.src[self.offset + k] != s[k] {
+				return false
+			}
+			k = k + 1
+		}
+		self.offset = self.offset + s.len
+		self.col = self.col + s.len
+		return true
+	}
+
+	fn emit(mut self, tt TokenType, lex string, val string, base int, suff string) {
+		tok = Token{
+			Type: tt,
+			Lexeme: lex,
+			Value: val,
+			Base: base,
+			Suffix: suff,
+			Pos: self.offset - lex.len,
+			End: self.offset,
+		}
+		self.tokens.push(tok)
+	}
+
+	fn skip_whitespace(mut self) {
+		for not self.at_eof() {
+			b = self.peek()
+			if is_space(b) {
+				self.advance()
+			} else {
+				return
+			}
+		}
+	}
+
+	fn skip_line_comment(mut self) {
+		start = self.offset
+		for not self.at_eof() {
+			if self.peek() == 10 {
+				break
+			}
+			self.advance()
+		}
+		lex = substr(self.src, start, self.offset)
+		self.emit(TokenType.TkComment, lex, lex, 0, "")
+	}
+
+	fn skip_block_comment(mut self) {
+		start = self.offset
+		start_line = self.line
+		self.advance()
+		self.advance()
+		depth = 1
+		for depth > 0 {
+			if self.at_eof() {
+				break
+			}
+			if self.peek() == 47 and self.peek_at(1) == 42 {
+				self.advance()
+				self.advance()
+				depth = depth + 1
+			} else {
+				if self.peek() == 42 and self.peek_at(1) == 47 {
+					self.advance()
+					self.advance()
+					depth = depth - 1
+				} else {
+					self.advance()
+				}
+			}
+		}
+		lex = substr(self.src, start, self.offset)
+		self.emit(TokenType.TkComment, lex, lex, 0, "")
+		if self.line > start_line {
+			self.emit(TokenType.TkNewline, "\n", "\n", 0, "")
+		}
+	}
+
+	fn scan_ident(mut self) {
+		start = self.offset
+		for not self.at_eof() {
+			if is_ident_part(self.peek()) {
+				self.advance()
+			} else {
+				break
+			}
+		}
+		text = substr(self.src, start, self.offset)
+		if text == "_" {
+			self.emit(TokenType.TkUnderscore, text, text, 0, "")
+			return
+		}
+		kw = lookup_keyword(text)
+		match kw {
+			TokenType.TkIdent => {
+				self.emit(TokenType.TkIdent, text, text, 0, "")
+			}
+			_ => {
+				self.emit(kw, text, text, 0, "")
+			}
+		}
+	}
+
+	fn scan_digits(mut self, base int) -> []byte {
+		digits = []byte{}
+		for not self.at_eof() {
+			b = self.peek()
+			if is_base_digit(b, base) {
+				digits.push(b as uint8)
+				self.advance()
+			} else {
+				if b == 95 {
+					nxt = self.peek_at(1)
+					if nxt == 95 {
+						self.advance()
+						for self.peek() == 95 {
+							self.advance()
+						}
+					} else {
+						if is_base_digit(nxt, base) {
+							self.advance()
+						} else {
+							if is_ident_start(nxt) {
+								break
+							} else {
+								self.advance()
+								break
+							}
+						}
+					}
+				} else {
+					break
+				}
+			}
+		}
+		return digits
+	}
+
+	fn scan_number(mut self) {
+		start = self.offset
+		base = 10
+		is_float = false
+		digits = []byte{}
+
+		if self.peek() == 48 {
+			nxt = self.peek_at(1)
+			if nxt == 120 or nxt == 88 {
+				base = 16
+				self.advance()
+				self.advance()
+				digits = self.scan_digits(16)
+			} else {
+				if nxt == 98 or nxt == 66 {
+					base = 2
+					self.advance()
+					self.advance()
+					digits = self.scan_digits(2)
+				} else {
+					if nxt == 111 or nxt == 79 {
+						base = 8
+						self.advance()
+						self.advance()
+						digits = self.scan_digits(8)
+					} else {
+						digits = self.scan_digits(10)
+						if self.peek() == 46 and is_digit(self.peek_at(1)) {
+							digits.push(46 as uint8)
+							self.advance()
+							extra = self.scan_digits(10)
+							j = 0
+							for j < extra.len {
+								digits.push(extra[j])
+								j = j + 1
+							}
+							is_float = true
+						}
+						if self.peek() == 101 or self.peek() == 69 {
+							digits.push(101 as uint8)
+							self.advance()
+							if self.peek() == 43 or self.peek() == 45 {
+								digits.push(self.peek() as uint8)
+								self.advance()
+							}
+							extra2 = self.scan_digits(10)
+							j2 = 0
+							for j2 < extra2.len {
+								digits.push(extra2[j2])
+								j2 = j2 + 1
+							}
+							is_float = true
+						}
+					}
+				}
+			}
+		} else {
+			digits = self.scan_digits(10)
+			if self.peek() == 46 and is_digit(self.peek_at(1)) {
+				digits.push(46 as uint8)
+				self.advance()
+				extra = self.scan_digits(10)
+				j = 0
+				for j < extra.len {
+					digits.push(extra[j])
+					j = j + 1
+				}
+				is_float = true
+			}
+			if self.peek() == 101 or self.peek() == 69 {
+				sign = self.peek_at(1)
+				if is_digit(sign) or ((sign == 43 or sign == 45) and is_digit(self.peek_at(2))) {
+					digits.push(101 as uint8)
+					self.advance()
+					if sign == 43 or sign == 45 {
+						digits.push(sign as uint8)
+						self.advance()
+					}
+					extra2 = self.scan_digits(10)
+					j2 = 0
+					for j2 < extra2.len {
+						digits.push(extra2[j2])
+						j2 = j2 + 1
+					}
+					is_float = true
+				}
+			}
+		}
+
+		suffix = self.scan_number_suffix()
+
+		tt = TokenType.TkInt
+		if is_float {
+			tt = TokenType.TkFloat
+		}
+		lex = substr(self.src, start, self.offset)
+		self.emit(tt, lex, digits as string, base, suffix)
+	}
+
+	fn scan_number_suffix(mut self) -> string {
+		if self.peek() == 95 and is_ident_start(self.peek_at(1)) {
+			self.advance()
+		}
+		if not is_ident_start(self.peek()) {
+			return ""
+		}
+		start_off = self.offset
+		for not self.at_eof() {
+			if is_ident_part(self.peek()) {
+				self.advance()
+			} else {
+				break
+			}
+		}
+		return substr(self.src, start_off, self.offset)
+	}
+
+	fn scan_string(mut self) {
+		start = self.offset
+		self.advance()
+		value = []byte{}
+		for not self.at_eof() {
+			b = self.peek()
+			if b == 10 or b == -1 {
+				break
+			}
+			if b == 34 {
+				self.advance()
+				lex = substr(self.src, start, self.offset)
+				self.emit(TokenType.TkString, lex, value as string, 0, "")
+				return
+			}
+			if b == 92 {
+				self.advance()
+				eb = self.advance()
+				if eb == 110 {
+					value.push(10 as uint8)
+				} else {
+					if eb == 116 {
+						value.push(9 as uint8)
+					} else {
+						if eb == 114 {
+							value.push(13 as uint8)
+						} else {
+							if eb == 48 {
+								value.push(0 as uint8)
+							} else {
+								if eb == 92 {
+									value.push(92 as uint8)
+								} else {
+									if eb == 34 {
+										value.push(34 as uint8)
+									} else {
+										if eb == 96 {
+											value.push(96 as uint8)
+										} else {
+											if eb == 39 {
+												value.push(39 as uint8)
+											} else {
+												value.push(eb as uint8)
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			} else {
+				value.push(b as uint8)
+				self.advance()
+			}
+		}
+		lex = substr(self.src, start, self.offset)
+		self.emit(TokenType.TkString, lex, value as string, 0, "")
+	}
+
+	fn scan_raw_string(mut self) {
+		start = self.offset
+		self.advance()
+		content_start = self.offset
+		for not self.at_eof() {
+			if self.peek() == 96 {
+				break
+			}
+			self.advance()
+		}
+		text = substr(self.src, content_start, self.offset)
+		if not self.at_eof() {
+			self.advance()
+		}
+		lex = substr(self.src, start, self.offset)
+		self.emit(TokenType.TkRawString, lex, text, 0, "")
+	}
+
+	fn scan_operator(mut self) -> bool {
+		if self.peek() == 64 {
+			self.advance()
+			self.emit(TokenType.TkAt, "@", "@", 0, "")
+			if is_ident_start(self.peek()) {
+				self.scan_ident()
+			}
+			return true
+		}
+
+		if self.match_str("<<=") {
+			self.emit(TokenType.TkShlAssign, "<<=", "<<=", 0, "")
+			return true
+		}
+		if self.match_str(">>=") {
+			self.emit(TokenType.TkShrAssign, ">>=", ">>=", 0, "")
+			return true
+		}
+		if self.match_str("...") {
+			self.emit(TokenType.TkEllipsis, "...", "...", 0, "")
+			return true
+		}
+		if self.match_str("..=") {
+			self.emit(TokenType.TkDotDotEq, "..=", "..=", 0, "")
+			return true
+		}
+		if self.match_str("**") {
+			self.emit(TokenType.TkStarStar, "**", "**", 0, "")
+			return true
+		}
+		if self.match_str("|>") {
+			self.emit(TokenType.TkPipeArrow, "|>", "|>", 0, "")
+			return true
+		}
+		if self.match_str("->") {
+			self.emit(TokenType.TkArrow, "->", "->", 0, "")
+			return true
+		}
+		if self.match_str("=>") {
+			self.emit(TokenType.TkFatArrow, "=>", "=>", 0, "")
+			return true
+		}
+		if self.match_str("==") {
+			self.emit(TokenType.TkEqEq, "==", "==", 0, "")
+			return true
+		}
+		if self.match_str("!=") {
+			self.emit(TokenType.TkBangEq, "!=", "!=", 0, "")
+			return true
+		}
+		if self.match_str("<=") {
+			self.emit(TokenType.TkLtEq, "<=", "<=", 0, "")
+			return true
+		}
+		if self.match_str(">=") {
+			self.emit(TokenType.TkGtEq, ">=", ">=", 0, "")
+			return true
+		}
+		if self.match_str("<<") {
+			self.emit(TokenType.TkShl, "<<", "<<", 0, "")
+			return true
+		}
+		if self.match_str(">>") {
+			self.emit(TokenType.TkShr, ">>", ">>", 0, "")
+			return true
+		}
+		if self.match_str("+=") {
+			self.emit(TokenType.TkPlusAssign, "+=", "+=", 0, "")
+			return true
+		}
+		if self.match_str("-=") {
+			self.emit(TokenType.TkMinusAssign, "-=", "-=", 0, "")
+			return true
+		}
+		if self.match_str("*=") {
+			self.emit(TokenType.TkStarAssign, "*=", "*=", 0, "")
+			return true
+		}
+		if self.match_str("/=") {
+			self.emit(TokenType.TkSlashAssign, "/=", "/=", 0, "")
+			return true
+		}
+		if self.match_str("%=") {
+			self.emit(TokenType.TkPercentAssign, "%=", "%=", 0, "")
+			return true
+		}
+		if self.match_str("&=") {
+			self.emit(TokenType.TkAmpAssign, "&=", "&=", 0, "")
+			return true
+		}
+		if self.match_str("|=") {
+			self.emit(TokenType.TkPipeAssign, "|=", "|=", 0, "")
+			return true
+		}
+		if self.match_str("^=") {
+			self.emit(TokenType.TkCaretAssign, "^=", "^=", 0, "")
+			return true
+		}
+		if self.match_str("..") {
+			self.emit(TokenType.TkDotDot, "..", "..", 0, "")
+			return true
+		}
+
+		b = self.peek()
+		if b == 43 {
+			self.advance()
+			self.emit(TokenType.TkPlus, "+", "+", 0, "")
+			return true
+		}
+		if b == 45 {
+			self.advance()
+			self.emit(TokenType.TkMinus, "-", "-", 0, "")
+			return true
+		}
+		if b == 42 {
+			self.advance()
+			self.emit(TokenType.TkStar, "*", "*", 0, "")
+			return true
+		}
+		if b == 47 {
+			self.advance()
+			self.emit(TokenType.TkSlash, "/", "/", 0, "")
+			return true
+		}
+		if b == 37 {
+			self.advance()
+			self.emit(TokenType.TkPercent, "%", "%", 0, "")
+			return true
+		}
+		if b == 61 {
+			self.advance()
+			self.emit(TokenType.TkAssign, "=", "=", 0, "")
+			return true
+		}
+		if b == 60 {
+			self.advance()
+			self.emit(TokenType.TkLt, "<", "<", 0, "")
+			return true
+		}
+		if b == 62 {
+			self.advance()
+			self.emit(TokenType.TkGt, ">", ">", 0, "")
+			return true
+		}
+		if b == 38 {
+			self.advance()
+			self.emit(TokenType.TkAmp, "&", "&", 0, "")
+			return true
+		}
+		if b == 124 {
+			self.advance()
+			self.emit(TokenType.TkPipe, "|", "|", 0, "")
+			return true
+		}
+		if b == 94 {
+			self.advance()
+			self.emit(TokenType.TkCaret, "^", "^", 0, "")
+			return true
+		}
+		if b == 126 {
+			self.advance()
+			self.emit(TokenType.TkTilde, "~", "~", 0, "")
+			return true
+		}
+		if b == 63 {
+			self.advance()
+			self.emit(TokenType.TkQuestion, "?", "?", 0, "")
+			return true
+		}
+		if b == 46 {
+			self.advance()
+			self.emit(TokenType.TkDot, ".", ".", 0, "")
+			return true
+		}
+		if b == 44 {
+			self.advance()
+			self.emit(TokenType.TkComma, ",", ",", 0, "")
+			return true
+		}
+		if b == 58 {
+			self.advance()
+			self.emit(TokenType.TkColon, ":", ":", 0, "")
+			return true
+		}
+		if b == 40 {
+			self.advance()
+			self.emit(TokenType.TkLParen, "(", "(", 0, "")
+			return true
+		}
+		if b == 41 {
+			self.advance()
+			self.emit(TokenType.TkRParen, ")", ")", 0, "")
+			return true
+		}
+		if b == 91 {
+			self.advance()
+			self.emit(TokenType.TkLBracket, "[", "[", 0, "")
+			return true
+		}
+		if b == 93 {
+			self.advance()
+			self.emit(TokenType.TkRBracket, "]", "]", 0, "")
+			return true
+		}
+		if b == 123 {
+			self.advance()
+			self.emit(TokenType.TkLBrace, "{{", "{{", 0, "")
+			return true
+		}
+		if b == 125 {
+			self.advance()
+			self.emit(TokenType.TkRBrace, "}}", "}}", 0, "")
+			return true
+		}
+
+		return false
+	}
+
+	fn run(mut self) -> []Token {
+		for not self.at_eof() {
+			self.skip_whitespace()
+			if self.at_eof() {
+				break
+			}
+			before = self.offset
+
+			b = self.peek()
+			if b == 10 {
+				self.advance()
+				self.emit(TokenType.TkNewline, "\n", "\n", 0, "")
+			} else {
+				if b == 47 and self.peek_at(1) == 47 {
+					self.skip_line_comment()
+				} else {
+					if b == 47 and self.peek_at(1) == 42 {
+						self.skip_block_comment()
+					} else {
+						if is_ident_start(b) {
+							self.scan_ident()
+						} else {
+							if is_digit(b) {
+								self.scan_number()
+							} else {
+								if b == 34 {
+									self.scan_string()
+								} else {
+									if b == 96 {
+										self.scan_raw_string()
+									} else {
+										if not self.scan_operator() {
+											self.advance()
+											lex = substr(self.src, before, self.offset)
+											self.emit(TokenType.TkIllegal, lex, lex, 0, "")
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+
+			if self.offset == before {
+				self.advance()
+			}
+		}
+
+		self.emit(TokenType.TkEOF, "", "", 0, "")
+		return self.tokens
+	}
+}

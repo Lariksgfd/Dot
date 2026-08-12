@@ -1,0 +1,66 @@
+import "compiler/ast"
+
+pub enum Type {
+	Invalid,
+	Int,
+	Float,
+	String,
+	Bool,
+	Unknown,
+}
+
+pub struct Scope {
+	Symbols map[string]Type,
+}
+
+pub struct Checker {
+	Scopes []Scope,
+	Types map[ast.Expr]Type,
+}
+
+impl Checker {
+	pub fn new() Checker {
+		return Checker(
+			Scopes: [Scope(Symbols: {})],
+			Types: {},
+		)
+	}
+
+	pub fn push_scope(mut self) {
+		self.Scopes.push(Scope(Symbols: {}))
+	}
+
+	pub fn pop_scope(mut self) {
+		self.Scopes.pop()
+	}
+
+	pub fn declare(mut self, name string, ty Type) {
+		// Insert into the innermost scope
+		let top = self.Scopes.len() - 1
+		self.Scopes[top].Symbols[name] = ty
+	}
+
+	pub fn lookup(self, name string) Type {
+		// Real implementation would traverse Scopes backwards.
+		// Keeping it simple for the initial prototype:
+		let top = self.Scopes.len() - 1
+		return Type.Unknown
+	}
+
+	pub fn check(mut self, expr ast.Expr) Type {
+		let ty = match expr {
+			ast.Expr.IntLit(n) => Type.Int,
+			ast.Expr.FloatLit(n) => Type.Float,
+			ast.Expr.StringLit(n) => Type.String,
+			ast.Expr.BoolLit(n) => Type.Bool,
+			
+			// Note: If Ident is added to ast.Expr later:
+			// ast.Expr.Ident(n) => self.lookup(n.Name),
+			
+			_ => Type.Unknown,
+		}
+		
+		self.Types[expr] = ty
+		return ty
+	}
+}

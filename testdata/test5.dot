@@ -1,0 +1,7 @@
+fn main() {
+    b = []byte{}
+    b.push(72)
+    b.push(101)
+    str = b as string
+    print(str)
+}

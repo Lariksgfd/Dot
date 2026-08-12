@@ -1,0 +1,60 @@
+// stdlib/math.dot — Math functions (Tier 2 — C-backed)
+// Re-exports from C runtime: math.h / math.c
+
+const PI float = 3.14159265358979323846
+const E float = 2.71828182845904523536
+const TAU float = 6.28318530717958647692
+
+@extern("C")
+fn abs_i64(x int) -> int
+@extern("C")
+fn abs_f64(x float) -> float
+@extern("C")
+fn sqrt(x float) -> float
+@extern("C")
+fn sin(x float) -> float
+@extern("C")
+fn cos(x float) -> float
+@extern("C")
+fn tan(x float) -> float
+@extern("C")
+fn asin(x float) -> float
+@extern("C")
+fn acos(x float) -> float
+@extern("C")
+fn atan(x float) -> float
+@extern("C")
+fn atan2(y float, x float) -> float
+@extern("C")
+fn min_i64(a int, b int) -> int
+@extern("C")
+fn min_f64(a float, b float) -> float
+@extern("C")
+fn max_i64(a int, b int) -> int
+@extern("C")
+fn max_f64(a float, b float) -> float
+@extern("C")
+fn floor(x float) -> float
+@extern("C")
+fn ceil(x float) -> float
+@extern("C")
+fn round(x float) -> float
+@extern("C")
+fn log(x float) -> float
+@extern("C")
+fn log2(x float) -> float
+@extern("C")
+fn log10(x float) -> float
+@extern("C")
+fn hypot(x float, y float) -> float
+@extern("C")
+fn pow_f64(a float, b float) -> float
+
+fn deg_to_rad(deg float) -> float = deg * PI / 180.0
+fn rad_to_deg(rad float) -> float = rad * 180.0 / PI
+
+fn clamp(value float, low float, high float) -> float {
+    if value < low { return low }
+    if value > high { return high }
+    return value
+}

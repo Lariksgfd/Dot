@@ -1,0 +1,63 @@
+enum JsonNode {
+    Null
+    Bool(b bool)
+    Number(n float)
+    String(s string)
+    Array(a []JsonNode)
+    Object(o []JsonField)
+}
+
+struct JsonField {
+    key string
+    val JsonNode
+}
+
+struct ParseResult {
+    ok bool
+    val JsonNode
+    err string
+    pos int
+}
+
+fn make_ok(val JsonNode, pos int) -> ParseResult {
+    return ParseResult { ok: true, val: val, err: "", pos: pos }
+}
+
+fn make_err(msg string, pos int) -> ParseResult {
+    return ParseResult { ok: false, val: JsonNode.Null, err: msg, pos: pos }
+}
+
+fn ch_quote() -> string {
+    return char_to_string(34)
+}
+
+fn ch_bs() -> string {
+    return char_to_string(92)
+}
+
+fn ch_slash() -> string {
+    return char_to_string(47)
+}
+
+fn ch_lbrace() -> string {
+    return char_to_string(123)
+}
+
+fn ch_rbrace() -> string {
+    return char_to_string(125)
+}
+
+fn char_to_string(c int) -> string {
+    // We cannot use []byte{} easily.
+    // Let's use string substring or something?
+    // Wait, let's just use string concatenation! 
+    // Is there a char() function? Let's check `testdata/json_test.dot` later.
+    // If I need to return a string from an int, I'll write an extern or find one.
+    // But let's try a different trick:
+    return "X" // placeholder
+}
+
+// wait, how did strings.dot do `b as string`?
+// It was `result as string` where result is `[]byte{}`. But it failed for me!
+// Oh, the error for me was `void value not ignored` on `dot_slice_from_array`.
+// Because `[]byte{}` didn't compile! But `strings.dot` had it!

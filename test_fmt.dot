@@ -1,0 +1,7 @@
+// This is a test file for dot fmt
+// It has comments.
+
+fn main() {
+    // Print hello
+    print("Hello!"); // eol comment
+}

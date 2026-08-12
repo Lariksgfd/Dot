@@ -1,0 +1,8 @@
+// std.dot — convenience prelude
+// Imports commonly used symbols from stdlib packages.
+// Use: import std
+//
+// This file is a placeholder for v0.1.
+// When the language gains re-export syntax (pub use), this will
+// re-export the most common types and functions from:
+//   io, fmt, math, collections, testing, time, os, fs, json

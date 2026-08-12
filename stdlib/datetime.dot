@@ -1,0 +1,149 @@
+// stdlib/datetime.dot — ISO 8601 date/time parsing (Tier 1 — pure Dot)
+
+struct DateTime {
+    year   int = 0
+    month  int = 0
+    day    int = 0
+    hour   int = 0
+    minute int = 0
+    second int = 0
+}
+
+struct ParseResult {
+    ok  bool
+    dt  DateTime
+    err string
+}
+
+fn parse_iso8601(text string) -> ParseResult {
+    if text.len < 4 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "input too short" }
+    }
+
+    yr = parse_int4(text, 0)
+    if yr < 0 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "invalid year" }
+    }
+
+    if text.len == 4 {
+        return ParseResult { ok: true, dt: DateTime { year: yr, month: 1, day: 1, hour: 0, minute: 0, second: 0 }, err: "" }
+    }
+
+    if char_at(text, 4) != 45 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "expected '-' after year" }
+    }
+
+    if text.len < 7 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "input too short for month" }
+    }
+
+    mo = parse_int2(text, 5)
+    if mo < 1 or mo > 12 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "invalid month" }
+    }
+
+    if text.len == 7 {
+        return ParseResult { ok: true, dt: DateTime { year: yr, month: mo, day: 1, hour: 0, minute: 0, second: 0 }, err: "" }
+    }
+
+    if char_at(text, 7) != 45 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "expected '-' after month" }
+    }
+
+    if text.len < 10 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "input too short for day" }
+    }
+
+    dy = parse_int2(text, 8)
+    if dy < 1 or dy > 31 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "invalid day" }
+    }
+
+    if text.len == 10 {
+        return ParseResult { ok: true, dt: DateTime { year: yr, month: mo, day: dy, hour: 0, minute: 0, second: 0 }, err: "" }
+    }
+
+    sep = char_at(text, 10)
+    if sep != 84 and sep != 32 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "expected 'T' or space after date" }
+    }
+
+    if text.len < 13 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "input too short for hour" }
+    }
+
+    hr = parse_int2(text, 11)
+    if hr < 0 or hr > 23 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "invalid hour" }
+    }
+
+    if char_at(text, 13) != 58 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "expected ':' after hour" }
+    }
+
+    if text.len < 16 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "input too short for minute" }
+    }
+
+    mn = parse_int2(text, 14)
+    if mn < 0 or mn > 59 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "invalid minute" }
+    }
+
+    if text.len == 16 {
+        return ParseResult { ok: true, dt: DateTime { year: yr, month: mo, day: dy, hour: hr, minute: mn, second: 0 }, err: "" }
+    }
+
+    if char_at(text, 16) != 58 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "expected ':' after minute" }
+    }
+
+    if text.len < 19 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "input too short for second" }
+    }
+
+    sc = parse_int2(text, 17)
+    if sc < 0 or sc > 59 {
+        return ParseResult { ok: false, dt: DateTime{}, err: "invalid second" }
+    }
+
+    return ParseResult { ok: true, dt: DateTime { year: yr, month: mo, day: dy, hour: hr, minute: mn, second: sc }, err: "" }
+}
+
+fn parse_int4(s string, start int) -> int {
+    if start + 4 > s.len {
+        return -1
+    }
+    d0 = char_to_digit(char_at(s, start))
+    d1 = char_to_digit(char_at(s, start + 1))
+    d2 = char_to_digit(char_at(s, start + 2))
+    d3 = char_to_digit(char_at(s, start + 3))
+    if d0 < 0 or d1 < 0 or d2 < 0 or d3 < 0 {
+        return -1
+    }
+    return d0 * 1000 + d1 * 100 + d2 * 10 + d3
+}
+
+fn parse_int2(s string, start int) -> int {
+    if start + 2 > s.len {
+        return -1
+    }
+    d0 = char_to_digit(char_at(s, start))
+    d1 = char_to_digit(char_at(s, start + 1))
+    if d0 < 0 or d1 < 0 {
+        return -1
+    }
+    return d0 * 10 + d1
+}
+
+fn char_at(s string, idx int) -> int {
+    code = s[idx] as uint8 as int
+    return code
+}
+
+fn char_to_digit(code int) -> int {
+    if code >= 48 and code <= 57 {
+        return code - 48
+    }
+    return -1
+}

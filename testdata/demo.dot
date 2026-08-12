@@ -1,0 +1,64 @@
+fn is_prime(n int) -> int {
+    if n < 2 { return 0 }
+    d = 2
+    for d * d <= n {
+        if n % d == 0 { return 0 }
+        d = d + 1
+    }
+    return 1
+}
+
+fn factorial(n int) -> int {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
+}
+
+fn fibonacci(n int) -> int {
+    if n <= 1 { return n }
+    f0 = 0
+    f1 = 1
+    cnt = 2
+    for cnt <= n {
+        f2 = f0 + f1
+        f0 = f1
+        f1 = f2
+        cnt = cnt + 1
+    }
+    return f1
+}
+
+fn main() {
+    print(99991)
+    print(99992)
+    print(99993)
+
+    num = 2
+    for num <= 50 {
+        if is_prime(num) == 1 {
+            print(num)
+        }
+        num = num + 1
+    }
+
+    print(99994)
+
+    idx = 0
+    for idx <= 10 {
+        print(factorial(idx))
+        idx = idx + 1
+    }
+
+    print(99995)
+
+    jdx = 0
+    for jdx <= 20 {
+        print(fibonacci(jdx))
+        jdx = jdx + 1
+    }
+
+    print(99996)
+
+    print(42)
+    print(43)
+    print(44)
+}

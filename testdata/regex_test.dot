@@ -1,0 +1,22 @@
+import std.regex
+import std.io
+
+fn main() {
+    r = Regex.compile("hello")
+    match1 = r.is_match("hello world")
+    match2 = r.is_match("goodbye")
+    
+    if match1 {
+        print_str("match1: true\n")
+    } else {
+        print_str("match1: false\n")
+    }
+    
+    if match2 {
+        print_str("match2: true\n")
+    } else {
+        print_str("match2: false\n")
+    }
+    
+    r.free()
+}

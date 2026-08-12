@@ -1,0 +1,15 @@
+// stdlib/os.dot — OS operations (Tier 2 — C-backed)
+// Re-exports from C runtime: os.h / os.c
+
+@extern("C")
+fn getenv(name string) -> string
+@extern("C")
+fn setenv(name string, value string) -> int
+@extern("C")
+fn getcwd() -> string
+@extern("C")
+fn exit(code int)
+@extern("C")
+fn args() -> []string
+@extern("C")
+fn platform() -> string

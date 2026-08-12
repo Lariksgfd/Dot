@@ -1,0 +1,31 @@
+@extern("C")
+struct RegexObj {}
+
+@extern("C")
+fn dot_regex_compile(pattern string) -> *RegexObj
+
+@extern("C")
+fn dot_regex_match(regex *RegexObj, text string) -> bool
+
+@extern("C")
+fn dot_regex_free(regex *RegexObj)
+
+struct Regex {
+    handle *RegexObj
+}
+
+impl Regex {
+    fn compile(pattern string) -> Regex {
+        return Regex {
+            handle: dot_regex_compile(pattern)
+        }
+    }
+
+    fn is_match(self, text string) -> bool {
+        return dot_regex_match(self.handle, text)
+    }
+
+    fn free(self) {
+        dot_regex_free(self.handle)
+    }
+}

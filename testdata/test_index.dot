@@ -1,0 +1,9 @@
+fn main() {
+    s = "hello"
+    i = 0
+    for i < s.len {
+        ch = s[i]
+        print(ch)
+        i = i + 1
+    }
+}

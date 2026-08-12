@@ -1,0 +1,10 @@
+struct DotString {
+    rc int
+    len int
+    // data[] is flexible array, cannot map directly, but wait...
+}
+
+fn main() {
+    s = "hello"
+    ds = s as dyn // Wait, can we cast?
+}

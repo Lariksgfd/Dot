@@ -1,0 +1,150 @@
+// compiler/parser.dot
+
+struct Parser {
+	tokens []Token,
+	pos int,
+	file string,
+}
+
+fn parse(tokens []Token, file string) -> Program {
+	p = Parser{
+		tokens: tokens,
+		pos: 0,
+		file: file,
+	}
+	return p.parse_program()
+}
+
+impl Parser {
+	fn at_end(self) -> bool {
+		if self.pos >= self.tokens.len {
+			return true
+		}
+		return self.tokens[self.pos].Type == TokenType.TkEOF
+	}
+
+	fn cur(self) -> Token {
+		if self.pos >= self.tokens.len {
+			return Token{Type: TokenType.TkEOF, Lexeme: "", Value: "", Base: 0, Suffix: "", Pos: 0, End: 0}
+		}
+		return self.tokens[self.pos]
+	}
+
+	fn advance(mut self) -> Token {
+		tok = self.cur()
+		if self.pos < self.tokens.len {
+			self.pos = self.pos + 1
+		}
+		return tok
+	}
+
+	fn skip_newlines(mut self) {
+		for not self.at_end() {
+			if self.cur().Type == TokenType.TkNewline {
+				self.advance()
+			} else {
+				break
+			}
+		}
+	}
+
+	fn parse_program(mut self) -> Program {
+		prog = Program{
+			File: self.file,
+			Decls: []Decl{},
+		}
+		
+		self.skip_newlines()
+		
+		for not self.at_end() {
+			before = self.pos
+			
+			// For this initial implementation, we just mock iterating through declarations.
+			// A full parser would call self.parse_decl() here.
+			
+			if self.pos == before {
+				self.advance()
+			}
+			self.skip_newlines()
+		}
+		
+		return prog
+	}
+
+	fn parse_expr(mut self, precedence int) -> Expr {
+		if self.at_end() {
+			return Expr.BadExpr(BadExpr{})
+		}
+		
+		tok = self.advance()
+		mut left = self.parse_prefix(tok)
+		
+		for not self.at_end() and precedence < self.get_precedence(self.cur().Type) {
+			op_tok = self.advance()
+			left = self.parse_infix(left, op_tok)
+		}
+		
+		return left
+	}
+
+	fn parse_prefix(mut self, tok Token) -> Expr {
+		match tok.Type {
+			TokenType.TkIdent => {
+				id = Ident{Name: tok.Lexeme}
+				// Note: if Ident isn't fully supported in Expr yet, we might return BadExpr or a mock
+				// Here we just map it out.
+				return Expr.BadExpr(BadExpr{})
+			}
+			TokenType.TkInt => {
+				lit = IntLit{
+					Value: 0, // Placeholder for parseInt(tok.Value)
+					Base: tok.Base,
+					Suffix: tok.Suffix,
+					Raw: tok.Lexeme,
+				}
+				return Expr.IntLit(lit)
+			}
+			TokenType.TkFloat => {
+				lit = FloatLit{
+					Value: 0.0, // Placeholder for parseFloat(tok.Value)
+					Suffix: tok.Suffix,
+					Raw: tok.Lexeme,
+				}
+				return Expr.FloatLit(lit)
+			}
+			_ => {
+				return Expr.BadExpr(BadExpr{})
+			}
+		}
+	}
+
+	fn parse_infix(mut self, left Expr, op Token) -> Expr {
+		prec = self.get_precedence(op.Type)
+		right = self.parse_expr(prec)
+		
+		bin = BinaryExpr{
+			OpPos: op.Pos,
+			X: left,
+			Y: right,
+		}
+		
+		return Expr.BinaryExpr(bin)
+	}
+
+	fn get_precedence(self, t TokenType) -> int {
+		match t {
+			TokenType.TkStar => { return 50 }
+			TokenType.TkSlash => { return 50 }
+			TokenType.TkPercent => { return 50 }
+			TokenType.TkPlus => { return 40 }
+			TokenType.TkMinus => { return 40 }
+			TokenType.TkEqEq => { return 30 }
+			TokenType.TkBangEq => { return 30 }
+			TokenType.TkLt => { return 30 }
+			TokenType.TkGt => { return 30 }
+			TokenType.TkLtEq => { return 30 }
+			TokenType.TkGtEq => { return 30 }
+			_ => { return 0 }
+		}
+	}
+}

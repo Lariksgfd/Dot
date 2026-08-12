@@ -1,0 +1,111 @@
+// check_err.dot — type checker negative tests.
+// Each function exercises a different type error.
+
+// --- undefined variable ---
+fn bad_undefined() {
+    print(no_such_var)
+}
+
+// --- type mismatch in assignment (reassign with different type) ---
+fn bad_reassign() {
+    x = 42
+    x = "string"
+}
+
+// --- wrong return type ---
+fn bad_return() -> int {
+    return "not an int"
+}
+
+// --- calling non-function ---
+fn bad_call() {
+    x = 42
+    x(1, 2)
+}
+
+// --- wrong number of arguments ---
+fn bad_args() {
+    x = len()
+}
+
+// --- type mismatch in binary operation ---
+fn bad_binary() {
+    x = 42 + "hello"
+}
+
+// --- if condition not bool ---
+fn bad_if() {
+    if 42 {
+        print("oops")
+    }
+}
+
+// --- for condition not bool ---
+fn bad_for() {
+    for "not bool" {
+        break
+    }
+}
+
+// --- field access on non-struct ---
+fn bad_field() {
+    x = 42
+    y = x.foo
+}
+
+// --- using a type name as a value ---
+fn bad_type_as_value() {
+    x = int(42)
+}
+
+// --- non-exhaustive match on bool ---
+fn bad_match() -> int {
+    return match true {
+        true => 1
+    }
+}
+
+// --- struct field type mismatch ---
+struct S { x int }
+fn bad_struct() {
+    s = S { x: "not int" }
+}
+
+// --- method call on wrong type (int has no push method) ---
+fn bad_method() {
+    x = 42
+    x.push(1)
+}
+
+// --- indexing non-indexable type ---
+fn bad_index() {
+    x = 42
+    y = x[0]
+}
+
+// --- missing return in non-void function ---
+fn bad_missing_return() -> int {
+    x = 1
+}
+
+// --- assigning float to int variable ---
+fn bad_assign_float_to_int() {
+    x = 42
+    x = 42.5
+}
+
+// --- pipeline right side not a function ---
+fn bad_pipe() {
+    x = 42.0 |> "not a method".sqrt()
+}
+
+// --- self outside method ---
+fn bad_self() {
+    x = self.x
+}
+
+// --- negative index on tuple ---
+fn bad_tuple_index() {
+    t = (1, 2)
+    x = t.5
+}

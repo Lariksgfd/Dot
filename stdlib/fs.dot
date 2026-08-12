@@ -1,0 +1,29 @@
+// stdlib/fs.dot — Filesystem operations (Tier 2 — C-backed)
+
+struct FileInfo {
+    name     string
+    size     int
+    is_dir   bool
+    mod_time int
+}
+
+@extern("C")
+fn exists(path string) -> bool
+@extern("C")
+fn is_dir(path string) -> bool
+@extern("C")
+fn is_file(path string) -> bool
+@extern("C")
+fn mkdir(path string)
+@extern("C")
+fn remove(path string)
+@extern("C")
+fn rename(old string, new string)
+@extern("C")
+fn read_dir(path string) -> []string
+@extern("C")
+fn stat(path string) -> FileInfo
+@extern("C")
+fn ext(path string) -> string
+@extern("C")
+fn basename(path string) -> string

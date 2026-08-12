@@ -1,0 +1,14 @@
+// stdlib/chan.dot - Thread-safe Channels (like Go channels)
+
+struct Chan {
+    _data *int
+}
+
+@extern("C")
+fn dot_chan_new(cap int) -> *Chan
+
+@extern("C")
+fn dot_chan_send(ch *Chan, v int)
+
+@extern("C")
+fn dot_chan_recv(ch *Chan) -> int

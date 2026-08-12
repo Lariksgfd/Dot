@@ -1,0 +1,395 @@
+struct JsonNode {
+    tag int
+    b_val bool
+    n_val float
+    s_val string
+}
+
+struct ParseResult {
+    ok bool
+    node JsonNode
+    err string
+    pos int
+}
+
+fn skip_ws(input string, pos int) -> int {
+    p = pos
+    for p < input.len {
+        r = input[p]
+        b = []byte{}
+        b.push(r as uint8)
+        ch = b as string
+        if ch != " " and ch != "\t" and ch != "\n" and ch != "\r" { break }
+        p = p + 1
+    }
+    return p
+}
+
+fn peek1(input string, pos int) -> string {
+    if pos >= input.len {
+        b = []byte{}
+        b.push(0 as uint8)
+        return b as string
+    }
+    r = input[pos]
+    b = []byte{}
+    b.push(r as uint8)
+    return b as string
+}
+
+fn ch_34() -> string {
+    b = []byte{}
+    b.push(34 as uint8)
+    return b as string
+}
+
+fn ch_92() -> string {
+    b = []byte{}
+    b.push(92 as uint8)
+    return b as string
+}
+
+fn ch_123() -> string {
+    b = []byte{}
+    b.push(123 as uint8)
+    return b as string
+}
+
+fn ch_125() -> string {
+    b = []byte{}
+    b.push(125 as uint8)
+    return b as string
+}
+
+fn ch_91() -> string {
+    b = []byte{}
+    b.push(91 as uint8)
+    return b as string
+}
+
+fn ch_93() -> string {
+    b = []byte{}
+    b.push(93 as uint8)
+    return b as string
+}
+
+fn push_byte(buf []byte, ch string) {
+    r = ch[0]
+    buf.push(r as uint8)
+}
+
+fn parse_value(input string, pos int, errs []string) -> ParseResult {
+    p = skip_ws(input, pos)
+    if p >= input.len {
+        errs.push("unexpected EOF")
+        return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "eof", pos: p }
+    }
+    ch = peek1(input, p)
+
+    if ch == ch_123() {
+        return parse_object(input, p, errs)
+    }
+    if ch == ch_91() {
+        return parse_array(input, p, errs)
+    }
+    if ch == ch_34() {
+        return parse_string(input, p, errs)
+    }
+    if ch == "t" {
+        return parse_token(input, p, "true", errs, JsonNode { tag: 1, b_val: true, n_val: 0.0, s_val: "" })
+    }
+    if ch == "f" {
+        return parse_token(input, p, "false", errs, JsonNode { tag: 1, b_val: false, n_val: 0.0, s_val: "" })
+    }
+    if ch == "n" {
+        return parse_token(input, p, "null", errs, JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" })
+    }
+    if ch == "-" or (ch >= "0" and ch <= "9") {
+        return parse_number(input, p, errs)
+    }
+
+    errs.push("unexpected char")
+    return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "char", pos: p }
+}
+
+fn parse_token(input string, pos int, word string, errs []string, value JsonNode) -> ParseResult {
+    p = pos
+    i = 0
+    for i < word.len {
+        r = word[i]
+        b = []byte{}
+        b.push(r as uint8)
+        wch = b as string
+        ich = peek1(input, p)
+        if ich != wch {
+            errs.push("invalid token")
+            return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "token", pos: p }
+        }
+        p = p + 1
+        i = i + 1
+    }
+    return ParseResult { ok: true, node: value, err: "", pos: p }
+}
+
+fn parse_string(input string, pos int, errs []string) -> ParseResult {
+    q = ch_34()
+    bs = ch_92()
+
+    p = pos
+    ch = peek1(input, p)
+    p = p + 1
+    if ch != q {
+        errs.push("expected quote")
+        return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "quote", pos: p }
+    }
+    buf = []byte{}
+    for p < input.len {
+        c = peek1(input, p)
+        p = p + 1
+        if c == q {
+            s = buf as string
+            return ParseResult { ok: true, node: JsonNode { tag: 3, b_val: false, n_val: 0.0, s_val: s }, err: "", pos: p }
+        }
+        if c == bs {
+            e = peek1(input, p)
+            p = p + 1
+            if e == q { push_byte(buf, q) }
+            else if e == bs { push_byte(buf, bs) }
+            else if e == "/" { push_byte(buf, "/") }
+            else if e == "n" {
+                b2 = []byte{}
+                b2.push(10 as uint8)
+                push_byte(buf, b2 as string)
+            } else if e == "r" {
+                b2 = []byte{}
+                b2.push(13 as uint8)
+                push_byte(buf, b2 as string)
+            } else if e == "t" {
+                b2 = []byte{}
+                b2.push(9 as uint8)
+                push_byte(buf, b2 as string)
+            } else {
+                push_byte(buf, e)
+            }
+        } else {
+            push_byte(buf, c)
+        }
+    }
+    errs.push("unclosed string")
+    return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "unclosed", pos: p }
+}
+
+fn parse_digits(input string, pos int) -> int {
+    p = pos
+    for p < input.len {
+        ch = peek1(input, p)
+        if ch < "0" or ch > "9" { break }
+        p = p + 1
+    }
+    return p
+}
+
+fn parse_number(input string, pos int, errs []string) -> ParseResult {
+    start = pos
+    p = pos
+    if peek1(input, p) == "-" { p = p + 1 }
+
+    if p >= input.len {
+        errs.push("eof in number")
+        return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "num_eof", pos: p }
+    }
+
+    ch0 = peek1(input, p)
+    if ch0 == "0" {
+        p = p + 1
+    } else if ch0 >= "1" and ch0 <= "9" {
+        p = parse_digits(input, p)
+    } else {
+        errs.push("invalid number")
+        return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "num_fmt", pos: start }
+    }
+
+    if peek1(input, p) == "." {
+        p = p + 1
+        p = parse_digits(input, p)
+    }
+
+    if peek1(input, p) == "e" or peek1(input, p) == "E" {
+        p = p + 1
+        if peek1(input, p) == "+" or peek1(input, p) == "-" { p = p + 1 }
+        p = parse_digits(input, p)
+    }
+
+    num_buf = []byte{}
+    i = start
+    for i < p {
+        r = input[i]
+        num_buf.push(r as uint8)
+        i = i + 1
+    }
+    f = parse_float(num_buf as string)
+    return ParseResult { ok: true, node: JsonNode { tag: 2, b_val: false, n_val: f, s_val: "" }, err: "", pos: p }
+}
+
+fn parse_array(input string, pos int, errs []string) -> ParseResult {
+    p = pos
+    p = p + 1
+    p = skip_ws(input, p)
+
+    tag_count = 0
+    str_count = 0
+
+    idx_start = tag_count
+
+    if peek1(input, p) == ch_93() {
+        p = p + 1
+        return ParseResult { ok: true, node: JsonNode { tag: 4, b_val: false, n_val: idx_start as float, s_val: "" }, err: "", pos: p }
+    }
+
+    for {
+        res = parse_value(input, p, errs)
+        if not res.ok {
+            return res
+        }
+        p = res.pos
+
+        p = skip_ws(input, p)
+        if peek1(input, p) == ch_93() {
+            p = p + 1
+            return ParseResult { ok: true, node: JsonNode { tag: 4, b_val: false, n_val: idx_start as float, s_val: "" }, err: "", pos: p }
+        }
+        if peek1(input, p) != "," {
+            errs.push("expected comma")
+            return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "comma", pos: p }
+        }
+        p = p + 1
+    }
+
+    errs.push("unclosed array")
+    return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "arr_end", pos: p }
+}
+
+fn parse_object(input string, pos int, errs []string) -> ParseResult {
+    q = ch_34()
+
+    p = pos
+    p = p + 1
+    p = skip_ws(input, p)
+
+    if peek1(input, p) == ch_125() {
+        p = p + 1
+        return ParseResult { ok: true, node: JsonNode { tag: 5, b_val: false, n_val: 0.0, s_val: "" }, err: "", pos: p }
+    }
+
+    for {
+        p = skip_ws(input, p)
+        if peek1(input, p) != q {
+            errs.push("expected key")
+            return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "key", pos: p }
+        }
+
+        key_res = parse_string(input, p, errs)
+        if not key_res.ok {
+            return key_res
+        }
+        p = key_res.pos
+
+        p = skip_ws(input, p)
+        if peek1(input, p) != ":" {
+            errs.push("expected colon")
+            return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "colon", pos: p }
+        }
+        p = p + 1
+
+        val_res = parse_value(input, p, errs)
+        if not val_res.ok {
+            return val_res
+        }
+        p = val_res.pos
+
+        p = skip_ws(input, p)
+        if peek1(input, p) == ch_125() {
+            p = p + 1
+            return ParseResult { ok: true, node: JsonNode { tag: 5, b_val: false, n_val: 0.0, s_val: "" }, err: "", pos: p }
+        }
+        if peek1(input, p) != "," {
+            errs.push("expected comma in obj")
+            return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "obj_comma", pos: p }
+        }
+        p = p + 1
+    }
+
+    errs.push("unclosed object")
+    return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "obj_end", pos: p }
+}
+
+pub fn parse_json(text string, errs []string) -> ParseResult {
+    res = parse_value(text, 0, errs)
+    if res.ok {
+        p2 = skip_ws(text, res.pos)
+        if p2 != text.len {
+            errs.push("trailing chars")
+            return ParseResult { ok: false, node: JsonNode { tag: 0, b_val: false, n_val: 0.0, s_val: "" }, err: "trail", pos: p2 }
+        }
+    }
+    return res
+}
+
+fn digit_val(ch string) -> int {
+    if ch == "0" { return 0 }
+    if ch == "1" { return 1 }
+    if ch == "2" { return 2 }
+    if ch == "3" { return 3 }
+    if ch == "4" { return 4 }
+    if ch == "5" { return 5 }
+    if ch == "6" { return 6 }
+    if ch == "7" { return 7 }
+    if ch == "8" { return 8 }
+    if ch == "9" { return 9 }
+    return 0
+}
+
+fn parse_float(s string) -> float {
+    result = 0.0
+    neg = false
+    idx = 0
+    if s.len > 0 {
+        r = s[0]
+        b = []byte{}
+        b.push(r as uint8)
+        if (b as string) == "-" {
+            neg = true
+            idx = 1
+        }
+    }
+    for idx < s.len {
+        r = s[idx]
+        b = []byte{}
+        b.push(r as uint8)
+        ch = b as string
+        if ch == "." or ch == "e" or ch == "E" { break }
+        result = result * 10.0 + (digit_val(ch) as float)
+        idx = idx + 1
+    }
+    if idx < s.len {
+        r = s[idx]
+        b = []byte{}
+        b.push(r as uint8)
+        if (b as string) == "." {
+            idx = idx + 1
+            frac = 0.1
+            for idx < s.len {
+                r2 = s[idx]
+                b2 = []byte{}
+                b2.push(r2 as uint8)
+                ch2 = b2 as string
+                if ch2 == "e" or ch2 == "E" { break }
+                result = result + (digit_val(ch2) as float) * frac
+                frac = frac / 10.0
+                idx = idx + 1
+            }
+        }
+    }
+    if neg { result = -result }
+    return result
+}

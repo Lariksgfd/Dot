@@ -1,0 +1,54 @@
+You are Agent #2 (Implementer) for the Dot compiler. Implement Phase 5 task 5.9 — WIRE dot build AND dot run CLI COMMANDS.
+
+## Environment
+- Go 1.26.5 at C:\Program Files\Go\bin\go.exe (NOT on PATH). Invoke as: & "C:\Program Files\Go\bin\go.exe" <args> with workdir D:\Programing\Go\Projects\dot
+- gofmt: & "C:\Program Files\Go\bin\gofmt.exe" -l .
+- Module: github.com/dotlang/dot at D:\Programing\Go\Projects\dot
+
+## CRITICAL RULES
+- NEVER use PowerShell (Set-Content, Out-File, -replace, heredoc) to write/edit files. Use ONLY the write and edit tools.
+- Every Go file MUST stay under 400 lines.
+- After finishing: run go build ./..., go vet ./..., gofmt -l . — all must be clean.
+- DO NOT RETURN EMPTY. Write the code, verify, report.
+
+## Task 5.9 — Wire dot build and dot run into main.go
+
+Read these first:
+- D:\Programing\Go\Projects\dot\main.go — current CLI structure (has lex, parse, check subcommands)
+- D:\Programing\Go\Projects\dot\codegen\codegen.go — Generate(info, prog) function
+- D:\Programing\Go\Projects\dot\parser\parser.go — ParseFile(source, filename)
+- D:\Programing\Go\Projects\dot\types\checker.go — Check(prog) returns (info, err)
+
+Modify D:\Programing\Go\Projects\dot\main.go to add:
+
+### 1. dot build <file> [-o output.exe]
+- Parse the .dot file
+- Type-check it
+- Generate C code via codegen.Generate
+- Write C to a temp file or stdout
+- Optionally compile with gcc (if -o specified): gcc -O2 -o output.exe generated.c runtime/*.c
+- Print the C output or compilation result
+
+### 2. dot run <file>
+- Same as build but compile to a temp .exe and run it
+- Clean up temp files after
+
+### Implementation notes:
+- Use os/exec to call gcc and the compiled binary
+- Use os.CreateTemp for temp files
+- Handle errors gracefully with clear messages
+- Keep the existing lex/parse/check commands working
+
+### Structure:
+```go
+case "build":
+    err = runBuild(args[1:])
+case "run":
+    err = runRun(args[1:])
+```
+
+Implement runBuild and runRun as separate functions. Use flags package for -o flag.
+
+After writing, verify: go build ./..., go vet ./..., gofmt -l . — all clean.
+
+Report back: what you modified, line counts, verification results.

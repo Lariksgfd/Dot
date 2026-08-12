@@ -1,0 +1,53 @@
+// stdlib/testing.dot — Test helpers (Tier 1 — pure Dot)
+
+
+
+
+
+fn assert_true(cond bool, msg string = "") {
+    if not cond {
+        m = msg
+        if m == "" { m = "assert_true failed" }
+        assert(false, m)
+    }
+}
+
+fn assert_false(cond bool, msg string = "") {
+    assert_true(not cond, msg)
+}
+
+fn assert_none[T](opt Option[T], msg string = "") {
+    m = msg
+    if m == "" { m = "assert_none failed: expected None, got Some" }
+    match opt {
+        None => {}
+        Some(_) => assert(false, m)
+    }
+}
+
+fn assert_some[T](opt Option[T], msg string = "") {
+    m = msg
+    if m == "" { m = "assert_some failed: expected Some, got None" }
+    match opt {
+        Some(_) => {}
+        None => assert(false, m)
+    }
+}
+
+fn assert_err[T, E](res Result[T, E], msg string = "") {
+    m = msg
+    if m == "" { m = "assert_err failed: expected Err, got Ok" }
+    match res {
+        Err(_) => {}
+        Ok(_) => assert(false, m)
+    }
+}
+
+fn assert_ok[T, E](res Result[T, E], msg string = "") {
+    m = msg
+    if m == "" { m = "assert_ok failed: expected Ok, got Err" }
+    match res {
+        Ok(_) => {}
+        Err(_) => assert(false, m)
+    }
+}

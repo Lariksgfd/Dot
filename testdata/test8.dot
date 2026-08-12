@@ -1,0 +1,5 @@
+fn main() {
+    s = "hello"
+    s2 = s + " world"
+    print(s2)
+}

@@ -1,0 +1,40 @@
+// smoke test for the Dot lexer
+/* block /* nested */ comment */
+
+const MAX = 0xFF
+const BIG = 1_000
+const PI = 3.14
+const HUGE = 1.0e10
+const TINY = 1e-9
+const BITS = 0b1010
+const PERMS = 0o755
+const CAP = 1_mb
+
+@test
+fn greet(name string, a int, b int) string {
+    hi = "hi {name} and {a + b}"
+    raw = `raw \n no escape
+spanning lines`
+    esc = "tab:\t quote:\" hex:\x41 uni:\u{1F600} brace:{{x}}"
+    return hi
+}
+
+fn main() {
+    total = 0
+    for i in 0..10 {
+        total += i * 2 - 1
+    }
+    t = (1, 2)
+    first = t.0
+    flags = MAX & 0x0F | 1 << 3
+    ok = total >= 10 and not (total == 0)
+    result = data
+        |> filter(f)
+        .map(g)
+    if ok {
+        greet("dot", 1, 2)
+    }
+    else {
+        greet("nope", 0, 0)
+    }
+}

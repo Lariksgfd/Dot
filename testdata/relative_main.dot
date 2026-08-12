@@ -1,0 +1,5 @@
+import "./relative_dep.dot"
+
+fn main() {
+    print(add(40, 2))
+}

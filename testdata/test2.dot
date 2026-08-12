@@ -1,0 +1,8 @@
+fn main() {
+    s = "hello"
+    ch = s[0]
+    b = ch as byte
+    arr = [b]
+    str = arr as string
+    print(str)
+}

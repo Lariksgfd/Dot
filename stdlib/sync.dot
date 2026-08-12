@@ -1,0 +1,44 @@
+// stdlib/sync.dot — Synchronization primitives
+// Mutex (CRITICAL_SECTION on Windows, pthread_mutex on Linux)
+// AtomicI32 (lock-free operations)
+
+struct Mutex {
+    _data  *int
+}
+
+struct AtomicI32 {
+    _data  *int
+}
+
+@extern("C")
+fn mutex_new() -> *Mutex
+
+@extern("C")
+fn mutex_lock(m *Mutex)
+
+@extern("C")
+fn mutex_unlock(m *Mutex)
+
+@extern("C")
+fn mutex_destroy(m *Mutex)
+
+@extern("C")
+fn atomic_new() -> *AtomicI32
+
+@extern("C")
+fn atomic_load(a *AtomicI32) -> int
+
+@extern("C")
+fn atomic_store(a *AtomicI32, v int)
+
+@extern("C")
+fn atomic_fetch_add(a *AtomicI32, delta int) -> int
+
+@extern("C")
+fn atomic_fetch_sub(a *AtomicI32, delta int) -> int
+
+@extern("C")
+fn atomic_exchange(a *AtomicI32, new_val int) -> int
+
+@extern("C")
+fn atomic_compare_exchange(a *AtomicI32, expected int, desired int) -> bool

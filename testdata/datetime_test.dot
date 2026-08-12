@@ -1,0 +1,195 @@
+import std.datetime
+
+@test
+fn test_year_only() {
+    res = parse_iso8601("2024")
+    match res {
+        Ok(dt) => {
+            assert(dt.year == 2024, "year should be 2024")
+            assert(dt.month == 1, "month should be 1")
+            assert(dt.day == 1, "day should be 1")
+        }
+        Err(msg) => {
+            assert(false, "unexpected error")
+        }
+    }
+}
+
+@test
+fn test_year_month() {
+    res = parse_iso8601("2024-03")
+    match res {
+        Ok(dt) => {
+            assert(dt.year == 2024, "year should be 2024")
+            assert(dt.month == 3, "month should be 3")
+            assert(dt.day == 1, "day should be 1")
+        }
+        Err(msg) => {
+            assert(false, "unexpected error")
+        }
+    }
+}
+
+@test
+fn test_full_date() {
+    res = parse_iso8601("2024-03-15")
+    match res {
+        Ok(dt) => {
+            assert(dt.year == 2024, "year should be 2024")
+            assert(dt.month == 3, "month should be 3")
+            assert(dt.day == 15, "day should be 15")
+        }
+        Err(msg) => {
+            assert(false, "unexpected error")
+        }
+    }
+}
+
+@test
+fn test_datetime_with_T() {
+    res = parse_iso8601("2024-03-15T14:30:45")
+    match res {
+        Ok(dt) => {
+            assert(dt.year == 2024, "year should be 2024")
+            assert(dt.month == 3, "month should be 3")
+            assert(dt.day == 15, "day should be 15")
+            assert(dt.hour == 14, "hour should be 14")
+            assert(dt.minute == 30, "minute should be 30")
+            assert(dt.second == 45, "second should be 45")
+        }
+        Err(msg) => {
+            assert(false, "unexpected error")
+        }
+    }
+}
+
+@test
+fn test_datetime_with_space() {
+    res = parse_iso8601("2024-12-25 08:00:00")
+    match res {
+        Ok(dt) => {
+            assert(dt.year == 2024, "year should be 2024")
+            assert(dt.month == 12, "month should be 12")
+            assert(dt.day == 25, "day should be 25")
+            assert(dt.hour == 8, "hour should be 8")
+            assert(dt.minute == 0, "minute should be 0")
+            assert(dt.second == 0, "second should be 0")
+        }
+        Err(msg) => {
+            assert(false, "unexpected error")
+        }
+    }
+}
+
+@test
+fn test_datetime_hour_minute_only() {
+    res = parse_iso8601("2024-06-01T09:30")
+    match res {
+        Ok(dt) => {
+            assert(dt.year == 2024, "year should be 2024")
+            assert(dt.month == 6, "month should be 6")
+            assert(dt.day == 1, "day should be 1")
+            assert(dt.hour == 9, "hour should be 9")
+            assert(dt.minute == 30, "minute should be 30")
+            assert(dt.second == 0, "second should be 0")
+        }
+        Err(msg) => {
+            assert(false, "unexpected error")
+        }
+    }
+}
+
+@test
+fn test_invalid_too_short() {
+    res = parse_iso8601("202")
+    match res {
+        Ok(dt) => {
+            assert(false, "should fail on short input")
+        }
+        Err(msg) => {
+            assert(true, "correctly rejected short input")
+        }
+    }
+}
+
+@test
+fn test_invalid_month() {
+    res = parse_iso8601("2024-13")
+    match res {
+        Ok(dt) => {
+            assert(false, "should fail on month > 12")
+        }
+        Err(msg) => {
+            assert(true, "correctly rejected invalid month")
+        }
+    }
+}
+
+@test
+fn test_invalid_day() {
+    res = parse_iso8601("2024-03-32")
+    match res {
+        Ok(dt) => {
+            assert(false, "should fail on day > 31")
+        }
+        Err(msg) => {
+            assert(true, "correctly rejected invalid day")
+        }
+    }
+}
+
+@test
+fn test_invalid_hour() {
+    res = parse_iso8601("2024-03-15T25:00:00")
+    match res {
+        Ok(dt) => {
+            assert(false, "should fail on hour > 23")
+        }
+        Err(msg) => {
+            assert(true, "correctly rejected invalid hour")
+        }
+    }
+}
+
+@test
+fn test_invalid_minute() {
+    res = parse_iso8601("2024-03-15T12:60:00")
+    match res {
+        Ok(dt) => {
+            assert(false, "should fail on minute > 59")
+        }
+        Err(msg) => {
+            assert(true, "correctly rejected invalid minute")
+        }
+    }
+}
+
+@test
+fn test_invalid_second() {
+    res = parse_iso8601("2024-03-15T12:30:60")
+    match res {
+        Ok(dt) => {
+            assert(false, "should fail on second > 59")
+        }
+        Err(msg) => {
+            assert(true, "correctly rejected invalid second")
+        }
+    }
+}
+
+@test
+fn test_invalid_separator() {
+    res = parse_iso8601("2024/03/15")
+    match res {
+        Ok(dt) => {
+            assert(false, "should fail on '/' separator")
+        }
+        Err(msg) => {
+            assert(true, "correctly rejected '/' separator")
+        }
+    }
+}
+
+fn main() {
+    print("Run with: dot test testdata/datetime_test.dot")
+}

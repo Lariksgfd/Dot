@@ -1,0 +1,5 @@
+@extern("C")
+fn async_spawn(f fn())
+
+@extern("C")
+fn async_yield()

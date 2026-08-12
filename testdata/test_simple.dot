@@ -1,0 +1,5 @@
+import std.strings
+
+fn main() {
+    print(to_upper("hello"))
+}

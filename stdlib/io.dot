@@ -1,0 +1,34 @@
+// stdlib/io.dot — File I/O operations (Tier 2 — C-backed)
+// Re-exports from C runtime: io.h / io.c
+
+@extern("C")
+struct File {}
+
+@extern("C")
+fn stdin() -> *File
+@extern("C")
+fn stdout() -> *File
+@extern("C")
+fn stderr() -> *File
+
+@extern("C")
+fn open(path string, mode string) -> *File
+@extern("C")
+fn close(f *File)
+@extern("C")
+fn read(f *File, n int) -> string
+@extern("C")
+fn read_all(f *File) -> string
+@extern("C")
+fn write(f *File, data string) -> int
+@extern("C")
+fn write_all(f *File, data string) -> int
+
+@extern("C")
+fn print_str(s string)
+
+fn write_line(s string) {
+    f = stdout()
+    write_all(f, s)
+    write_all(f, "\n")
+}

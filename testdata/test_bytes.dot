@@ -1,0 +1,6 @@
+fn main() {
+    s = "hello"
+    b = s as []byte
+    str = b as string
+    print(str)
+}

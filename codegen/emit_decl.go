@@ -1,0 +1,413 @@
+﻿package codegen
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/dotlang/dot/ast"
+	"github.com/dotlang/dot/types"
+)
+
+// emitStructDef emits a struct definition: `typedef struct DotFoo DotFoo; struct DotFoo { ... };`.
+func (g *generator) emitStructDef(name string, st *types.Struct) {
+	g.line(fmt.Sprintf("typedef struct Dot%s Dot%s;", name, name))
+	g.line(fmt.Sprintf("struct Dot%s {", name))
+	for _, f := range st.Fields {
+		if f.Embedded {
+			continue
+		}
+		ft := cType(g, f.Type)
+		g.line(fmt.Sprintf("    %s %s;", ft, cFieldName(f.Name)))
+	}
+	g.line("};")
+	g.line("")
+}
+
+// emitEnumDef emits a tagged-union enum definition.
+func (g *generator) emitEnumDef(name string, en *types.Enum) {
+	g.line(fmt.Sprintf("typedef struct Dot%s Dot%s;", name, name))
+	g.line(fmt.Sprintf("struct Dot%s {", name))
+	g.line("    int32_t tag;")
+	if len(en.Variants) > 0 {
+		hasPayload := false
+		for _, v := range en.Variants {
+			if len(v.Fields) > 0 {
+				hasPayload = true
+				break
+			}
+		}
+		if hasPayload {
+			g.line("    union {")
+			for _, v := range en.Variants {
+				if len(v.Fields) == 0 {
+					continue
+				}
+				g.line(fmt.Sprintf("        /* %s */", v.Name))
+				for _, p := range v.Fields {
+					pt := cType(g, p.Type)
+					g.line(fmt.Sprintf("        %s %s;", pt, cFieldName(p.Name)))
+				}
+			}
+			g.line("    };")
+		}
+	}
+	g.line("};")
+	g.line("")
+}
+
+// emitTraitVtable emits a vtable struct for a trait.
+func (g *generator) emitTraitVtable(name string, tr *types.Trait) {
+	g.line(fmt.Sprintf("struct Dot%s_vtable {", name))
+	for _, m := range tr.Methods {
+		if m.Static {
+			continue
+		}
+		result := cType(g, m.Sig.Result)
+		g.line(fmt.Sprintf("    %s (*%s)(void*", result, cFieldName(m.Name)))
+		for _, p := range m.Sig.Params {
+			if p.Name == "self" {
+				continue
+			}
+			g.line(fmt.Sprintf(", %s", cType(g, p.Type)))
+		}
+		g.line(");")
+	}
+	g.line("};")
+	g.line("")
+}
+
+// emitFuncDef emits a single function definition.
+// @extern("C") functions have no body and are skipped here; their
+// declarations are emitted as extern by emitFuncDecls.
+func (g *generator) emitFuncDef(fn *ast.FnDecl, recv *types.Named) {
+	if isExtern(fn) || (fn.Body == nil && fn.ExprBody == nil) {
+		return
+	}
+	fnType := g.fnType(fn)
+	if fnType == nil {
+		// For impl methods, look up the type from the receiver's Methods
+		if recv != nil {
+			fnType = g.methodType(fn, recv)
+		}
+	}
+	if fnType == nil {
+		return
+	}
+
+  	result := cType(g, fnType.Result)
+  	if isEnumType(fnType.Result) {
+  		result += "*"
+  	}
+  	funcName := g.funcName(fn, recv)
+
+	params := g.emitParams(fn.Sig, fnType, recv)
+
+	g.line(fmt.Sprintf("%s %s(%s) {", result, funcName, params))
+	if fn.Body != nil {
+		for _, s := range fn.Body.Stmts {
+			g.emitStmt(s)
+		}
+	} else if fn.ExprBody != nil {
+		expr := g.emitExpr(fn.ExprBody)
+		g.line(fmt.Sprintf("    return %s;", expr))
+	}
+	g.line("}")
+	g.line("")
+}
+
+// methodType looks up the function type for an impl method from the receiver's Methods.
+func (g *generator) methodType(fn *ast.FnDecl, recv *types.Named) *types.Fn {
+	for _, m := range recv.Methods {
+		if m == nil || m.Name != fn.Name {
+			continue
+		}
+		return m.Sig
+	}
+	return nil
+}
+
+// emitForwardParams renders the C parameter type list for a forward declaration.
+func (g *generator) emitForwardParams(fnType *types.Fn) string {
+	if len(fnType.Params) == 0 {
+		return "void"
+	}
+	var parts []string
+	for _, p := range fnType.Params {
+		ct := cType(g, p.Type)
+		if _, isEnum := p.Type.(*types.Enum); isEnum {
+			ct += "*"
+		}
+		parts = append(parts, ct)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// emitParams renders the C parameter list for a function.
+func (g *generator) emitParams(sig *ast.FnSig, fnType *types.Fn, recv *types.Named) string {
+	var parts []string
+	paramIdx := 0
+	if recv != nil && sig.Recv != nil {
+		parts = append(parts, fmt.Sprintf("Dot%s* self", recv.Name))
+	}
+	for _, p := range sig.Params {
+  		var pt types.Type = types.Invalid
+  		if paramIdx < len(fnType.Params) {
+  			pt = fnType.Params[paramIdx].Type
+  		}
+  		ct := cType(g, pt)
+  		if isEnum := isEnumType(pt); isEnum {
+  			ct += "*"
+  		}
+  		parts = append(parts, fmt.Sprintf("%s %s", ct, p.Name))
+  		paramIdx++
+  	}
+	return strings.Join(parts, ", ")
+}
+
+// funcName returns the C name for a function, handling methods and generics.
+func (g *generator) funcName(fn *ast.FnDecl, recv *types.Named) string {
+	if recv != nil {
+		return fmt.Sprintf("Dot_%s_%s", recv.Name, fn.Name)
+	}
+	return fmt.Sprintf("Dot_%s", fn.Name)
+}
+
+// fnType returns the *types.Fn for a function declaration, looking it up
+// from the symbol table (info.Defs) since FnDecl is not an ast.Expr.
+func (g *generator) fnType(fn *ast.FnDecl) *types.Fn {
+	sym, ok := g.info.Defs[fn]
+	if !ok || sym == nil {
+		return nil
+	}
+	if ft, ok := sym.Type.(*types.Fn); ok {
+		return ft
+	}
+	if named, ok := sym.Type.(*types.Named); ok && named.Underlying != nil {
+		if ft, ok := named.Underlying.(*types.Fn); ok {
+			return ft
+		}
+	}
+	return nil
+}
+
+// emitTypeDefs emits all type definitions (structs, enums, traits).
+func (g *generator) emitTypeDefs() error {
+	for _, decl := range g.prog.Decls {
+		switch d := decl.(type) {
+		case *ast.StructDecl:
+			isExtern := false
+			for _, ann := range d.Annotations {
+				if ann.Name == "extern" {
+					isExtern = true
+					break
+				}
+			}
+			if isExtern {
+				continue
+			}
+			sym, ok := g.info.Defs[d]
+			if !ok || sym == nil || sym.Type == nil {
+				continue
+			}
+			named, ok := sym.Type.(*types.Named)
+			if !ok {
+				continue
+			}
+			if st, ok := named.Underlying.(*types.Struct); ok {
+				g.emitStructDef(d.Name, st)
+			}
+		case *ast.EnumDecl:
+			sym, ok := g.info.Defs[d]
+			if !ok || sym == nil || sym.Type == nil {
+				continue
+			}
+			named, ok := sym.Type.(*types.Named)
+			if !ok {
+				continue
+			}
+			if en, ok := named.Underlying.(*types.Enum); ok {
+				g.emitEnumDef(d.Name, en)
+			}
+		case *ast.TraitDecl:
+			sym, ok := g.info.Defs[d]
+			if !ok || sym == nil || sym.Type == nil {
+				continue
+			}
+			named, ok := sym.Type.(*types.Named)
+			if !ok {
+				continue
+			}
+			if tr, ok := named.Underlying.(*types.Trait); ok {
+				g.emitTraitVtable(d.Name, tr)
+			}
+		}
+	}
+	return nil
+}
+
+// emitFuncDecls emits forward declarations for all user functions.
+// @extern("C") functions receive `extern` declarations so that the linker
+// can find their implementation in an external C library.
+func (g *generator) emitFuncDecls() error {
+	for _, decl := range g.prog.Decls {
+		switch d := decl.(type) {
+  		case *ast.FnDecl:
+			if isExtern(d) {
+				fnType := g.fnType(d)
+				if fnType == nil {
+					continue
+				}
+				result := cType(g, fnType.Result)
+				if isEnumType(fnType.Result) {
+					result += "*"
+				}
+				paramTypes := g.emitForwardParams(fnType)
+				g.line(fmt.Sprintf("extern %s %s(%s);", result, g.funcName(d, nil), paramTypes))
+				continue
+			}
+			if d.Body == nil && d.ExprBody == nil {
+				continue
+			}
+			fnType := g.fnType(d)
+			if fnType == nil {
+				continue
+			}
+			result := cType(g, fnType.Result)
+			if isEnumType(fnType.Result) {
+				result += "*"
+			}
+			paramTypes := g.emitForwardParams(fnType)
+			g.line(fmt.Sprintf("%s %s(%s);", result, g.funcName(d, nil), paramTypes))
+		case *ast.ImplDecl:
+			recv := g.implRecvType(d)
+			if recv == nil {
+				continue
+			}
+			for _, m := range d.Methods {
+				if isExtern(m) {
+					fnType := g.fnType(m)
+					if fnType == nil {
+						continue
+					}
+					result := cType(g, fnType.Result)
+					paramTypes := g.emitForwardParams(fnType)
+					g.line(fmt.Sprintf("extern %s %s(%s);", result, g.funcName(m, recv), paramTypes))
+					continue
+				}
+				if m.Body == nil && m.ExprBody == nil {
+					continue
+				}
+				fnType := g.fnType(m)
+				if fnType == nil {
+					continue
+				}
+				result := cType(g, fnType.Result)
+				paramTypes := g.emitForwardParams(fnType)
+				g.line(fmt.Sprintf("%s %s(%s);", result, g.funcName(m, recv), paramTypes))
+			}
+		}
+	}
+	g.line("")
+	return nil
+}
+
+// emitFuncDefs emits all function definitions (user + monomorphised).
+// @extern("C") functions are skipped because their implementation lives
+// in external C code.
+func (g *generator) emitFuncDefs() error {
+	for _, decl := range g.prog.Decls {
+		switch d := decl.(type) {
+		case *ast.FnDecl:
+			if isExtern(d) {
+				continue
+			}
+			g.emitFuncDef(d, nil)
+		case *ast.ImplDecl:
+			recv := g.implRecvType(d)
+			if recv == nil {
+				continue
+			}
+			for _, m := range d.Methods {
+				g.emitFuncDef(m, recv)
+			}
+		}
+	}
+	g.emitMonomorphised()
+	return nil
+}
+
+// implRecvType resolves the receiver type for an impl block.
+func (g *generator) implRecvType(d *ast.ImplDecl) *types.Named {
+	switch t := d.Type.(type) {
+	case *ast.NamedType:
+		// Look up the type symbol by name
+		for _, sym := range g.info.Uses {
+			if sym != nil && sym.Name == t.Name && sym.Kind == types.SymType {
+				if named, ok := sym.Type.(*types.Named); ok {
+					return named
+				}
+			}
+		}
+		// Also check Defs
+		for _, sym := range g.info.Defs {
+			if sym != nil && sym.Name == t.Name && sym.Kind == types.SymType {
+				if named, ok := sym.Type.(*types.Named); ok {
+					return named
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// emitMonomorphised emits monomorphised generic functions/types from InstanceList.
+func (g *generator) emitMonomorphised() {
+	seen := make(map[string]bool)
+	for _, inst := range g.info.InstanceList {
+		if inst == nil || seen[inst.Mangled] {
+			continue
+		}
+		seen[inst.Mangled] = true
+		if inst.Generic == nil {
+			continue
+		}
+		switch inst.Generic.Kind {
+		case types.SymFunc:
+			g.emitMonomorphisedFunc(inst)
+		case types.SymType:
+			g.emitMonomorphisedType(inst)
+		}
+	}
+}
+
+// emitMonomorphisedFunc emits a monomorphised generic function.
+func (g *generator) emitMonomorphisedFunc(inst *types.Instance) {
+	fn := inst.Generic.Fn
+	if fn == nil {
+		return
+	}
+	result := cType(g, inst.Result)
+	var params []string
+	for i, p := range fn.Params {
+		ct := cType(g, inst.TypeArgs[i])
+		params = append(params, fmt.Sprintf("%s %s", ct, cFieldName(p.Name)))
+	}
+	g.line(fmt.Sprintf("%s %s(%s) {", result, inst.Mangled, strings.Join(params, ", ")))
+	g.line(fmt.Sprintf("    /* monomorphised: %s */", inst.Generic.Name))
+	g.line("}")
+	g.line("")
+}
+
+// emitMonomorphisedType emits a monomorphised generic type.
+func (g *generator) emitMonomorphisedType(inst *types.Instance) {
+	named, ok := inst.Result.(*types.Named)
+	if !ok {
+		return
+	}
+	switch u := named.Underlying.(type) {
+	case *types.Struct:
+		g.emitStructDef(inst.Mangled, u)
+	case *types.Enum:
+		g.emitEnumDef(inst.Mangled, u)
+	}
+}

@@ -1,0 +1,224 @@
+// lexer_sample.dot — a realistic Dot program used as the lexer golden test.
+// It must tokenize with ZERO diagnostics and produce no TokenIllegal.
+/* Block comments /* nest */ and may span
+   several lines. */
+
+import math_utils
+import net.http as web
+from os.fs import read_file, write_file
+
+const MAX_SIZE = 1024
+const MASK = 0xFF_FF
+const FLAGS = 0b1010_1010
+const PERMS = 0o755
+const BIG = 1_000_000
+const PI float = 3.14159265358979
+const HUGE = 1.0e10
+const TINY = 1e-9
+const ARENA_SIZE = 1_mb
+const TIMEOUT = 30ms
+
+struct Point {
+    x float
+    y float
+}
+
+struct Dog {
+    embed Animal
+    breed string
+    tags []string
+    scores map[string]int
+}
+
+enum Shape {
+    Circle(radius float)
+    Rectangle(width float, height float)
+}
+
+trait Printable {
+    fn to_string(self) -> string
+}
+
+trait Comparable {
+    fn compare(self, other Self) -> int
+    fn less_than(self, other Self) -> bool = self.compare(other) < 0
+}
+
+impl Printable for Point {
+    fn to_string(self) -> string = "({self.x}, {self.y})"
+}
+
+impl Point {
+    fn new(x float, y float) -> Point {
+        return Point { x, y }
+    }
+
+    fn distance(self, other Point) -> float {
+        dx = self.x - other.x
+        dy = self.y - other.y
+        return ((dx ** 2) + (dy ** 2)).sqrt()
+    }
+
+    fn translate(mut self, dx float, dy float) {
+        self.x += dx
+        self.y += dy
+    }
+}
+
+struct Stack[T] {
+    items []T
+}
+
+impl[T] Stack[T] {
+    fn push(mut self, item T) {
+        self.items.append(item)
+    }
+
+    fn pop(mut self) -> Option[T] {
+        if self.items.len() == 0 {
+            return nil
+        }
+        return self.items.remove_last()
+    }
+}
+
+fn max[T: Comparable](a T, b T) -> T {
+    if a.greater_than(b) { a } else { b }
+}
+
+fn parse_config(path string) -> Result[int, Error] {
+    raw = read_file(path)?
+    n = raw.trim().to_int()?
+    return n
+}
+
+fn describe(code int) -> string {
+    label = match code {
+        200 => "OK"
+        301 | 302 => "Redirect"
+        n if n >= 500 => "Server error {n}"
+        _ => "Unknown"
+    }
+    return label
+}
+
+fn classify(item any) -> string {
+    match item {
+        int n => return "int: {n}"
+        string s => return "str: {s}"
+        Point { x: 0.0, y: 0.0 } => return "origin"
+        _ => return "other"
+    }
+}
+
+@inline
+fn double(x int) -> int = x * 2
+
+@deprecated("use fetch_all")
+async fn fetch(url string) -> Result[string, Error] {
+    body = await web.get(url)
+    return body
+}
+
+fn transform(data []int) -> []int {
+    return data
+        |> filter(fn(x) { x % 2 == 0 })
+        .map(double)
+        |> collect()
+}
+
+fn bit_tricks(a int, b int) -> int {
+    v = a & MASK | b ^ 0x0F
+    v <<= 2
+    v >>= 1
+    v &= ~0b0011
+    v |= 1 << 3
+    v ^= 0o7
+    v %= 97
+    v -= 1
+    v /= 2
+    return v
+}
+
+fn text_samples(name string, a int, b int) -> string {
+    plain = "hello"
+    greeting = "hi {name}, sum is {a + b}"
+    nested = "outer { fmt("{a}") } done"
+    braces = "literal {{braces}} stay"
+    escaped = "tab:\t nl:\n quote:\" back:\\ nul:\0 hex:\x41 uni:\u{1F600}"
+    raw = `raw \n text with {braces} and "quotes"
+spanning several lines`
+    tpl = "{ f({key: 1}) }"
+    return greeting + plain + nested + braces + escaped + raw + tpl
+}
+
+@test
+fn test_points() {
+    p = Point.new(1.0, 2.0)
+    q = Point { x: 3.0, y: 4.0 }
+    d = p.distance(q)
+    assert(d > 0.0 and not (d == 0.0))
+    t = (1, "two", 3.0)
+    first = t.0
+    third = t.2
+    pair = t.0.to_string()
+    print("d={d} first={first} third={third} pair={pair}")
+}
+
+@outer for i in 0..10 {
+    for j in 0..=i {
+        if j % 3 == 0 { continue }
+        if i * j > 50 { break @outer }
+    }
+}
+
+fn variadic_and_defaults(host string, port int = 8080, nums ...int) -> int {
+    total = 0
+    for n in nums {
+        total += n
+    }
+    for total > 100 {
+        total -= 10
+    }
+    for {
+        if total <= 0 { break }
+        total -= 1
+    }
+    defer cleanup()
+    return total
+}
+
+fn concurrency_demo() {
+    ch = Channel[int].new(buffer: 10)
+    spawn { ch.send(42) }
+    value = ch.recv()
+    handler dyn Printable = Point.new(0.0, 0.0)
+    cached weak Point = handler
+    print("{value} {handler.to_string()}")
+}
+
+fn main() {
+    cfg = parse_config("app.conf").unwrap_or(0)
+    numbers = [1, 2, 3, 4, 5]
+    lookup = map[string]int{
+        "one": 1,
+        "two": 2,
+    }
+    stack = Stack[int] { items: [] }
+    stack.push(cfg)
+    _, err = risky_call()
+    if err is Error {
+        print("failed: {err}")
+    }
+    else {
+        print("ok")
+    }
+    shape = Shape.Circle(5.0)
+    total = numbers
+        |> transform()
+        .len()
+    print("{total} {lookup.len()} {shape} {describe(404)} {classify(1)}")
+    print("{text_samples("dot", 1, 2)}")
+    x = double(21) as float
+    print("{x}")
+}

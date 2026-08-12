@@ -1,0 +1,188 @@
+const MAX_SIZE = 1024
+const PI float = 3.14159
+
+struct Point {
+    x float
+    y float
+}
+
+struct User {
+    name   string
+    email  string
+    age    int
+    active bool = true
+}
+
+enum Color {
+    Red
+    Green
+    Blue
+}
+
+enum Shape {
+    Circle(radius float)
+    Rectangle(width float, height float)
+}
+
+trait Printable {
+    fn to_string(self) -> string
+}
+
+impl Point {
+    fn origin() -> Point {
+        return Point { x: 0.0, y: 0.0 }
+    }
+
+    fn magnitude(self) -> float {
+        return self.x * self.x + self.y * self.y
+    }
+
+    fn translate(mut self, dx float, dy float) {
+        self.x += dx
+        self.y += dy
+    }
+}
+
+impl Printable for Point {
+    fn to_string(self) -> string = "point"
+}
+
+fn add(a int, b int) -> int {
+    return a + b
+}
+
+fn double(x int) -> int = x * 2
+
+fn greet(name string) {
+    print("Hello, {name}!")
+}
+
+fn connect(host string, port int = 8080) -> string {
+    return "{host}:{port}"
+}
+
+fn sum(nums ...int) -> int {
+    total = 0
+    for n in nums {
+        total += n
+    }
+    return total
+}
+
+fn classify(value int) -> string {
+    return match value {
+        0 => "zero"
+        1 | 2 | 3 => "small"
+        n if n > 100 => "big"
+        _ => "other"
+    }
+}
+
+fn area(shape Shape) -> float {
+    return match shape {
+        Shape.Circle(r) => PI * r * r
+        Shape.Rectangle(w, h) => w * h
+    }
+}
+
+fn hex(color Color) -> string {
+    return match color {
+        Color.Red => "#FF0000"
+        Color.Green => "#00FF00"
+        Color.Blue => "#0000FF"
+    }
+}
+
+fn find_user(id int) -> Option[User] {
+    if id == 0 {
+        return None
+    }
+    return Some(User { name: "a", email: "b", age: 1 })
+}
+
+fn user_email(id int) -> Option[string] {
+    user = find_user(id)?
+    return Some(user.email)
+}
+
+fn parse_positive(n int) -> Result[int, Error] {
+    if n < 0 {
+        return Err(Error { message: "negative" })
+    }
+    return Ok(n)
+}
+
+fn doubled_positive(n int) -> Result[int, Error] {
+    v = parse_positive(n)?
+    return Ok(v * 2)
+}
+
+fn collections() {
+    items = []int{1, 2, 3}
+    items.push(4)
+    total = 0
+    for v in items {
+        total += v
+    }
+    scores = map[string]int{"alice": 95, "bob": 87}
+    for name, score in scores {
+        print("{name}: {score}")
+    }
+    grid = [1, 2, 3]
+    print(total, grid.len, scores.len)
+}
+
+fn loops() {
+    x = 10
+    for x > 0 {
+        x -= 1
+    }
+    for i in 0..10 {
+        if i == 5 {
+            continue
+        }
+        if i == 8 {
+            break
+        }
+    }
+    @outer for i in 0..3 {
+        for j in 0..3 {
+            if i * j > 4 {
+                break @outer
+            }
+        }
+    }
+}
+
+fn apply(f fn(int) -> int, v int) -> int {
+    return f(v)
+}
+
+fn lambdas() -> int {
+    triple = fn(x int) -> int { x * 3 }
+    return apply(triple, 5) + apply(fn(x int) -> int = x + 1, 2)
+}
+
+fn casting(n int) -> float {
+    f = n as float
+    return f * 2.0
+}
+
+fn main() {
+    p = Point.origin()
+    m = p.magnitude()
+    s = add(1, 2)
+    d = double(s)
+    greet("Dot")
+    print(connect("localhost"))
+    print(connect("localhost", port: 3000))
+    print(sum(1, 2, 3))
+    print(classify(42))
+    print(area(Shape.Circle(2.0)))
+    print(hex(Color.Red))
+    print(lambdas())
+    print(casting(3))
+    print(m, d, MAX_SIZE)
+    collections()
+    loops()
+}

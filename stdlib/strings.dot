@@ -1,0 +1,112 @@
+// stdlib/strings.dot - String manipulation utilities (Tier 1 - pure Dot)
+
+fn to_upper(s string) -> string {
+    lower = "abcdefghijklmnopqrstuvwxyz"
+    upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    result = []byte{}
+    i = 0
+    for i < s.len {
+        ch = s[i] as uint8
+        found = false
+        j = 0
+        for j < lower.len {
+            if ch == lower[j] as uint8 {
+                result.push(upper[j] as uint8)
+                found = true
+                break
+            }
+            j = j + 1
+        }
+        if not found {
+            result.push(ch)
+        }
+        i = i + 1
+    }
+    return result as string
+}
+
+fn to_lower(s string) -> string {
+    lower = "abcdefghijklmnopqrstuvwxyz"
+    upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    result = []byte{}
+    i = 0
+    for i < s.len {
+        ch = s[i] as uint8
+        found = false
+        j = 0
+        for j < upper.len {
+            if ch == upper[j] as uint8 {
+                result.push(lower[j] as uint8)
+                found = true
+                break
+            }
+            j = j + 1
+        }
+        if not found {
+            result.push(ch)
+        }
+        i = i + 1
+    }
+    return result as string
+}
+
+fn contains(s string, sub string) -> bool {
+    if sub.len == 0 { return true }
+    if s.len < sub.len { return false }
+
+    i = 0
+    for i <= s.len - sub.len {
+        match_found = true
+        j = 0
+        for j < sub.len {
+            if s[i + j] != sub[j] {
+                match_found = false
+                break
+            }
+            j = j + 1
+        }
+        if match_found {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+fn replace(s string, old string, new string) -> string {
+    if old.len == 0 { return s }
+    if s.len < old.len { return s }
+
+    result = []byte{}
+    i = 0
+    for i <= s.len - old.len {
+        match_found = true
+        j = 0
+        for j < old.len {
+            if s[i + j] != old[j] {
+                match_found = false
+                break
+            }
+            j = j + 1
+        }
+
+        if match_found {
+            k = 0
+            for k < new.len {
+                result.push(new[k] as uint8)
+                k = k + 1
+            }
+            i = i + old.len
+        } else {
+            result.push(s[i] as uint8)
+            i = i + 1
+        }
+    }
+
+    for i < s.len {
+        result.push(s[i] as uint8)
+        i = i + 1
+    }
+
+    return result as string
+}

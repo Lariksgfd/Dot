@@ -1,0 +1,9 @@
+@extern("C")
+fn dot_slice_push(s []byte, v byte)
+
+fn main() {
+    b = []byte{}
+    dot_slice_push(b, 72)
+    str = b as string
+    print(str)
+}

@@ -1,0 +1,6 @@
+// testdata/hello_stdlib.dot — end-to-end test for stdlib imports
+import std.io
+
+fn main() {
+    print_str("Hello, stdlib!\n")
+}

@@ -1,0 +1,5 @@
+fn main() {
+    s = "hello"
+    b = s.bytes()
+    print(b)
+}

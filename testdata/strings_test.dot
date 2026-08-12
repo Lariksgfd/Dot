@@ -1,0 +1,12 @@
+import std.strings
+
+fn main() {
+    print(to_upper("hello"))
+    print(to_lower("WORLD"))
+
+    if contains("hello world", "world") {
+        print("contains ok")
+    }
+
+    print(replace("hello world", "world", "dot"))
+}

@@ -1,0 +1,5 @@
+fn main() {
+    s = "hello"
+    sub = s[0..1]
+    print(sub)
+}

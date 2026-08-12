@@ -1,0 +1,61 @@
+import std.json
+
+fn make_json() -> string {
+    b = []byte{}
+    b.push(123 as uint8)
+    b.push(34 as uint8)
+    b.push(107 as uint8)
+    b.push(101 as uint8)
+    b.push(121 as uint8)
+    b.push(34 as uint8)
+    b.push(58 as uint8)
+    b.push(91 as uint8)
+    b.push(49 as uint8)
+    b.push(44 as uint8)
+    b.push(116 as uint8)
+    b.push(114 as uint8)
+    b.push(117 as uint8)
+    b.push(101 as uint8)
+    b.push(44 as uint8)
+    b.push(110 as uint8)
+    b.push(117 as uint8)
+    b.push(108 as uint8)
+    b.push(108 as uint8)
+    b.push(44 as uint8)
+    b.push(34 as uint8)
+    b.push(116 as uint8)
+    b.push(101 as uint8)
+    b.push(115 as uint8)
+    b.push(116 as uint8)
+    b.push(34 as uint8)
+    b.push(93 as uint8)
+    b.push(125 as uint8)
+    return b as string
+}
+
+fn main() {
+    input = make_json()
+    errors = []string{}
+    res = parse_json(input, errors)
+
+    if errors.len > 0 {
+        print("PARSE FAILED")
+        print(errors[0])
+        assert(false, "parse should succeed")
+        return
+    }
+    if not res.ok {
+        print("PARSE NOT OK")
+        assert(false, "res should be ok")
+        return
+    }
+
+    node = res.node
+    if node.tag != 5 {
+        print("NOT OBJECT")
+        assert(false, "expected object")
+        return
+    }
+
+    print("Tests passed")
+}

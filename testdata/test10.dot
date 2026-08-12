@@ -1,0 +1,6 @@
+fn main() {
+    s = "hello"
+    if s == "hello" {
+        print("YES")
+    }
+}

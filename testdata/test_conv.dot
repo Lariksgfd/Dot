@@ -1,0 +1,7 @@
+fn main() {
+    s = "hello"
+    ch = s[0]
+    i = ch as int
+    str_i = i as string
+    print(str_i)
+}

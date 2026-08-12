@@ -1,0 +1,19 @@
+struct Point {
+    x float
+    y float
+}
+
+impl Point {
+    fn new(x float, y float) -> Point {
+        return Point { x: x, y: y }
+    }
+
+    fn x_val(self) -> float {
+        return self.x
+    }
+}
+
+fn main() {
+    p = Point.new(3.0, 4.0)
+    print(p.x_val())
+}

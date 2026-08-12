@@ -1,0 +1,4 @@
+fn main() {
+    s = "hello".to_upper()
+    print(s)
+}

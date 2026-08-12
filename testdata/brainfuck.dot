@@ -1,0 +1,75 @@
+fn run_bf(code []int, code_len int) {
+    tape = []int{}
+    i = 0
+
+    for i < 30000 {
+        tape.push(0)
+        i = i + 1
+    }
+
+    ptr = 0
+    pc = 0
+    loop_stack = []int{}
+
+    for pc < code_len {
+        ch = code[pc]
+
+        if ch == 62 {
+            ptr = ptr + 1
+        }
+        if ch == 60 {
+            ptr = ptr - 1
+            if ptr < 0 { ptr = 0 }
+        }
+        if ch == 43 {
+            v = tape[ptr]
+            tape[ptr] = v + 1
+        }
+        if ch == 45 {
+            v = tape[ptr]
+            tape[ptr] = v - 1
+        }
+        if ch == 46 {
+            print(tape[ptr])
+        }
+        if ch == 91 {
+            if tape[ptr] == 0 {
+                depth = 1
+                for depth > 0 {
+                    pc = pc + 1
+                    if code[pc] == 91 { depth = depth + 1 }
+                    if code[pc] == 93 { depth = depth - 1 }
+                }
+            }
+            if tape[ptr] != 0 {
+                loop_stack.push(pc)
+            }
+        }
+        if ch == 93 {
+            if tape[ptr] != 0 {
+                last = loop_stack.len - 1
+                pc = loop_stack[last]
+                loop_stack.pop()
+            }
+        }
+
+        pc = pc + 1
+    }
+}
+
+fn main() {
+    print("Starting BF interpreter...")
+
+    code = []int{
+        43,43,43,43,43,43,43,43,43,43,
+        91,62,43,43,43,43,43,43,43,62,43,43,43,43,43,43,43,43,43,43,62,43,43,43,62,43,60,60,60,60,45,93,
+        62,62,43,43,46,62,43,46,43,43,43,43,43,43,43,46,46,43,43,43,46,62,62,43,43,46,
+        60,60,43,43,43,43,43,43,43,43,43,43,43,43,43,43,43,46,62,46,43,43,43,46,45,45,45,45,45,45,46,45,45,45,45,45,45,45,45,46,62,43,46,62,46
+    }
+
+    len = 78
+    run_bf(code, len)
+
+    print("")
+    print("Done!")
+}

@@ -1,0 +1,583 @@
+enum Token {
+	TkIllegal,
+	TkEOF,
+	TkNewline,
+	TkIdent,
+	TkUnderscore,
+	TkInt,
+	TkFloat,
+	TkString,
+	TkRawString,
+	TkFn,
+	TkStruct,
+	TkTrait,
+	TkImpl,
+	TkEnum,
+	TkIf,
+	TkElse,
+	TkFor,
+	TkIn,
+	TkMatch,
+	TkReturn,
+	TkBreak,
+	TkContinue,
+	TkImport,
+	TkFrom,
+	TkConst,
+	TkMut,
+	TkSelf,
+	TkSelfType,
+	TkSpawn,
+	TkAsync,
+	TkAwait,
+	TkDefer,
+	TkEmbed,
+	TkPub,
+	TkTrue,
+	TkFalse,
+	TkNil,
+	TkAnd,
+	TkOr,
+	TkNot,
+	TkAs,
+	TkIs,
+	TkDyn,
+	TkWeak,
+	TkMacro,
+	TkWhere,
+	TkYield,
+	TkTypeKw,
+	TkModule,
+	TkUnsafe,
+	TkExtern,
+	TkStatic,
+	TkVirtual,
+	TkOverride,
+	TkPlus,
+	TkMinus,
+	TkStar,
+	TkSlash,
+	TkPercent,
+	TkStarStar,
+	TkEqEq,
+	TkBangEq,
+	TkLt,
+	TkGt,
+	TkLtEq,
+	TkGtEq,
+	TkAmp,
+	TkPipe,
+	TkCaret,
+	TkTilde,
+	TkShl,
+	TkShr,
+	TkAssign,
+	TkPlusAssign,
+	TkMinusAssign,
+	TkStarAssign,
+	TkSlashAssign,
+	TkPercentAssign,
+	TkAmpAssign,
+	TkPipeAssign,
+	TkCaretAssign,
+	TkShlAssign,
+	TkShrAssign,
+	TkPipeArrow,
+	TkDotDot,
+	TkDotDotEq,
+	TkEllipsis,
+	TkArrow,
+	TkFatArrow,
+	TkQuestion,
+	TkDot,
+	TkComma,
+	TkColon,
+	TkAt,
+	TkLParen,
+	TkRParen,
+	TkLBracket,
+	TkRBracket,
+	TkLBrace,
+	TkRBrace,
+	TkComment,
+	TkTrue,
+}
+
+struct BaseNode {
+	Start int,
+	Stop int,
+	Doc []Token,
+	Comment []Token,
+}
+
+struct ParenExpr {
+	X Expr,
+	LParen int,
+	RParen int,
+}
+
+struct UnaryExpr {
+	Op Token,
+	OpPos int,
+	X Expr,
+}
+
+struct BinaryExpr {
+	Op Token,
+	OpPos int,
+	X Expr,
+	Y Expr,
+}
+
+struct AssignExpr {
+	Op Token,
+	OpPos int,
+	Targets []Expr,
+	Values []Expr,
+}
+
+struct RangeExpr {
+	Low Expr,
+	High Expr,
+	Inclusive bool,
+	OpPos int,
+}
+
+struct Arg {
+	Name string,
+	NamePos int,
+	Value Expr,
+	Spread bool,
+}
+
+struct CallExpr {
+	Fn Expr,
+	Args []Arg,
+	LParen int,
+	RParen int,
+}
+
+struct IndexExpr {
+	X Expr,
+	Indices []Expr,
+	LBracket int,
+	RBracket int,
+}
+
+struct SliceExpr {
+	X Expr,
+	Low Expr,
+	High Expr,
+	Inclusive bool,
+	LBracket int,
+	RBracket int,
+}
+
+struct FieldExpr {
+	X Expr,
+	Name string,
+	NamePos int,
+	Index int,
+	IsTupleIndex bool,
+}
+
+struct PipeExpr {
+	X Expr,
+	Fn Expr,
+	OpPos int,
+}
+
+struct TryExpr {
+	X Expr,
+	OpPos int,
+}
+
+struct AwaitExpr {
+	X Expr,
+	KwPos int,
+}
+
+struct SpawnExpr {
+	Block BlockStmt,
+	KwPos int,
+}
+
+struct CastExpr {
+	X Expr,
+	Type TypeNode,
+	KwPos int,
+}
+
+struct IsExpr {
+	X Expr,
+	Type TypeNode,
+	KwPos int,
+}
+
+struct IfExpr {
+	Bind Pattern,
+	Cond Expr,
+	Then BlockStmt,
+	Else BlockStmt,
+	ElseIf IfExpr,
+}
+
+struct MatchArm {
+	Pattern Pattern,
+	Body Expr,
+	ArrowPos int,
+}
+
+struct MatchExpr {
+	Subject Expr,
+	Arms []MatchArm,
+	KwPos int,
+	LBrace int,
+	RBrace int,
+}
+
+struct BlockExpr {
+	Block BlockStmt,
+}
+
+struct BadExpr {
+}
+
+struct Program {
+	File string,
+	Decls []Decl,
+}
+
+struct BlockStmt {
+	Stmts []Stmt,
+	LBrace int,
+	RBrace int,
+}
+
+struct ExprStmt {
+	X Expr,
+}
+
+struct VarDecl {
+	Annotations []Annotation,
+	Const bool,
+	Pub bool,
+	Names []Expr,
+	Type TypeNode,
+	Values []Expr,
+	AssignPos int,
+}
+
+struct ReturnStmt {
+	Values []Expr,
+	KwPos int,
+}
+
+struct ForStmt {
+	Label string,
+	LabelPos int,
+	Kind ForKind,
+	Key Expr,
+	Value Expr,
+	Iterable Expr,
+	Cond Expr,
+	Body BlockStmt,
+	KwPos int,
+}
+
+struct BreakStmt {
+	Label string,
+	LabelPos int,
+	KwPos int,
+}
+
+struct ContinueStmt {
+	Label string,
+	LabelPos int,
+	KwPos int,
+}
+
+struct DeferStmt {
+	Call Expr,
+	KwPos int,
+}
+
+struct PerfBlock {
+	Block BlockStmt,
+	AtPos int,
+}
+
+struct BadStmt {
+}
+
+struct Annotation {
+	Name string,
+	NamePos int,
+	Args []Expr,
+	AtPos int,
+}
+
+struct TypeParam {
+	Name string,
+	NamePos int,
+	Bounds []TypeNode,
+}
+
+struct Param {
+	Name string,
+	NamePos int,
+	Type TypeNode,
+	Default Expr,
+	Variadic bool,
+	Mut bool,
+	IsSelf bool,
+}
+
+struct FnSig {
+	Recv Param,
+	Params []Param,
+	Result TypeNode,
+	LParen int,
+	RParen int,
+	ArrowPos int,
+}
+
+struct FnDecl {
+	Annotations []Annotation,
+	Pub bool,
+	Async bool,
+	Name string,
+	NamePos int,
+	TypeParams []TypeParam,
+	Sig FnSig,
+	Body BlockStmt,
+	ExprBody Expr,
+	KwPos int,
+}
+
+struct FieldDecl {
+	Annotations []Annotation,
+	Embed bool,
+	Name string,
+	NamePos int,
+	Type TypeNode,
+	Default Expr,
+}
+
+struct StructDecl {
+	Annotations []Annotation,
+	Pub bool,
+	Name string,
+	NamePos int,
+	TypeParams []TypeParam,
+	Fields []FieldDecl,
+	KwPos int,
+}
+
+struct EnumVariant {
+	Name string,
+	NamePos int,
+	HasParens bool,
+	Fields []Param,
+}
+
+struct EnumDecl {
+	Annotations []Annotation,
+	Pub bool,
+	Name string,
+	NamePos int,
+	TypeParams []TypeParam,
+	Variants []EnumVariant,
+	KwPos int,
+}
+
+struct TraitDecl {
+	Annotations []Annotation,
+	Pub bool,
+	Name string,
+	NamePos int,
+	TypeParams []TypeParam,
+	Methods []FnDecl,
+	KwPos int,
+}
+
+struct ImplDecl {
+	Annotations []Annotation,
+	TypeParams []TypeParam,
+	Trait TypeNode,
+	Type TypeNode,
+	Methods []FnDecl,
+	KwPos int,
+	ForPos int,
+}
+
+struct ImportName {
+	Name string,
+	NamePos int,
+	Alias string,
+	AliasPos int,
+}
+
+struct ImportDecl {
+	From bool,
+	Path []string,
+	PathPos []int,
+	Alias string,
+	AliasPos int,
+	Names []ImportName,
+	KwPos int,
+}
+
+struct IntLit {
+	Value int,
+	Base int,
+	Suffix string,
+	Raw string,
+}
+
+struct FloatLit {
+	Value float,
+	Suffix string,
+	Raw string,
+}
+
+struct StringPart {
+	Kind StringPartKind,
+	Text string,
+	Expr Expr,
+	Pos int,
+}
+
+struct StringLit {
+	Parts []StringPart,
+	Raw string,
+}
+
+struct RawStringLit {
+	Value string,
+}
+
+struct BoolLit {
+	Value bool,
+}
+
+struct NilLit {
+}
+
+struct Ident {
+	Name string,
+}
+
+struct UnderscoreExpr {
+}
+
+struct SelfExpr {
+}
+
+struct TupleElem {
+	Name string,
+	NamePos int,
+	Value Expr,
+}
+
+struct TupleLit {
+	Elems []TupleElem,
+	LParen int,
+	RParen int,
+}
+
+struct ArrayLit {
+	Type TypeNode,
+	Elems []Expr,
+}
+
+struct MapEntry {
+	Key Expr,
+	Value Expr,
+}
+
+struct MapLit {
+	Type TypeNode,
+	Entries []MapEntry,
+}
+
+struct StructLitField {
+	Name string,
+	NamePos int,
+	Value Expr,
+	Shorthand bool,
+}
+
+struct StructLit {
+	Type TypeNode,
+	Fields []StructLitField,
+}
+
+struct FnLit {
+	Sig FnSig,
+	Body BlockStmt,
+	ExprBody Expr,
+}
+
+enum Expr {
+	ParenExpr(n ParenExpr),
+	UnaryExpr(n UnaryExpr),
+	BinaryExpr(n BinaryExpr),
+	AssignExpr(n AssignExpr),
+	RangeExpr(n RangeExpr),
+	CallExpr(n CallExpr),
+	IndexExpr(n IndexExpr),
+	SliceExpr(n SliceExpr),
+	FieldExpr(n FieldExpr),
+	PipeExpr(n PipeExpr),
+	TryExpr(n TryExpr),
+	AwaitExpr(n AwaitExpr),
+	SpawnExpr(n SpawnExpr),
+	CastExpr(n CastExpr),
+	IsExpr(n IsExpr),
+	IfExpr(n IfExpr),
+	MatchExpr(n MatchExpr),
+	BlockExpr(n BlockExpr),
+	BadExpr(n BadExpr),
+	IntLit(n IntLit),
+	FloatLit(n FloatLit),
+	StringLit(n StringLit),
+	RawStringLit(n RawStringLit),
+	BoolLit(n BoolLit),
+	NilLit(n NilLit),
+	UnderscoreExpr(n UnderscoreExpr),
+	SelfExpr(n SelfExpr),
+	TupleLit(n TupleLit),
+	ArrayLit(n ArrayLit),
+	MapLit(n MapLit),
+	StructLit(n StructLit),
+	FnLit(n FnLit),
+}
+
+enum Stmt {
+	BlockStmt(n BlockStmt),
+	ExprStmt(n ExprStmt),
+	ReturnStmt(n ReturnStmt),
+	ForStmt(n ForStmt),
+	BreakStmt(n BreakStmt),
+	ContinueStmt(n ContinueStmt),
+	DeferStmt(n DeferStmt),
+	BadStmt(n BadStmt),
+}
+
+enum Decl {
+	VarDecl(n VarDecl),
+	FnDecl(n FnDecl),
+	FieldDecl(n FieldDecl),
+	StructDecl(n StructDecl),
+	EnumDecl(n EnumDecl),
+	TraitDecl(n TraitDecl),
+	ImplDecl(n ImplDecl),
+	ImportDecl(n ImportDecl),
+}
+
+struct Node {}
+struct Pattern {}
+struct TypeNode {}
+enum ForKind { TkIn }
+enum StringPartKind { TkString }

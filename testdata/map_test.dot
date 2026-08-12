@@ -1,0 +1,26 @@
+import std.map
+
+fn main() {
+    println("starting")
+    m = HashMap.new()
+    println("created")
+    m.put("hello", "world")
+    println("put 1")
+    m.put("foo", "bar")
+    println("put 2")
+    
+    println(m.get("hello"))
+    println(m.get("foo"))
+    
+    if m.contains("hello") {
+        println("true")
+    } else {
+        println("false")
+    }
+    
+    if m.contains("missing") {
+        println("true")
+    } else {
+        println("false")
+    }
+}

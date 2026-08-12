@@ -1,0 +1,6 @@
+// snippet check
+enum JsonNode { Null }
+struct ParseResult {
+    val any
+}
+fn main() {}
