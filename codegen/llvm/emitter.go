@@ -21,6 +21,7 @@ type emitter struct {
 	varTypes     map[string]string
 	stringLits   map[string]string
 	implMethods  map[string]*ast.FnDecl
+	genericArgs  map[string]types.Type
 }
 
 func (e *emitter) nextTmp() string {
@@ -52,6 +53,7 @@ func Generate(info *types.Info, prog *ast.Program) (string, error) {
 	e.emit("declare void @dot_retain(ptr)")
 	e.emit("declare void @dot_release(ptr)")
 	e.emit("declare i32 @puts(ptr)")
+	e.emit("declare i32 @printf(ptr, ...)")
 	e.emit("")
 
 	for _, decl := range prog.Decls {
@@ -75,7 +77,14 @@ func Generate(info *types.Info, prog *ast.Program) (string, error) {
 		for _, inst := range e.info.InstanceList {
 			if inst.Generic != nil && inst.Generic.Kind == types.SymFunc {
 				if fn, ok := inst.Generic.Decl.(*ast.FnDecl); ok {
+					e.genericArgs = make(map[string]types.Type)
+					for i, tp := range fn.TypeParams {
+						if i < len(inst.TypeArgs) {
+							e.genericArgs[tp.Name] = inst.TypeArgs[i]
+						}
+					}
 					e.emitFn(fn, inst.Mangled)
+					e.genericArgs = nil
 				}
 			}
 		}
@@ -84,10 +93,10 @@ func Generate(info *types.Info, prog *ast.Program) (string, error) {
 	var globalsSb strings.Builder
 	globalsSb.WriteString("; ModuleID = 'main'\n")
 	globalsSb.WriteString(fmt.Sprintf("source_filename = \"%s\"\n\n", prog.File))
-	
+
 	for content, name := range e.stringLits {
 		length := len(content) + 1
-		globalsSb.WriteString(fmt.Sprintf("%s = private unnamed_addr constant [%d x i8] c\"%s\\00\"\n", name, length, content))
+		globalsSb.WriteString(fmt.Sprintf("%s = private unnamed_addr constant [%d x i8] c\"%s\\00\"\n", name, length, llvmEscape(content)))
 	}
 	globalsSb.WriteString("\n")
 
@@ -170,8 +179,13 @@ func (e *emitter) emitMatchExpr(me *ast.MatchExpr) string {
 
 	subjectPtr := e.emitExpr(me.Subject)
 
+	matchType := e.exprType(me)
+	if matchType == "void" {
+		matchType = "i64"
+	}
+
 	resPtr := "%" + e.nextLabel("match.res")
-	e.emit("  %s = alloca i32", resPtr)
+	e.emit("  %s = alloca %s", resPtr, matchType)
 
 	endBlock := e.nextLabel("match.end")
 	failBlock := e.nextLabel("match.default")
@@ -186,6 +200,7 @@ func (e *emitter) emitMatchExpr(me *ast.MatchExpr) string {
 	}
 
 	var tagVal string
+	tagType := "i32"
 	if enumName != "" {
 		tagPtr := e.nextTmp()
 		e.emit("  %s = getelementptr %%%s, ptr %s, i32 0, i32 0", tagPtr, enumName, subjectPtr)
@@ -193,6 +208,7 @@ func (e *emitter) emitMatchExpr(me *ast.MatchExpr) string {
 		e.emit("  %s = load i32, ptr %s", tagVal, tagPtr)
 	} else {
 		tagVal = subjectPtr
+		tagType = e.exprType(me.Subject)
 	}
 
 	for i, arm := range me.Arms {
@@ -225,16 +241,16 @@ func (e *emitter) emitMatchExpr(me *ast.MatchExpr) string {
 		} else if lp, ok := pat.(*ast.LiteralPattern); ok {
 			litVal := e.emitExpr(lp.Value)
 			cmpTmp := e.nextTmp()
-			e.emit("  %s = icmp eq i32 %s, %s", cmpTmp, tagVal, litVal)
+			e.emit("  %s = icmp eq %s %s, %s", cmpTmp, tagType, tagVal, litVal)
 			branchCond = cmpTmp
 		} else if _, ok := pat.(*ast.WildcardPattern); ok {
 			bodyVal := e.emitExpr(arm.Body)
-			e.emit("  store i32 %s, ptr %s", bodyVal, resPtr)
+			e.emit("  store %s %s, ptr %s", matchType, bodyVal, resPtr)
 			e.emit("  br label %%%s", endBlock)
 			continue
 		} else if ip, ok := pat.(*ast.IdentPattern); ok {
-			e.emit("  %%%s = alloca i32", ip.Name)
-			e.emit("  store i32 %s, ptr %%%s", tagVal, ip.Name)
+			e.emit("  %%%s = alloca %s", ip.Name, tagType)
+			e.emit("  store %s %s, ptr %%%s", tagType, tagVal, ip.Name)
 			if guardExpr != nil {
 				guardVal := e.emitExpr(guardExpr)
 				branchCond = guardVal
@@ -246,12 +262,12 @@ func (e *emitter) emitMatchExpr(me *ast.MatchExpr) string {
 				e.emit("\n%s:", nextLabels[i])
 			}
 			bodyVal := e.emitExpr(arm.Body)
-			e.emit("  store i32 %s, ptr %s", bodyVal, resPtr)
+			e.emit("  store %s %s, ptr %s", matchType, bodyVal, resPtr)
 			e.emit("  br label %%%s", endBlock)
 			continue
 		} else {
 			bodyVal := e.emitExpr(arm.Body)
-			e.emit("  store i32 %s, ptr %s", bodyVal, resPtr)
+			e.emit("  store %s %s, ptr %s", matchType, bodyVal, resPtr)
 			e.emit("  br label %%%s", endBlock)
 			continue
 		}
@@ -271,41 +287,79 @@ func (e *emitter) emitMatchExpr(me *ast.MatchExpr) string {
 
 		e.emit("\n%s:", nextLabels[i])
 		bodyVal := e.emitExpr(arm.Body)
-		e.emit("  store i32 %s, ptr %s", bodyVal, resPtr)
+		e.emit("  store %s %s, ptr %s", matchType, bodyVal, resPtr)
 		e.emit("  br label %%%s", endBlock)
 	}
 
 	e.emit("\n%s:", failBlock)
-	e.emit("  store i32 0, ptr %s", resPtr)
+	e.emit("  store %s %s, ptr %s", matchType, zeroConst(matchType), resPtr)
 	e.emit("  br label %%%s", endBlock)
 
 	e.emit("\n%s:", endBlock)
 	tmp := e.nextTmp()
-	e.emit("  %s = load i32, ptr %s", tmp, resPtr)
+	e.emit("  %s = load %s, ptr %s", tmp, matchType, resPtr)
 	return tmp
 }
 
 func (e *emitter) emitFn(fn *ast.FnDecl, name string) {
+	// Variable state is per-function: reset it so names don't leak
+	// between functions.
+	e.varTypes = make(map[string]string)
+	e.ptrVars = make(map[string]bool)
+
+	retType := "void"
+	if fn.Sig != nil && fn.Sig.Result != nil {
+		if nt, ok := fn.Sig.Result.(*ast.NamedType); ok && e.isTypeParam(fn, nt.Name) {
+			retType = e.instantiatedType(nt.Name)
+		} else {
+			retType = e.resolveType(fn.Sig.Result)
+		}
+	}
+	// Keep main() as i32 so the CRT gets a proper exit code.
+	if name == "main" && retType == "void" {
+		retType = "i32"
+	}
+
 	var params []string
 	if fn.Sig != nil {
 		for _, p := range fn.Sig.Params {
-			params = append(params, fmt.Sprintf("i32 %%%s.arg", p.Name))
+			pt := "i64"
+			if p.Type != nil {
+				if nt, ok := p.Type.(*ast.NamedType); ok && e.isTypeParam(fn, nt.Name) {
+					pt = e.instantiatedType(nt.Name)
+				} else {
+					pt = e.resolveType(p.Type)
+				}
+			}
+			e.varTypes[p.Name] = pt
+			params = append(params, fmt.Sprintf("%s %%%s.arg", pt, p.Name))
 		}
 	}
-	e.emit("define i32 @%s(%s) {", name, strings.Join(params, ", "))
+	e.emit("define %s @%s(%s) {", retType, name, strings.Join(params, ", "))
 	e.emit("entry:")
 	if fn.Sig != nil {
 		for _, p := range fn.Sig.Params {
-			e.emit("  %%%s = alloca i32", p.Name)
-			e.emit("  store i32 %%%s.arg, ptr %%%s", p.Name, p.Name)
+			pt := e.varTypes[p.Name]
+			e.emit("  %%%s = alloca %s", p.Name, pt)
+			e.emit("  store %s %%%s.arg, ptr %%%s", pt, p.Name, p.Name)
 		}
+	}
+	if fn.ExprBody != nil {
+		val := e.emitExpr(fn.ExprBody)
+		e.emit("  ret %s %s", retType, val)
+		e.emit("}")
+		return
 	}
 	if fn.Body != nil {
 		for _, stmt := range fn.Body.Stmts {
 			e.emitStmt(stmt)
 		}
 	}
-	e.emit("  ret i32 0")
+	if retType == "void" {
+		e.emit("  ret void")
+	} else {
+		e.emit("  ret %s %s", retType, zeroConst(retType))
+	}
 	e.emit("}")
 }
 
@@ -315,6 +369,8 @@ func (e *emitter) isPtrValue(expr ast.Expr) bool {
 		return ex.Op == lexer.TokenAmp
 	case *ast.Ident:
 		return e.ptrVars[ex.Name]
+	case *ast.ArrayLit, *ast.StructLit, *ast.StringLit:
+		return true
 	default:
 		return false
 	}
@@ -324,6 +380,14 @@ func (e *emitter) emitStmt(stmt ast.Stmt) {
 	switch s := stmt.(type) {
 	case *ast.ExprStmt:
 		e.emitExpr(s.X)
+	case *ast.ReturnStmt:
+		if len(s.Values) > 0 {
+			val := e.emitExpr(s.Values[0])
+			t := e.exprType(s.Values[0])
+			e.emit("  ret %s %s", t, val)
+		} else {
+			e.emit("  ret void")
+		}
 	case *ast.VarDecl:
 		for i, nameExpr := range s.Names {
 			if ident, ok := nameExpr.(*ast.Ident); ok {
@@ -335,7 +399,7 @@ func (e *emitter) emitStmt(stmt ast.Stmt) {
 					isPtr = e.isPtrValue(expr)
 					val = e.emitExpr(expr)
 				}
-				
+
 				var declType types.Type
 				if e.info != nil {
 					declType = e.info.Types[ident]
@@ -367,13 +431,18 @@ func (e *emitter) emitStmt(stmt ast.Stmt) {
 						e.ptrVars[ident.Name] = true
 						e.emit("  %%%s = alloca ptr", ident.Name)
 					}
+					if shape := e.shapeType(expr); shape != "" {
+						e.varTypes[ident.Name] = shape
+					}
 					e.emit("  store ptr %s, ptr %%%s", val, ident.Name)
 				} else {
-					llvmType := "i32"
+					llvmType := "i64"
 					if s.Type != nil {
 						llvmType = e.resolveType(s.Type)
 					} else if vt, ok := e.varTypes[ident.Name]; ok {
 						llvmType = vt
+					} else {
+						llvmType = e.exprType(expr)
 					}
 					if !isReassign {
 						e.varTypes[ident.Name] = llvmType
@@ -397,39 +466,103 @@ func (e *emitter) emitExpr(expr ast.Expr) string {
 	switch ex := expr.(type) {
 	case *ast.IntLit:
 		return fmt.Sprintf("%d", ex.Value)
+	case *ast.FloatLit:
+		return floatConst(ex.Value)
+	case *ast.BoolLit:
+		if ex.Value {
+			return "true"
+		}
+		return "false"
 	case *ast.Ident:
 		tmp := e.nextTmp()
 		if e.ptrVars[ex.Name] {
 			e.emit("  %s = load ptr, ptr %%%s", tmp, ex.Name)
 		} else {
-			e.emit("  %s = load i32, ptr %%%s", tmp, ex.Name)
+			t := "i64"
+			if vt, ok := e.varTypes[ex.Name]; ok {
+				t = vt
+			} else {
+				t = e.exprType(ex)
+			}
+			e.emit("  %s = load %s, ptr %%%s", tmp, t, ex.Name)
 		}
 		return tmp
 	case *ast.BinaryExpr:
 		left := e.emitExpr(ex.X)
 		right := e.emitExpr(ex.Y)
+		t := e.exprType(ex.X)
 		tmp := e.nextTmp()
 		switch ex.Op {
 		case lexer.TokenPlus:
-			e.emit("  %s = add i32 %s, %s", tmp, left, right)
+			if isFloatType(t) {
+				e.emit("  %s = fadd %s %s, %s", tmp, t, left, right)
+			} else {
+				e.emit("  %s = add %s %s, %s", tmp, t, left, right)
+			}
 		case lexer.TokenMinus:
-			e.emit("  %s = sub i32 %s, %s", tmp, left, right)
+			if isFloatType(t) {
+				e.emit("  %s = fsub %s %s, %s", tmp, t, left, right)
+			} else {
+				e.emit("  %s = sub %s %s, %s", tmp, t, left, right)
+			}
 		case lexer.TokenStar:
-			e.emit("  %s = mul i32 %s, %s", tmp, left, right)
+			if isFloatType(t) {
+				e.emit("  %s = fmul %s %s, %s", tmp, t, left, right)
+			} else {
+				e.emit("  %s = mul %s %s, %s", tmp, t, left, right)
+			}
 		case lexer.TokenSlash:
-			e.emit("  %s = sdiv i32 %s, %s", tmp, left, right)
+			if isFloatType(t) {
+				e.emit("  %s = fdiv %s %s, %s", tmp, t, left, right)
+			} else {
+				e.emit("  %s = sdiv %s %s, %s", tmp, t, left, right)
+			}
+		case lexer.TokenPercent:
+			if isFloatType(t) {
+				e.emit("  %s = frem %s %s, %s", tmp, t, left, right)
+			} else {
+				e.emit("  %s = srem %s %s, %s", tmp, t, left, right)
+			}
 		case lexer.TokenEqEq:
-			e.emit("  %s = icmp eq i32 %s, %s", tmp, left, right)
+			if isFloatType(t) {
+				e.emit("  %s = fcmp oeq %s %s, %s", tmp, t, left, right)
+			} else {
+				e.emit("  %s = icmp eq %s %s, %s", tmp, t, left, right)
+			}
 		case lexer.TokenBangEq:
-			e.emit("  %s = icmp ne i32 %s, %s", tmp, left, right)
+			if isFloatType(t) {
+				e.emit("  %s = fcmp one %s %s, %s", tmp, t, left, right)
+			} else {
+				e.emit("  %s = icmp ne %s %s, %s", tmp, t, left, right)
+			}
 		case lexer.TokenLt:
-			e.emit("  %s = icmp slt i32 %s, %s", tmp, left, right)
+			if isFloatType(t) {
+				e.emit("  %s = fcmp olt %s %s, %s", tmp, t, left, right)
+			} else {
+				e.emit("  %s = icmp slt %s %s, %s", tmp, t, left, right)
+			}
 		case lexer.TokenLtEq:
-			e.emit("  %s = icmp sle i32 %s, %s", tmp, left, right)
+			if isFloatType(t) {
+				e.emit("  %s = fcmp ole %s %s, %s", tmp, t, left, right)
+			} else {
+				e.emit("  %s = icmp sle %s %s, %s", tmp, t, left, right)
+			}
 		case lexer.TokenGt:
-			e.emit("  %s = icmp sgt i32 %s, %s", tmp, left, right)
+			if isFloatType(t) {
+				e.emit("  %s = fcmp ogt %s %s, %s", tmp, t, left, right)
+			} else {
+				e.emit("  %s = icmp sgt %s %s, %s", tmp, t, left, right)
+			}
 		case lexer.TokenGtEq:
-			e.emit("  %s = icmp sge i32 %s, %s", tmp, left, right)
+			if isFloatType(t) {
+				e.emit("  %s = fcmp oge %s %s, %s", tmp, t, left, right)
+			} else {
+				e.emit("  %s = icmp sge %s %s, %s", tmp, t, left, right)
+			}
+		case lexer.TokenAnd:
+			e.emit("  %s = and i1 %s, %s", tmp, left, right)
+		case lexer.TokenOr:
+			e.emit("  %s = or i1 %s, %s", tmp, left, right)
 		}
 		return tmp
 	case *ast.IfExpr:
@@ -439,37 +572,33 @@ func (e *emitter) emitExpr(expr ast.Expr) string {
 		if ident, ok := ex.Fn.(*ast.Ident); ok {
 			fnName = ident.Name
 		}
-		
+
 		if e.info != nil && e.info.Instances != nil {
 			if inst, ok := e.info.Instances[ex]; ok {
 				fnName = inst.Mangled
 			}
 		}
 		var args []string
-		
-		if fnName == "print" {
-			fnName = "puts"
-			// String is returned as a ptr to {ptr, i32}. We need to load the first element (ptr).
-			strStructPtr := e.emitExpr(ex.Args[0].Value)
-			charPtr := e.nextTmp()
-			e.emit("  %s = load ptr, ptr %s", charPtr, strStructPtr)
-			args = append(args, fmt.Sprintf("ptr %s", charPtr))
-		} else {
-			for _, arg := range ex.Args {
-				args = append(args, fmt.Sprintf("i32 %s", e.emitExpr(arg.Value)))
-			}
+
+		if fnName == "print" && len(ex.Args) > 0 {
+			return e.emitPrint(ex)
 		}
 
+		for _, arg := range ex.Args {
+			args = append(args, fmt.Sprintf("%s %s", e.exprType(arg.Value), e.emitExpr(arg.Value)))
+		}
+
+		resType := e.exprType(ex)
 		tmp := e.nextTmp()
-		e.emit("  %s = call i32 @%s(%s)", tmp, fnName, strings.Join(args, ", "))
+		e.emit("  %s = call %s @%s(%s)", tmp, resType, fnName, strings.Join(args, ", "))
 		return tmp
 	case *ast.FieldExpr:
 		structPtr := e.emitExpr(ex.X)
-		// We need the struct name to do getelementptr. 
+		// We need the struct name to do getelementptr.
 		// Since we lack type info in this stub, we'll try to guess based on the field name.
 		structName := "Unknown"
 		idx := 0
-		
+
 		for sName, fMap := range e.structFields {
 			if i, ok := fMap[ex.Name]; ok {
 				structName = sName
@@ -490,7 +619,7 @@ func (e *emitter) emitExpr(expr ast.Expr) string {
 			structName = named.Name
 		}
 		e.emit("  %s = alloca %%%s", tmp, structName)
-		
+
 		fieldMap := e.structFields[structName]
 		for _, field := range ex.Fields {
 			val := e.emitExpr(field.Value)
@@ -513,6 +642,21 @@ func (e *emitter) emitExpr(expr ast.Expr) string {
 			return e.emitAddrOf(ex.X)
 		case lexer.TokenStar:
 			return e.emitDeref(ex.X)
+		case lexer.TokenMinus:
+			inner := e.emitExpr(ex.X)
+			t := e.exprType(ex.X)
+			tmp := e.nextTmp()
+			if isFloatType(t) {
+				e.emit("  %s = fneg %s %s", tmp, t, inner)
+			} else {
+				e.emit("  %s = sub %s 0, %s", tmp, t, inner)
+			}
+			return tmp
+		case lexer.TokenNot:
+			inner := e.emitExpr(ex.X)
+			tmp := e.nextTmp()
+			e.emit("  %s = xor i1 %s, true", tmp, inner)
+			return tmp
 		default:
 			return e.emitExpr(ex.X)
 		}
@@ -550,22 +694,23 @@ func (e *emitter) emitAddrOf(expr ast.Expr) string {
 }
 
 func (e *emitter) emitDeref(expr ast.Expr) string {
+	t := e.exprType(expr)
 	switch ex := expr.(type) {
 	case *ast.Ident:
 		if e.ptrVars[ex.Name] {
 			ptrVal := e.nextTmp()
 			e.emit("  %s = load ptr, ptr %%%s", ptrVal, ex.Name)
 			tmp := e.nextTmp()
-			e.emit("  %s = load i32, ptr %s", tmp, ptrVal)
+			e.emit("  %s = load %s, ptr %s", tmp, t, ptrVal)
 			return tmp
 		}
 		tmp := e.nextTmp()
-		e.emit("  %s = load i32, ptr %%%s", tmp, ex.Name)
+		e.emit("  %s = load %s, ptr %%%s", tmp, t, ex.Name)
 		return tmp
 	default:
 		ptr := e.emitExpr(expr)
 		tmp := e.nextTmp()
-		e.emit("  %s = load i32, ptr %s", tmp, ptr)
+		e.emit("  %s = load %s, ptr %s", tmp, t, ptr)
 		return tmp
 	}
 }
@@ -636,29 +781,29 @@ func (e *emitter) emitStringLit(sl *ast.StringLit) string {
 	if len(sl.Parts) > 0 && sl.Parts[0].Kind == ast.PartText {
 		text = sl.Parts[0].Text
 	}
-	
+
 	name, ok := e.stringLits[text]
 	if !ok {
 		name = fmt.Sprintf("@.str.%d", len(e.stringLits))
 		e.stringLits[text] = name
 	}
-	
+
 	length := len(text) + 1
-	
+
 	tmp := e.nextTmp()
 	e.emit("  %s = alloca { ptr, i32 }", tmp)
-	
+
 	strPtr := e.nextTmp()
 	e.emit("  %s = getelementptr [%d x i8], ptr %s, i32 0, i32 0", strPtr, length, name)
-	
+
 	ptrField := e.nextTmp()
 	e.emit("  %s = getelementptr { ptr, i32 }, ptr %s, i32 0, i32 0", ptrField, tmp)
 	e.emit("  store ptr %s, ptr %s", strPtr, ptrField)
-	
+
 	lenField := e.nextTmp()
 	e.emit("  %s = getelementptr { ptr, i32 }, ptr %s, i32 0, i32 1", lenField, tmp)
 	e.emit("  store i32 %d, ptr %s", len(text), lenField)
-	
+
 	return tmp
 }
 
@@ -669,23 +814,15 @@ func (e *emitter) emitIndexExpr(ie *ast.IndexExpr) string {
 	if ident, ok := ie.X.(*ast.Ident); ok {
 		baseName = ident.Name
 	}
-	elemType := "i32"
+	elemType := "i64"
 	if vt, ok := e.varTypes[baseName]; ok {
-		if len(vt) > 4 && vt[0] == '[' {
-			closeBracket := 0
-			for i := 1; i < len(vt); i++ {
-				if vt[i] == ']' {
-					closeBracket = i
-					break
-				}
-			}
-			if closeBracket > 0 {
-				elemType = vt[closeBracket+2:]
-			}
+		if i := strings.Index(vt, "]"); i >= 0 && i+1 < len(vt) {
+			elemType = strings.TrimSpace(vt[i+1:])
 		}
 	}
 	tmp := e.nextTmp()
-	e.emit("  %s = getelementptr %s, ptr %s, i32 %s", tmp, elemType, base, idx)
+	idxT := e.exprType(ie.Indices[0])
+	e.emit("  %s = getelementptr %s, ptr %s, %s %s", tmp, elemType, base, idxT, idx)
 	val := e.nextTmp()
 	e.emit("  %s = load %s, ptr %s", val, elemType, tmp)
 	return val
@@ -695,10 +832,18 @@ func (e *emitter) resolveType(t ast.Type) string {
 	switch ty := t.(type) {
 	case *ast.NamedType:
 		switch ty.Name {
-		case "int":
+		case "int", "uint", "uint64":
+			return "i64"
+		case "int8", "uint8", "byte":
+			return "i8"
+		case "int16", "uint16":
+			return "i16"
+		case "int32", "uint32":
 			return "i32"
-		case "float":
+		case "float", "float64":
 			return "double"
+		case "float32":
+			return "float"
 		case "bool":
 			return "i1"
 		case "void":
@@ -719,8 +864,8 @@ func (e *emitter) resolveType(t ast.Type) string {
 			inner := e.resolveType(ty.Elem)
 			return fmt.Sprintf("[%d x %s]", il.Value, inner)
 		}
-		return "i32*"
+		return "i64*"
 	default:
-		return "i32"
+		return "i64"
 	}
 }

@@ -1,0 +1,71 @@
+fn add(a int, b int) -> int {
+	return a + b
+}
+
+fn sub(a int, b int) -> int {
+	return a - b
+}
+
+fn mul(a int, b int) -> int {
+	return a * b
+}
+
+fn divi(a int, b int) -> int {
+	return a / b
+}
+
+fn modi(a int, b int) -> int {
+	return a % b
+}
+
+fn divd(a float, b float) -> float {
+	return a / b
+}
+
+fn ispos(x float) -> bool {
+	return x > 0.0
+}
+
+fn both(a bool, b bool) -> bool {
+	return a and b
+}
+
+fn maxd(a float, b float) -> float {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+fn classify(x float) -> float {
+	res = 0.0
+	if x > 0.0 {
+		res = x * 2.0
+	} else {
+		res = x + 100.0
+	}
+	return res
+}
+
+fn fact(n int) -> int {
+	res = 1
+	for i in 1..=n {
+		res = res * i
+	}
+	return res
+}
+
+fn main() {
+	print(add(2, 3))
+	print(sub(10, 4))
+	print(mul(6, 7))
+	print(divi(20, 3))
+	print(modi(20, 3))
+	print(divd(7.0, 2.0))
+	print(ispos(-1.5))
+	print(ispos(2.5))
+	print(both(true, false))
+	print(maxd(3.5, 7.25))
+	print(classify(-5.0))
+	print(fact(5))
+}

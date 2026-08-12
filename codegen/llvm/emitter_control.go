@@ -11,10 +11,14 @@ func (e *emitter) emitIfExpr(ex *ast.IfExpr) string {
 	endBlock := e.nextLabel("if.end")
 
 	hasElse := ex.Else != nil || ex.ElseIf != nil
+	resType := e.exprType(ex)
+	if resType == "void" {
+		resType = "i64"
+	}
 	var resPtr string
 	if hasElse {
 		resPtr = "%" + e.nextLabel("if.res")
-		e.emit("  %s = alloca i32", resPtr)
+		e.emit("  %s = alloca %s", resPtr, resType)
 	}
 
 	if hasElse {
@@ -38,7 +42,7 @@ func (e *emitter) emitIfExpr(ex *ast.IfExpr) string {
 		thenVal = lastVal
 	}
 	if hasElse && thenVal != "" {
-		e.emit("  store i32 %s, ptr %s", thenVal, resPtr)
+		e.emit("  store %s %s, ptr %s", resType, thenVal, resPtr)
 	}
 	e.emit("  br label %%%s", endBlock)
 
@@ -60,7 +64,7 @@ func (e *emitter) emitIfExpr(ex *ast.IfExpr) string {
 			elseVal = e.emitExpr(ex.ElseIf)
 		}
 		if elseVal != "" {
-			e.emit("  store i32 %s, ptr %s", elseVal, resPtr)
+			e.emit("  store %s %s, ptr %s", resType, elseVal, resPtr)
 		}
 		e.emit("  br label %%%s", endBlock)
 	}
@@ -68,7 +72,7 @@ func (e *emitter) emitIfExpr(ex *ast.IfExpr) string {
 	e.emit("\n%s:", endBlock)
 	if hasElse {
 		tmp := e.nextTmp()
-		e.emit("  %s = load i32, ptr %s", tmp, resPtr)
+		e.emit("  %s = load %s, ptr %s", tmp, resType, resPtr)
 		return tmp
 	}
 	return "0"
@@ -132,13 +136,21 @@ func (e *emitter) emitForIn(s *ast.ForStmt) {
 		loopVar = e.nextLabel("for.it")
 	}
 
-	e.emit("  %%%s = alloca i32", loopVar)
+	loopType := "i64"
+	if rangeExpr.Low != nil {
+		loopType = e.exprType(rangeExpr.Low)
+	} else if rangeExpr.High != nil {
+		loopType = e.exprType(rangeExpr.High)
+	}
+	e.varTypes[loopVar] = loopType
+
+	e.emit("  %%%s = alloca %s", loopVar, loopType)
 
 	loVal := "0"
 	if rangeExpr.Low != nil {
 		loVal = e.emitExpr(rangeExpr.Low)
 	}
-	e.emit("  store i32 %s, ptr %%%s", loVal, loopVar)
+	e.emit("  store %s %s, ptr %%%s", loopType, loVal, loopVar)
 
 	condBlock := e.nextLabel("for.cond")
 	bodyBlock := e.nextLabel("for.body")
@@ -149,7 +161,7 @@ func (e *emitter) emitForIn(s *ast.ForStmt) {
 
 	e.emit("\n%s:", condBlock)
 	curVal := e.nextTmp()
-	e.emit("  %s = load i32, ptr %%%s", curVal, loopVar)
+	e.emit("  %s = load %s, ptr %%%s", curVal, loopType, loopVar)
 
 	hiVal := "0"
 	if rangeExpr.High != nil {
@@ -161,7 +173,7 @@ func (e *emitter) emitForIn(s *ast.ForStmt) {
 		cmpOp = "sle"
 	}
 	condVal := e.nextTmp()
-	e.emit("  %s = icmp %s i32 %s, %s", condVal, cmpOp, curVal, hiVal)
+	e.emit("  %s = icmp %s %s %s, %s", condVal, cmpOp, loopType, curVal, hiVal)
 	e.emit("  br i1 %s, label %%%s, label %%%s", condVal, bodyBlock, endBlock)
 
 	e.emit("\n%s:", bodyBlock)
@@ -174,10 +186,10 @@ func (e *emitter) emitForIn(s *ast.ForStmt) {
 
 	e.emit("\n%s:", stepBlock)
 	stepVal := e.nextTmp()
-	e.emit("  %s = load i32, ptr %%%s", stepVal, loopVar)
+	e.emit("  %s = load %s, ptr %%%s", stepVal, loopType, loopVar)
 	nextVal := e.nextTmp()
-	e.emit("  %s = add i32 %s, 1", nextVal, stepVal)
-	e.emit("  store i32 %s, ptr %%%s", nextVal, loopVar)
+	e.emit("  %s = add %s %s, 1", nextVal, loopType, stepVal)
+	e.emit("  store %s %s, ptr %%%s", loopType, nextVal, loopVar)
 	e.emit("  br label %%%s", condBlock)
 
 	e.emit("\n%s:", endBlock)

@@ -34,7 +34,7 @@ fn main() {
 }
 `
 	c := generateLLVM(t, source)
-	if !strings.Contains(c, "add i32") {
+	if !strings.Contains(c, "add i64") {
 		t.Errorf("Missing add in block expression inside match")
 	}
 }
@@ -99,7 +99,7 @@ fn main() {
 }
 `
 	c := generateLLVM(t, source)
-	if !strings.Contains(c, "sle i32") { // sle means signed less than or equal
+	if !strings.Contains(c, "sle i64") { // sle means signed less than or equal
 		t.Errorf("Missing inclusive comparison (sle) in for-in loop:\n%s", c)
 	}
 }

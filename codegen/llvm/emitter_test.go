@@ -15,7 +15,7 @@ func generateLLVM(t *testing.T, source string) string {
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
-	
+
 	c, err := Generate(nil, prog)
 	if err != nil {
 		t.Fatalf("llvm generation error: %v", err)
@@ -29,12 +29,12 @@ func generateLLVMWithTypes(t *testing.T, source string) string {
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
-	
+
 	info, err := types.Check(prog, "test.dot")
 	if err != nil {
 		t.Fatalf("type check error: %v", err)
 	}
-	
+
 	c, err := Generate(info, prog)
 	if err != nil {
 		t.Fatalf("llvm generation error: %v", err)
@@ -215,7 +215,7 @@ fn main() {
 `
 	c := generateLLVM(t, source)
 
-	if !strings.Contains(c, "%x = alloca i32") {
+	if !strings.Contains(c, "%x = alloca i64") {
 		t.Errorf("Missing alloca for x, got: %s", c)
 	}
 	if !strings.Contains(c, "%p = alloca ptr") {
@@ -245,7 +245,7 @@ fn main() {
 	if !strings.Contains(c, "load ptr, ptr %p") {
 		t.Errorf("Missing load ptr from p, got: %s", c)
 	}
-	if !strings.Contains(c, "load i32, ptr %") {
+	if !strings.Contains(c, "load i64, ptr %") {
 		t.Errorf("Missing load i32 through pointer for *p, got: %s", c)
 	}
 }
@@ -306,7 +306,7 @@ fn main() {
 	if !strings.Contains(c, "load ptr, ptr %q") {
 		t.Errorf("Missing load ptr from q, got: %s", c)
 	}
-	if !strings.Contains(c, "load i32, ptr %") {
+	if !strings.Contains(c, "load i64, ptr %") {
 		t.Errorf("Missing load i32 through pointer for *q, got: %s", c)
 	}
 }
@@ -319,13 +319,13 @@ fn main() {
 `
 	c := generateLLVM(t, source)
 
-	if !strings.Contains(c, "[5 x i32]") {
-		t.Errorf("Missing [5 x i32] array type, got: %s", c)
+	if !strings.Contains(c, "[5 x i64]") {
+		t.Errorf("Missing [5 x i64] array type, got: %s", c)
 	}
-	if !strings.Contains(c, "alloca [5 x i32]") {
+	if !strings.Contains(c, "alloca [5 x i64]") {
 		t.Errorf("Missing alloca for array, got: %s", c)
 	}
-	if !strings.Contains(c, "getelementptr [5 x i32]") {
+	if !strings.Contains(c, "getelementptr [5 x i64]") {
 		t.Errorf("Missing getelementptr for array element, got: %s", c)
 	}
 }
@@ -361,10 +361,10 @@ fn main() {
 `
 	c := generateLLVM(t, source)
 
-	if !strings.Contains(c, "getelementptr i32, ptr") {
+	if !strings.Contains(c, "getelementptr i64, ptr") {
 		t.Errorf("Missing getelementptr for array indexing, got: %s", c)
 	}
-	if !strings.Contains(c, "load i32, ptr") {
+	if !strings.Contains(c, "load i64, ptr") {
 		t.Errorf("Missing load for indexed element, got: %s", c)
 	}
 }
@@ -447,13 +447,13 @@ fn main() {
 		t.Fatalf("llvm generation error: %v", err)
 	}
 
-	if !strings.Contains(c, "define i32 @id__int(i32") {
+	if !strings.Contains(c, "define i64 @id__int(i64") {
 		t.Errorf("Missing instantiated generic function, got: %s", c)
 	}
-	if !strings.Contains(c, "call i32 @id__int(i32") {
+	if !strings.Contains(c, "call i64 @id__int(i64") {
 		t.Errorf("Missing call to instantiated generic function, got: %s", c)
 	}
-	if strings.Contains(c, "define i32 @id(i32") {
+	if strings.Contains(c, "define i64 @id(i64") {
 		t.Errorf("Should not emit uninstantiated generic function, got: %s", c)
 	}
 }
@@ -481,11 +481,11 @@ fn main() {
 	if !strings.Contains(c, "for.end") {
 		t.Errorf("Missing for.end block, got: %s", c)
 	}
-	if !strings.Contains(c, "icmp slt i32") {
+	if !strings.Contains(c, "icmp slt i64") {
 		t.Errorf("Missing icmp slt comparison for range loop, got: %s", c)
 	}
-	if !strings.Contains(c, "add i32") {
-		t.Errorf("Missing increment (add i32) for loop variable, got: %s", c)
+	if !strings.Contains(c, "add i64") {
+		t.Errorf("Missing increment (add i64) for loop variable, got: %s", c)
 	}
 }
 
@@ -509,11 +509,10 @@ fn main() {
 	if !strings.Contains(c, "for.end") {
 		t.Errorf("Missing for.end block, got: %s", c)
 	}
-	if !strings.Contains(c, "icmp sgt i32") {
+	if !strings.Contains(c, "icmp sgt i64") {
 		t.Errorf("Missing icmp sgt comparison for while loop, got: %s", c)
 	}
 	if !strings.Contains(c, "br i1") {
 		t.Errorf("Missing conditional branch, got: %s", c)
 	}
 }
-
