@@ -1,0 +1,71 @@
+// testdata/codegen_expr.dot - smoke test for expression codegen helpers
+import std.codegen
+
+fn main() {
+    print(literal_to_c("42", "int"))
+    print(literal_to_c("3.14", "float"))
+    print(literal_to_c("2.5", "float32"))
+    print(literal_to_c("true", "bool"))
+    print(literal_to_c("false", "bool"))
+    print(literal_to_c("hello", "string"))
+    print(literal_to_c("say \"hi\"", "string"))
+    print(literal_to_c("tab\tnl\n", "string"))
+
+    print(binop_to_c("+", "a", "b"))
+    print(binop_to_c("-", "a", "b"))
+    print(binop_to_c("*", "a", "b"))
+    print(binop_to_c("/", "a", "b"))
+    print(binop_to_c("%", "a", "b"))
+    print(binop_to_c("**", "a", "b"))
+    print(binop_to_c("==", "a", "b"))
+    print(binop_to_c("!=", "a", "b"))
+    print(binop_to_c("<", "a", "b"))
+    print(binop_to_c(">=", "a", "b"))
+    print(binop_to_c("and", "x", "y"))
+    print(binop_to_c("or", "x", "y"))
+    print(binop_to_c("&", "a", "b"))
+    print(binop_to_c("|", "a", "b"))
+    print(binop_to_c("^", "a", "b"))
+    print(binop_to_c("<<", "a", "b"))
+    print(binop_to_c(">>", "a", "b"))
+    print(binop_typed_to_c("+", "s1", "s2", "string", "string"))
+    print(binop_typed_to_c("==", "s1", "s2", "string", "string"))
+    print(binop_typed_to_c("!=", "s1", "s2", "string", "string"))
+    print(binop_typed_to_c("**", "x", "y", "float", "float"))
+
+    print(ifexpr_to_c("c", "t", "e"))
+    print(ifexpr_to_c("a > b", "x", "y + 1"))
+
+    print(int_to_str(0))
+    print(int_to_str(7))
+    print(int_to_str(42))
+    print(int_to_str(1000))
+    print(int_to_str(-123))
+
+    print(binop_prec("*"))
+    print(binop_prec("+"))
+    print(binop_prec("=="))
+    print(binop_prec("and"))
+    print(binop_prec("or"))
+    print(binop_prec("??"))
+
+    print(fndecl_to_c("add", "int", []string{"a:int", "b:int"}))
+    print(fndecl_to_c("greet", "void", []string{}))
+    print(fndecl_to_c("dup", "string", []string{"s:string"}))
+
+    e = bfinish(new_builder())
+    print(retstmt_to_c("a + b"))
+    print(retstmt_to_c(e))
+
+    print(vardecl_to_c("x", "int", "42"))
+    print(vardecl_to_c("s", "string", e))
+
+    print(assign_to_c("x", "x + 1"))
+
+    print(for_to_c("i = 0", "i < 10", "i += 1", "print(i);"))
+    print(for_to_c(e, "x > 0", e, "x -= 1;"))
+
+    print(match_to_c("x", "int", []string{"0", "1", "_"}, []string{"print(\"zero\");", "print(\"one\");", "print(\"other\");"}))
+    print(match_to_c("s", "string", []string{"abc", "_"}, []string{"print(\"abc\");", "print(\"no\");"}))
+    print(match_to_c("b", "bool", []string{"true", "false"}, []string{"print(\"t\");", "print(\"f\");"}))
+}

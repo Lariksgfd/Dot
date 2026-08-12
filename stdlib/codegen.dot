@@ -54,3 +54,319 @@ fn type_to_c(t string) -> string {
     if str_eq(t, "never") { return "void" }
     return "void*"
 }
+
+fn int_to_str(n int) -> string {
+    if n == 0 {
+        return "0"
+    }
+    neg = false
+    if n < 0 {
+        neg = true
+        n = -n
+    }
+    b = new_builder()
+    if neg {
+        bwrite(b, "-")
+    }
+    int_digits(b, n)
+    return bfinish(b)
+}
+
+fn int_digits(b CBuilder, n int) {
+    if n >= 10 {
+        int_digits(b, n / 10)
+    }
+    b.buf.push(((n % 10 + 48) as uint8))
+}
+
+fn c_escape_into(b CBuilder, s string) {
+    i = 0
+    for i < s.len {
+        c = s[i]
+        if c == 34 {
+            bwrite(b, "\\\"")
+        } else if c == 92 {
+            bwrite(b, "\\\\")
+        } else if c == 10 {
+            bwrite(b, "\\n")
+        } else if c == 13 {
+            bwrite(b, "\\r")
+        } else if c == 9 {
+            bwrite(b, "\\t")
+        } else if c == 0 {
+            bwrite(b, "\\0")
+        } else {
+            b.buf.push(c as uint8)
+        }
+        i += 1
+    }
+}
+
+fn literal_to_c(lit string, ty string) -> string {
+    if str_eq(ty, "bool") {
+        if str_eq(lit, "true") {
+            return "true"
+        }
+        return "false"
+    }
+    if str_eq(ty, "string") {
+        b = new_builder()
+        c_escape_into(b, lit)
+        return "dot_string_from_lit(\"" + bfinish(b) + "\", " + int_to_str(lit.len) + ")"
+    }
+    if str_eq(ty, "float32") {
+        if lit.len > 0 {
+            if lit[lit.len - 1] != 102 {
+                return lit + "f"
+            }
+        }
+    }
+    return lit
+}
+
+fn binop_to_c(op string, lhs string, rhs string) -> string {
+    return binop_typed_to_c(op, lhs, rhs, "", "")
+}
+
+fn binop_typed_to_c(op string, lhs string, rhs string, lty string, rty string) -> string {
+    is_str = str_eq(lty, "string") or str_eq(rty, "string")
+    if str_eq(op, "+") {
+        if is_str {
+            return "dot_string_concat(" + lhs + ", " + rhs + ")"
+        }
+        return "(" + lhs + " + " + rhs + ")"
+    }
+    if str_eq(op, "-") {
+        return "(" + lhs + " - " + rhs + ")"
+    }
+    if str_eq(op, "*") {
+        return "(" + lhs + " * " + rhs + ")"
+    }
+    if str_eq(op, "/") {
+        return "(" + lhs + " / " + rhs + ")"
+    }
+    if str_eq(op, "%") {
+        return "(" + lhs + " % " + rhs + ")"
+    }
+    if str_eq(op, "**") {
+        if str_eq(lty, "float") or str_eq(lty, "float32") {
+            return "dot_pow_float(" + lhs + ", " + rhs + ")"
+        }
+        return "dot_pow_int(" + lhs + ", " + rhs + ")"
+    }
+    if str_eq(op, "==") {
+        if is_str {
+            return "dot_string_eq(" + lhs + ", " + rhs + ")"
+        }
+        return "(" + lhs + " == " + rhs + ")"
+    }
+    if str_eq(op, "!=") {
+        if is_str {
+            return "!dot_string_eq(" + lhs + ", " + rhs + ")"
+        }
+        return "(" + lhs + " != " + rhs + ")"
+    }
+    if str_eq(op, "<") {
+        return "(" + lhs + " < " + rhs + ")"
+    }
+    if str_eq(op, ">") {
+        return "(" + lhs + " > " + rhs + ")"
+    }
+    if str_eq(op, "<=") {
+        return "(" + lhs + " <= " + rhs + ")"
+    }
+    if str_eq(op, ">=") {
+        return "(" + lhs + " >= " + rhs + ")"
+    }
+    if str_eq(op, "and") {
+        return "(" + lhs + " && " + rhs + ")"
+    }
+    if str_eq(op, "or") {
+        return "(" + lhs + " || " + rhs + ")"
+    }
+    if str_eq(op, "&") {
+        return "(" + lhs + " & " + rhs + ")"
+    }
+    if str_eq(op, "|") {
+        return "(" + lhs + " | " + rhs + ")"
+    }
+    if str_eq(op, "^") {
+        return "(" + lhs + " ^ " + rhs + ")"
+    }
+    if str_eq(op, "<<") {
+        return "(" + lhs + " << " + rhs + ")"
+    }
+    if str_eq(op, ">>") {
+        return "(" + lhs + " >> " + rhs + ")"
+    }
+    return "(" + lhs + " " + op + " " + rhs + ")"
+}
+
+fn ifexpr_to_c(cond string, then string, els string) -> string {
+    return "((" + cond + ") ? (" + then + ") : (" + els + "))"
+}
+
+fn binop_prec(op string) -> int {
+    if str_eq(op, "*") or str_eq(op, "/") or str_eq(op, "%") {
+        return 4
+    }
+    if str_eq(op, "+") or str_eq(op, "-") {
+        return 5
+    }
+    if str_eq(op, "<<") or str_eq(op, ">>") {
+        return 6
+    }
+    if str_eq(op, "&") {
+        return 7
+    }
+    if str_eq(op, "^") {
+        return 8
+    }
+    if str_eq(op, "|") {
+        return 9
+    }
+    if str_eq(op, "==") or str_eq(op, "!=") or str_eq(op, "<") or str_eq(op, ">") or str_eq(op, "<=") or str_eq(op, ">=") {
+        return 11
+    }
+    if str_eq(op, "and") {
+        return 12
+    }
+    if str_eq(op, "or") {
+        return 13
+    }
+    return 0
+}
+
+fn param_name(p string) -> string {
+    b = new_builder()
+    i = 0
+    for i < p.len {
+        if p[i] == 58 {
+            break
+        }
+        b.buf.push(p[i] as uint8)
+        i += 1
+    }
+    return bfinish(b)
+}
+
+fn param_type(p string) -> string {
+    b = new_builder()
+    i = 0
+    for i < p.len {
+        if p[i] == 58 {
+            break
+        }
+        i += 1
+    }
+    if i >= p.len {
+        return "void*"
+    }
+    i += 1
+    for i < p.len {
+        b.buf.push(p[i] as uint8)
+        i += 1
+    }
+    return bfinish(b)
+}
+
+fn fndecl_to_c(name string, ret string, params []string) -> string {
+    b = new_builder()
+    bwrite(b, type_to_c(ret))
+    bwrite(b, " Dot_")
+    bwrite(b, name)
+    bwrite(b, "(")
+    if params.len == 0 {
+        bwrite(b, "void")
+    }
+    i = 0
+    for i < params.len {
+        if i > 0 {
+            bwrite(b, ", ")
+        }
+        bwrite(b, type_to_c(param_type(params[i])))
+        bwrite(b, " ")
+        bwrite(b, param_name(params[i]))
+        i += 1
+    }
+    bwrite(b, ")")
+    return bfinish(b)
+}
+
+fn retstmt_to_c(expr string) -> string {
+    if expr.len == 0 {
+        return "return;"
+    }
+    return "return " + expr + ";"
+}
+
+fn vardecl_to_c(name string, ty string, init string) -> string {
+    if init.len == 0 {
+        return type_to_c(ty) + " " + name + ";"
+    }
+    return type_to_c(ty) + " " + name + " = " + init + ";"
+}
+
+fn assign_to_c(target string, expr string) -> string {
+    return target + " = " + expr + ";"
+}
+
+fn for_to_c(init string, cond string, post string, body string) -> string {
+    b = new_builder()
+    bwrite(b, "for (")
+    bwrite(b, init)
+    bwrite(b, "; ")
+    bwrite(b, cond)
+    bwrite(b, "; ")
+    bwrite(b, post)
+    bwrite(b, ") {{\n")
+    bwrite(b, body)
+    bwrite(b, "\n}}")
+    return bfinish(b)
+}
+
+fn match_cond_to_c(subj string, subj_ty string, pat string) -> string {
+    if str_eq(subj_ty, "string") {
+        return "dot_string_eq(" + subj + ", " + literal_to_c(pat, "string") + ")"
+    }
+    return "(" + subj + " == " + pat + ")"
+}
+
+fn match_body_of(bodies []string, i int) -> string {
+    if i < bodies.len {
+        return bodies[i]
+    }
+    return "/* no body */"
+}
+
+fn match_to_c(subj string, subj_ty string, patterns []string, bodies []string) -> string {
+    if patterns.len == 0 {
+        return "{{}}"
+    }
+    if str_eq(patterns[0], "_") {
+        return "{{ \n" + match_body_of(bodies, 0) + "\n}}"
+    }
+    b = new_builder()
+    bwrite(b, "if (")
+    bwrite(b, match_cond_to_c(subj, subj_ty, patterns[0]))
+    bwrite(b, ") {{\n")
+    bwrite(b, match_body_of(bodies, 0))
+    bwrite(b, "\n")
+    i = 1
+    for i < patterns.len {
+        if str_eq(patterns[i], "_") {
+            bwrite(b, "}} else {{\n")
+            bwrite(b, match_body_of(bodies, i))
+            bwrite(b, "\n")
+        } else {
+            bwrite(b, "}} else if (")
+            bwrite(b, match_cond_to_c(subj, subj_ty, patterns[i]))
+            bwrite(b, ") {{\n")
+            bwrite(b, match_body_of(bodies, i))
+            bwrite(b, "\n")
+        }
+        i += 1
+    }
+    bwrite(b, "}}")
+    return bfinish(b)
+}
