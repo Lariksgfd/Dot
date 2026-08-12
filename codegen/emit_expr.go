@@ -139,8 +139,14 @@ func emitBinary(g *generator, x *ast.BinaryExpr) string {
 	case lexer.TokenStarStar:
 		return emitPow(g, lhs, rhs, x)
 	case lexer.TokenEqEq:
+		if isStringExpr(g, x.X) {
+			return fmt.Sprintf("dot_string_eq(%s, %s)", lhs, rhs)
+		}
 		return fmt.Sprintf("(%s == %s)", lhs, rhs)
 	case lexer.TokenBangEq:
+		if isStringExpr(g, x.X) {
+			return fmt.Sprintf("!dot_string_eq(%s, %s)", lhs, rhs)
+		}
 		return fmt.Sprintf("(%s != %s)", lhs, rhs)
 	case lexer.TokenLt:
 		return fmt.Sprintf("(%s < %s)", lhs, rhs)
@@ -166,6 +172,22 @@ func emitBinary(g *generator, x *ast.BinaryExpr) string {
 		return fmt.Sprintf("(%s >> %s)", lhs, rhs)
 	}
 	return fmt.Sprintf("(%s %s %s) /* unknown binop */", lhs, x.Op.Literal(), rhs)
+}
+
+// isStringExpr reports whether e is a string-typed expression (including
+// named string types), so binary operators can pick content semantics.
+func isStringExpr(g *generator, e ast.Expr) bool {
+	if e == nil {
+		return false
+	}
+	t := g.info.TypeOf(e)
+	if t == nil {
+		return false
+	}
+	if t.Kind() == types.KindString {
+		return true
+	}
+	return types.IsStringType(types.Underlying(t))
 }
 
 // emitPow selects the correct runtime power function based on the result type.
@@ -500,7 +522,11 @@ func patternCond(g *generator, subj string, pat ast.Pattern) string {
 	case *ast.IdentPattern:
 		return "true"
 	case *ast.LiteralPattern:
-		return fmt.Sprintf("(%s == %s)", subj, g.emitExpr(p.Value))
+		val := g.emitExpr(p.Value)
+		if isStringExpr(g, p.Value) {
+			return fmt.Sprintf("dot_string_eq(%s, %s)", subj, val)
+		}
+		return fmt.Sprintf("(%s == %s)", subj, val)
 	case *ast.TuplePattern:
 		return "true"
 	}

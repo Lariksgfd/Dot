@@ -1,0 +1,16 @@
+// testdata/codegen_smoke.dot - smoke test for stdlib/codegen.dot
+import std.codegen
+
+fn main() {
+    print(type_to_c("int"))
+    print(type_to_c("bool"))
+    print(type_to_c("string"))
+    print(type_to_c("void"))
+    print(type_to_c("float32"))
+    print(type_to_c("unknown"))
+
+    b = new_builder()
+    bwrite(b, "hello")
+    bwrite(b, " world")
+    print(bfinish(b))
+}

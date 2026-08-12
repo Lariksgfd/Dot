@@ -1,0 +1,35 @@
+fn parse_pair() -> (int, string) {
+    return 7, "ok"
+}
+
+fn main() {
+    for i in 0..5 {
+        i = i + 1
+        print(i)
+    }
+    print("|")
+
+    s = "a"
+    s = s + "b"
+    print(s)
+    print("|")
+
+    a = 1
+    b = 2
+    a, b = b, a
+    print(a)
+    print(b)
+    print("|")
+
+    x = 42
+    if true {
+        x = "inner"
+        print(x)
+    }
+    print(x)
+    print("|")
+
+    err = ""
+    _, err = parse_pair()
+    print(err)
+}

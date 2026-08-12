@@ -1,0 +1,49 @@
+fn main() {
+    a = "hello"
+    b = "hello"
+    c = "world"
+
+    if a == b {
+        print("eq|")
+    }
+    if a == c {
+        print("BAD1|")
+    }
+    if a != c {
+        print("ne|")
+    }
+    if b != a {
+        print("BAD2|")
+    }
+
+    empty = ""
+    if empty == "" {
+        print("empty|")
+    }
+    if a == "" {
+        print("BAD3|")
+    }
+    if a != "" {
+        print("notempty|")
+    }
+
+    word = "world"
+    r = match word {
+        "hello" => "H"
+        "world" => "W"
+        _ => "?"
+    }
+    print(r)
+
+    r2 = match a {
+        "hi" => "HI"
+        _ => "fallback"
+    }
+    print(r2)
+
+    r3 = match empty {
+        "" => "EMPTY"
+        _ => "FULL"
+    }
+    print(r3)
+}

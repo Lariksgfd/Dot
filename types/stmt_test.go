@@ -57,7 +57,7 @@ func TestCheckVarDecl_Reassign(t *testing.T) {
 		checkDot(t, "fn main() { x = 42\n x = 43 }")
 	})
 	t.Run("reassign_different_type", func(t *testing.T) {
-		checkDotError(t, "fn main() { x = 42\n x = \"str\" }", "cannot assign")
+		checkDotError(t, "fn main() { x = 42\n x = \"str\" }", "cannot use")
 	})
 	t.Run("reassign_const", func(t *testing.T) {
 		checkDotError(t, "fn main() { const X = 1\n X = 2 }", "constant")

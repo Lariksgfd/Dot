@@ -73,6 +73,7 @@ func (p *parser) parseInterpolation(part lexer.StringPart) ast.Expr {
 		errs:        p.errs,
 		interpDepth: p.interpDepth + 1,
 		posBase:     &part.Pos,
+		scopes:      []map[string]bool{{}},
 	}
 	sub.skipNewlines()
 	if sub.atEnd() {

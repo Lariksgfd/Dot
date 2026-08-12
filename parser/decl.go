@@ -52,7 +52,7 @@ func (p *parser) parseDecl() ast.Decl {
 		} else if len(anns) == 1 && anns[0].Name == "perf" && p.at(lexer.TokenLBrace) {
 			d := p.errorHere("@perf blocks are only allowed inside a function body")
 			p.hint(d, "move the @perf block into a function")
-			p.parseBlock("@perf block")
+			p.parseBlock("@perf block", true)
 			decl = p.badDecl(start)
 		} else if p.looksLikeVarDecl() {
 			d := p.parseVarDecl(anns, false, pub)
@@ -138,13 +138,19 @@ func (p *parser) parseFnDecl(anns []*ast.Annotation, pub, async bool) *ast.FnDec
 		out.SetSpan(kw.Pos, out.Sig.End())
 	}
 
+	p.pushScope()
+	defer p.popScope()
+	for _, prm := range out.Sig.Params {
+		p.declareName(prm.Name)
+	}
+
 	switch {
 	case p.accept(lexer.TokenAssign):
 		p.skipNewlines()
 		out.ExprBody = p.parseExpr(precAssign)
 		out.SetSpan(kw.Pos, out.ExprBody.End())
 	case p.at(lexer.TokenLBrace):
-		out.Body = p.parseBlock("fn body")
+		out.Body = p.parseBlock("fn body", false)
 		out.SetSpan(kw.Pos, out.Body.End())
 	}
 	p.leaveFn()

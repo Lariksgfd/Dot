@@ -1,0 +1,23 @@
+fn main() {
+    x = 1
+    x = x + 2
+    print(x)
+
+    for i in 0..3 {
+        i = i + 1
+    }
+    print("loop ok")
+
+    a = "hello"
+    b = "hello"
+    c = "world"
+    if a == b {
+        print("eq ok")
+    }
+    if a == c {
+        print("BAD")
+    }
+    if a != c {
+        print("ne ok")
+    }
+}

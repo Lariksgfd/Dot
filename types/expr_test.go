@@ -191,7 +191,7 @@ func TestCheckExpr_Assign(t *testing.T) {
 		checkDot(t, "fn main() { x = 42\n x = 43 }")
 	})
 	t.Run("reassign_type_error", func(t *testing.T) {
-		checkDotError(t, "fn main() { x = 42\n x = \"str\" }", "cannot assign")
+		checkDotError(t, "fn main() { x = 42\n x = \"str\" }", "cannot use")
 	})
 	t.Run("compound_plus", func(t *testing.T) {
 		checkDot(t, "fn main() { x = 1\n x += 2 }")

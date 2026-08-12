@@ -317,13 +317,19 @@ func (p *parser) parseFnLit() ast.Expr {
 	sig := p.parseFnSig(false, true)
 	out := &ast.FnLit{BaseNode: ast.Span(start.Pos, p.cur().Pos), Sig: sig}
 
+	p.pushScope()
+	defer p.popScope()
+	for _, prm := range sig.Params {
+		p.declareName(prm.Name)
+	}
+
 	switch {
 	case p.accept(lexer.TokenAssign):
 		p.skipNewlines()
 		out.ExprBody = p.parseExpr(precAssign)
 		out.SetSpan(start.Pos, out.ExprBody.End())
 	case p.at(lexer.TokenLBrace):
-		out.Body = p.parseBlock("lambda body")
+		out.Body = p.parseBlock("lambda body", false)
 		out.SetSpan(start.Pos, out.Body.End())
 	default:
 		p.errorExpected("a lambda body")

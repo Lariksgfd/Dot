@@ -83,6 +83,26 @@ func TestE2E_RelativeImport(t *testing.T) {
 	}
 }
 
+func TestE2E_ReassignLoop(t *testing.T) {
+	out, err := buildAndRun(t, "testdata/reassign_loop.dot")
+	if err != nil {
+		t.Fatalf("build+run failed: %v\noutput: %s", err, out)
+	}
+	if !contains(out, "135|ab|21|inner42|ok") {
+		t.Errorf("expected reassignment output, got: %s", out)
+	}
+}
+
+func TestE2E_StrCmpMatch(t *testing.T) {
+	out, err := buildAndRun(t, "testdata/strcmp_match.dot")
+	if err != nil {
+		t.Fatalf("build+run failed: %v\noutput: %s", err, out)
+	}
+	if !contains(out, "eq|ne|empty|notempty|WfallbackEMPTY") {
+		t.Errorf("expected string comparison output, got: %s", out)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchSubstring(s, substr)
 }

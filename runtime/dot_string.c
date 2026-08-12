@@ -63,3 +63,10 @@ DotString* dot_string_concat(DotString* a, DotString* b) {
     s->data[total] = '\0';
     return s;
 }
+
+bool dot_string_eq(DotString* a, DotString* b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (a->len != b->len) return false;
+    return memcmp(a->data, b->data, (size_t)a->len) == 0;
+}

@@ -1,0 +1,56 @@
+// stdlib/codegen.dot - C code generation helpers (self-hosting skeleton).
+
+pub struct CBuilder {
+    buf []byte
+}
+
+fn str_eq(a string, b string) -> bool {
+    if a.len != b.len {
+        return false
+    }
+    i = 0
+    for i < a.len {
+        if a[i] != b[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+fn new_builder() -> CBuilder {
+    buf = []byte{}
+    return CBuilder { buf }
+}
+
+fn bwrite(b CBuilder, s string) {
+    i = 0
+    for i < s.len {
+        b.buf.push(s[i] as uint8)
+        i += 1
+    }
+}
+
+fn bfinish(b CBuilder) -> string {
+    return b.buf as string
+}
+
+fn type_to_c(t string) -> string {
+    if str_eq(t, "int") { return "int64_t" }
+    if str_eq(t, "int8") { return "int8_t" }
+    if str_eq(t, "int16") { return "int16_t" }
+    if str_eq(t, "int32") { return "int32_t" }
+    if str_eq(t, "uint") { return "uint64_t" }
+    if str_eq(t, "uint8") { return "uint8_t" }
+    if str_eq(t, "uint16") { return "uint16_t" }
+    if str_eq(t, "uint32") { return "uint32_t" }
+    if str_eq(t, "float") { return "double" }
+    if str_eq(t, "float32") { return "float" }
+    if str_eq(t, "bool") { return "bool" }
+    if str_eq(t, "byte") { return "uint8_t" }
+    if str_eq(t, "rune") { return "int32_t" }
+    if str_eq(t, "string") { return "DotString*" }
+    if str_eq(t, "void") { return "void" }
+    if str_eq(t, "never") { return "void" }
+    return "void*"
+}

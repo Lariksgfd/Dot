@@ -6,13 +6,20 @@ import (
 )
 
 // parseBlock parses a brace-delimited statement list. context names the
-// construct being parsed and is used in diagnostics.
-func (p *parser) parseBlock(context string) *ast.BlockStmt {
+// construct being parsed and is used in diagnostics. When ownScope is true the
+// block opens its own lexical scope; function and loop bodies pass false so
+// they share the scope of their parameters and loop variables (D53).
+func (p *parser) parseBlock(context string, ownScope bool) *ast.BlockStmt {
 	lb, ok := p.expect(lexer.TokenLBrace, context)
 	if !ok {
 		return &ast.BlockStmt{BaseNode: ast.SpanTok(lb), LBrace: lb.Pos, RBrace: lb.Pos}
 	}
 	out := &ast.BlockStmt{BaseNode: ast.SpanTok(lb), LBrace: lb.Pos}
+
+	if ownScope {
+		p.pushScope()
+		defer p.popScope()
+	}
 
 	// A block body never inherits the enclosing no-struct-literal restriction.
 	p.withNoStructLit(false, func() {
@@ -54,7 +61,7 @@ func (p *parser) parseStmt() ast.Stmt {
 	case lexer.TokenFor:
 		stmt = p.parseForStmt("", ast.Position{})
 	case lexer.TokenLBrace:
-		stmt = p.parseBlock("block")
+		stmt = p.parseBlock("block", true)
 	case lexer.TokenConst, lexer.TokenPub, lexer.TokenFn, lexer.TokenStruct,
 		lexer.TokenTrait, lexer.TokenImpl, lexer.TokenEnum, lexer.TokenImport,
 		lexer.TokenFrom, lexer.TokenAsync:
@@ -106,10 +113,19 @@ func (p *parser) finishStmt(s ast.Stmt, context string) ast.Stmt {
 	return s
 }
 
-// parseSimpleStmt parses a variable declaration or an expression statement.
+// parseSimpleStmt parses a variable declaration, a reassignment or an
+// expression statement.
 func (p *parser) parseSimpleStmt() ast.Stmt {
+	if p.isReassign() {
+		x := p.parseExpr(precAssign)
+		out := &ast.ExprStmt{BaseNode: ast.SpanOf(x, x), X: x}
+		p.expectStatementEnd("assignment")
+		return out
+	}
 	if p.looksLikeVarDecl() {
-		return p.finishStmt(p.parseVarDecl(nil, false, false), "declaration")
+		decl := p.parseVarDecl(nil, false, false)
+		p.declareVarNames(decl)
+		return p.finishStmt(decl, "declaration")
 	}
 	start := p.cur()
 	if !startsExpr(start.Type) {
@@ -122,6 +138,30 @@ func (p *parser) parseSimpleStmt() ast.Stmt {
 	out := &ast.ExprStmt{BaseNode: ast.SpanOf(x, x), X: x}
 	p.expectStatementEnd("expression")
 	return out
+}
+
+// isReassign reports whether the upcoming statement is a plain
+// `name = ...` whose name is already declared in the current scope: that is a
+// reassignment, not a declaration (D53). Multi-name forms keep the VarDecl
+// shape so the checker can expand tuple values per name.
+func (p *parser) isReassign() bool {
+	if !p.at(lexer.TokenIdent) {
+		return false
+	}
+	if p.peek(1).Type != lexer.TokenAssign {
+		return false
+	}
+	return p.nameDeclared(p.cur().Lexeme)
+}
+
+// declareVarNames records the names of a parsed variable declaration in the
+// current scope so later statements can tell reassignment from shadowing.
+func (p *parser) declareVarNames(decl *ast.VarDecl) {
+	for _, n := range decl.Names {
+		if id, ok := n.(*ast.Ident); ok {
+			p.declareName(id.Name)
+		}
+	}
 }
 
 // looksLikeVarDecl decides between a declaration and an assignment expression
@@ -251,6 +291,9 @@ func (p *parser) parseForStmt(label string, labelPos ast.Position) *ast.ForStmt 
 		start = labelPos
 	}
 
+	p.pushScope()
+	defer p.popScope()
+
 	switch {
 	case p.at(lexer.TokenLBrace):
 		out.Kind = ast.ForInfinite
@@ -263,7 +306,7 @@ func (p *parser) parseForStmt(label string, labelPos ast.Position) *ast.ForStmt 
 	}
 
 	p.enterLoop(label)
-	out.Body = p.parseBlock("for body")
+	out.Body = p.parseBlock("for body", false)
 	p.leaveLoop()
 	out.SetSpan(start, out.Body.End())
 	return out
@@ -306,6 +349,7 @@ func (p *parser) parseLoopVar() ast.Expr {
 	switch tok.Type {
 	case lexer.TokenIdent:
 		p.advance()
+		p.declareName(tok.Lexeme)
 		return &ast.Ident{BaseNode: ast.SpanTok(tok), Name: tok.Lexeme}
 	case lexer.TokenUnderscore:
 		p.advance()
@@ -410,7 +454,7 @@ func (p *parser) parseDeferStmt() *ast.DeferStmt {
 // parsePerfBlock parses `@perf { ... }`. The '@' and `perf` tokens have
 // already been consumed; at is the '@' token.
 func (p *parser) parsePerfBlock(at lexer.Token) *ast.PerfBlock {
-	block := p.parseBlock("@perf block")
+	block := p.parseBlock("@perf block", true)
 	return &ast.PerfBlock{
 		BaseNode: ast.Span(at.Pos, block.End()),
 		Block:    block,

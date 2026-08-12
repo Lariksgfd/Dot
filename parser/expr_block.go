@@ -19,7 +19,7 @@ func (p *parser) parseIfExpr() *ast.IfExpr {
 		out.Cond = p.parseExpr(precAssign)
 	})
 
-	out.Then = p.parseBlock("if body")
+	out.Then = p.parseBlock("if body", true)
 	out.SetSpan(kw.Pos, out.Then.End())
 
 	if p.at(lexer.TokenElse) {
@@ -29,7 +29,7 @@ func (p *parser) parseIfExpr() *ast.IfExpr {
 			out.ElseIf = p.parseIfExpr()
 			out.SetSpan(kw.Pos, out.ElseIf.End())
 		} else {
-			out.Else = p.parseBlock("else body")
+			out.Else = p.parseBlock("else body", true)
 			out.SetSpan(kw.Pos, out.Else.End())
 		}
 	}
@@ -107,7 +107,7 @@ func (p *parser) parseMatchArm() *ast.MatchArm {
 
 	var body ast.Expr
 	if p.at(lexer.TokenLBrace) {
-		block := p.parseBlock("match arm")
+		block := p.parseBlock("match arm", true)
 		body = &ast.BlockExpr{BaseNode: ast.SpanOf(block, block), Block: block}
 	} else {
 		body = p.parseExpr(precAssign)
@@ -137,7 +137,7 @@ func (p *parser) parseSpawnExpr() ast.Expr {
 		p.errorExpected("'{' after spawn")
 		return p.badExpr(kw)
 	}
-	block := p.parseBlock("spawn body")
+	block := p.parseBlock("spawn body", true)
 	return &ast.SpawnExpr{
 		BaseNode: ast.Span(kw.Pos, block.End()),
 		Block:    block,

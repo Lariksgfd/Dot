@@ -42,10 +42,17 @@ func (g *generator) emitStmt(s ast.Stmt) {
 
 // emitVarDecl emits a variable declaration. Const declarations become a
 // #define macro; regular declarations emit a C variable with an optional
-// retain for heap-allocated initialisers.
+// retain for heap-allocated initialisers. Names the checker treated as
+// reassignments (D53) become plain assignments instead of declarations.
 func (g *generator) emitVarDecl(x *ast.VarDecl) {
 	if len(x.Names) > 1 && len(x.Values) == 1 {
 		g.emitTupleDecl(x)
+		return
+	}
+	// Pure multi-name reassignment (`a, b = b, a`): evaluate every
+	// right-hand side into a temporary first so the swap is correct (D11).
+	if len(x.Names) > 1 && len(x.Names) == len(x.Values) && !x.Const && g.allReassigned(x) {
+		g.emitMultiAssign(x)
 		return
 	}
 	for i, name := range x.Names {
@@ -57,6 +64,17 @@ func (g *generator) emitVarDecl(x *ast.VarDecl) {
 		declType := g.info.TypeOf(name)
 		if x.Const {
 			g.line(fmt.Sprintf("#define %s %s", vn, val))
+			continue
+		}
+		// A name the checker treated as a reassignment (D53) has no Defs
+		// entry: emit a plain assignment, not a C declaration.
+		if id, isIdent := name.(*ast.Ident); isIdent && g.info.Defs[id] == nil && val != "" {
+			if types.IsHeap(declType) {
+				g.line(fmt.Sprintf("dot_release((DotRefcnt*)(%s));", vn))
+				g.line(fmt.Sprintf("%s = %s;", vn, emitRetain(g, val, declType)))
+			} else {
+				g.line(fmt.Sprintf("%s = %s;", vn, val))
+			}
 			continue
 		}
 		ct := cType(g, declType)
@@ -88,6 +106,42 @@ func (g *generator) emitVarDecl(x *ast.VarDecl) {
 	}
 }
 
+// allReassigned reports whether every name of a declaration was treated by
+// the checker as a reassignment of an existing binding (no Defs entry).
+func (g *generator) allReassigned(x *ast.VarDecl) bool {
+	for _, name := range x.Names {
+		id, ok := name.(*ast.Ident)
+		if !ok || g.info.Defs[id] != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// emitMultiAssign emits a multi-name reassignment: all right-hand sides are
+// evaluated into temporaries first, then assigned left to right, so that
+// `a, b = b, a` swaps (SPEC §3, D11).
+func (g *generator) emitMultiAssign(x *ast.VarDecl) {
+	temps := make([]string, 0, len(x.Values))
+	for _, v := range x.Values {
+		tmp := fmt.Sprintf("_dot_ma_%d", g.unusedIdx)
+		g.unusedIdx++
+		g.line(fmt.Sprintf("%s %s = %s;", cType(g, g.info.TypeOf(v)), tmp, g.emitExpr(v)))
+		temps = append(temps, tmp)
+	}
+	for i, name := range x.Names {
+		vn := varName(g, name)
+		declType := g.info.TypeOf(name)
+		if types.IsHeap(declType) {
+			// Transfer the temporary's reference to the target.
+			g.line(fmt.Sprintf("dot_release((DotRefcnt*)(%s));", vn))
+			g.line(fmt.Sprintf("%s = %s;", vn, temps[i]))
+		} else {
+			g.line(fmt.Sprintf("%s = %s;", vn, temps[i]))
+		}
+	}
+}
+
 // emitTupleDecl emits a multi-name declaration initialised by one multi-value
 // call: a temporary tuple struct holds the result and each name is bound to
 // the matching field.
@@ -109,6 +163,16 @@ func (g *generator) emitTupleDecl(x *ast.VarDecl) {
 		}
 		vn := varName(g, name)
 		declType := g.info.TypeOf(name)
+		// Reassigned name (D53): plain assignment from the tuple field.
+		if id, isIdent := name.(*ast.Ident); isIdent && g.info.Defs[id] == nil {
+			if types.IsHeap(declType) {
+				g.line(fmt.Sprintf("dot_release((DotRefcnt*)(%s));", vn))
+				g.line(fmt.Sprintf("%s = %s;", vn, emitRetain(g, fmt.Sprintf("%s._%d", tmp, i), declType)))
+			} else {
+				g.line(fmt.Sprintf("%s = %s._%d;", vn, tmp, i))
+			}
+			continue
+		}
 		ct := cType(g, declType)
 		g.line(fmt.Sprintf("%s %s = %s._%d;", ct, vn, tmp, i))
 	}

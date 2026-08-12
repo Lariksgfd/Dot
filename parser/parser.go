@@ -26,9 +26,10 @@ import (
 // elements are all *errors.Diagnostic.
 func Parse(tokens []lexer.Token, filename string) (*ast.Program, error) {
 	p := &parser{
-		toks: tokens,
-		file: filename,
-		errs: &errors.ErrorList{},
+		toks:   tokens,
+		file:   filename,
+		errs:   &errors.ErrorList{},
+		scopes: []map[string]bool{{}},
 	}
 	prog := p.parseProgram()
 	return prog, p.errs.Err()
@@ -40,9 +41,10 @@ func Parse(tokens []lexer.Token, filename string) (*ast.Program, error) {
 func ParseFile(source, filename string) (*ast.Program, error) {
 	tokens, lexErr := lexer.Tokenize(source, filename)
 	p := &parser{
-		toks: tokens,
-		file: filename,
-		errs: &errors.ErrorList{},
+		toks:   tokens,
+		file:   filename,
+		errs:   &errors.ErrorList{},
+		scopes: []map[string]bool{{}},
 	}
 	if lexErr != nil {
 		if list, ok := lexErr.(*errors.ErrorList); ok {
@@ -72,6 +74,11 @@ type parser struct {
 
 	interpDepth int             // D35: nesting level of string-interpolation re-parses
 	posBase     *lexer.Position // non-nil in an interpolation sub-parser
+
+	// scopes is the stack of names declared per lexical scope. The top map is
+	// the current scope; the bottom map is the file scope. parseSimpleStmt
+	// consults it to tell declarations apart from reassignments (D53).
+	scopes []map[string]bool
 
 	// fnLoopStack saves (loopDepth, labels) for each fn nesting level so that
 	// enterFn/leaveFn can save and restore loop state around lambdas/spawn.
@@ -353,6 +360,32 @@ func (p *parser) withNoStructLit(v bool, f func()) {
 	p.noStructLit = v
 	f()
 	p.noStructLit = old
+}
+
+// pushScope opens a fresh lexical scope for declared names.
+func (p *parser) pushScope() {
+	p.scopes = append(p.scopes, map[string]bool{})
+}
+
+// popScope closes the innermost lexical scope. The file scope is never popped.
+func (p *parser) popScope() {
+	if len(p.scopes) > 1 {
+		p.scopes = p.scopes[:len(p.scopes)-1]
+	}
+}
+
+// declareName records name as declared in the current scope. `_` and empty
+// names are never recorded.
+func (p *parser) declareName(name string) {
+	if name == "" || name == "_" {
+		return
+	}
+	p.scopes[len(p.scopes)-1][name] = true
+}
+
+// nameDeclared reports whether name is declared in the current scope.
+func (p *parser) nameDeclared(name string) bool {
+	return p.scopes[len(p.scopes)-1][name]
 }
 
 func (p *parser) enterLoop(label string) {
