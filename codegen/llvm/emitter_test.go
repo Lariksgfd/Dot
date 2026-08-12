@@ -60,10 +60,10 @@ fn main() {
 `
 	c := generateLLVM(t, source)
 
-	if !strings.Contains(c, "%Point = type { i32, i32 }") {
+	if !strings.Contains(c, "%Point = type { i64, i64 }") {
 		t.Errorf("Missing Point struct definition, got: %s", c)
 	}
-	if !strings.Contains(c, "%User = type { i32 }") {
+	if !strings.Contains(c, "%User = type { i64 }") {
 		t.Errorf("Missing User struct definition, got: %s", c)
 	}
 	if !strings.Contains(c, "alloca %Point") {
@@ -377,13 +377,13 @@ fn main() {
 `
 	c := generateLLVM(t, source)
 
-	if !strings.Contains(c, "@.str.0 = private unnamed_addr constant [12 x i8] c\"hello world\\00\"") {
+	if !strings.Contains(c, "@.str.1 = private unnamed_addr constant [12 x i8] c\"hello world\\00\"") {
 		t.Errorf("Missing string literal constant, got: %s", c)
 	}
 	if !strings.Contains(c, "alloca { ptr, i32 }") {
 		t.Errorf("Missing alloca for string struct, got: %s", c)
 	}
-	if !strings.Contains(c, "getelementptr [12 x i8], ptr @.str.0") {
+	if !strings.Contains(c, "getelementptr [12 x i8], ptr @.str.1") {
 		t.Errorf("Missing getelementptr for string data, got: %s", c)
 	}
 	if !strings.Contains(c, "store i32 11,") {

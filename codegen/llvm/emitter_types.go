@@ -38,6 +38,18 @@ func (e *emitter) llvmType(t types.Type) string {
 			return "{ ptr, i32 }"
 		}
 	}
+	if n, ok := t.(*types.Named); ok {
+		return "%" + n.Name
+	}
+	if a, ok := t.(*types.Array); ok {
+		return fmt.Sprintf("[%d x %s]", a.Len, e.llvmType(a.Elem))
+	}
+	if _, ok := t.(*types.Slice); ok {
+		return "{ ptr, i32, i32 }"
+	}
+	if _, ok := t.(*types.Pointer); ok {
+		return "ptr"
+	}
 	return "i64"
 }
 
@@ -106,6 +118,8 @@ func (e *emitter) exprType(expr ast.Expr) string {
 		return "double"
 	case *ast.BoolLit:
 		return "i1"
+	case *ast.StringLit:
+		return "{ ptr, i32 }"
 	case *ast.Ident:
 		if vt, ok := e.varTypes[x.Name]; ok {
 			return vt
@@ -123,6 +137,12 @@ func isFloatType(t string) bool {
 func zeroConst(t string) string {
 	if isFloatType(t) {
 		return "0.0"
+	}
+	if t == "ptr" {
+		return "null"
+	}
+	if strings.HasPrefix(t, "{") || strings.HasPrefix(t, "[") {
+		return "zeroinitializer"
 	}
 	return "0"
 }

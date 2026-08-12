@@ -21,19 +21,20 @@ func (e *emitter) formatString(content string) string {
 // scalars through printf with a format picked by the argument type.
 func (e *emitter) emitPrint(ex *ast.CallExpr) string {
 	arg := ex.Args[0].Value
+	t := e.exprType(arg)
 
-	if _, ok := arg.(*ast.StringLit); ok {
-		// String is returned as a ptr to {ptr, i32}. Load the data pointer.
-		strStructPtr := e.emitExpr(arg)
+	if t == "{ ptr, i32 }" {
+		v := e.emitExpr(arg)
 		charPtr := e.nextTmp()
-		e.emit("  %s = load ptr, ptr %s", charPtr, strStructPtr)
+		e.emit("  %s = extractvalue { ptr, i32 } %s, 0", charPtr, v)
+		callTmp := e.nextTmp()
+		e.emit("  %s = call i32 @puts(ptr %s)", callTmp, charPtr)
 		tmp := e.nextTmp()
-		e.emit("  %s = call i32 @puts(ptr %s)", tmp, charPtr)
+		e.emit("  %s = zext i32 %s to i64", tmp, callTmp)
 		return tmp
 	}
 
 	val := e.emitExpr(arg)
-	t := e.exprType(arg)
 	passed := val
 	passedType := t
 	fmtContent := "%lld\n"
@@ -63,7 +64,9 @@ func (e *emitter) emitPrint(ex *ast.CallExpr) string {
 	}
 
 	fmtName := e.formatString(fmtContent)
+	callTmp := e.nextTmp()
+	e.emit("  %s = call i32 (ptr, ...) @printf(ptr %s, %s %s)", callTmp, fmtName, passedType, passed)
 	tmp := e.nextTmp()
-	e.emit("  %s = call i32 (ptr, ...) @printf(ptr %s, %s %s)", tmp, fmtName, passedType, passed)
+	e.emit("  %s = zext i32 %s to i64", tmp, callTmp)
 	return tmp
 }

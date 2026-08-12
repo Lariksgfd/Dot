@@ -15,6 +15,9 @@ func (e *emitter) emitIfExpr(ex *ast.IfExpr) string {
 	if resType == "void" {
 		resType = "i64"
 	}
+	if isNamedAgg(resType) {
+		resType = "ptr"
+	}
 	var resPtr string
 	if hasElse {
 		resPtr = "%" + e.nextLabel("if.res")
@@ -125,6 +128,10 @@ func (e *emitter) emitForCond(s *ast.ForStmt) {
 func (e *emitter) emitForIn(s *ast.ForStmt) {
 	rangeExpr, ok := s.Iterable.(*ast.RangeExpr)
 	if !ok {
+		if e.info != nil {
+			e.emitForIterable(s)
+			return
+		}
 		e.emitForCond(s)
 		return
 	}
