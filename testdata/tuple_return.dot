@@ -1,0 +1,20 @@
+fn paren_pair() -> (int, string) {
+    return (7, "ok")
+}
+
+fn plain_pair() -> (int, string) {
+    return 7, "ok"
+}
+
+fn main() {
+    a, b = paren_pair()
+    print(a)
+    print("|")
+    print(b)
+    print("|")
+    c, d = plain_pair()
+    print(c)
+    print("|")
+    print(d)
+    print("|")
+}

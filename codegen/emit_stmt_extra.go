@@ -52,6 +52,9 @@ func (g *generator) emitForIn(x *ast.ForStmt) {
 }
 
 // emitForRange emits `for i in lo..hi` as a counted C for loop.
+// The counter is a private C variable; the loop variable is a fresh copy
+// declared per iteration, so reassigning it in the body does not affect
+// iteration (D63: loop variables are fresh declarations in the loop's scope).
 func (g *generator) emitForRange(x *ast.ForStmt, r *ast.RangeExpr) {
 	vn := varName(g, x.Value)
 	lo := "0"
@@ -66,9 +69,12 @@ func (g *generator) emitForRange(x *ast.ForStmt, r *ast.RangeExpr) {
 	if r.Inclusive {
 		op = "<="
 	}
+	counter := fmt.Sprintf("_dot_range_%d", g.unusedIdx)
+	g.unusedIdx++
 	g.line(fmt.Sprintf("for (int64_t %s = %s; %s %s %s; %s++) {",
-		vn, lo, vn, op, hi, vn))
+		counter, lo, counter, op, hi, counter))
 	g.indent++
+	g.line(fmt.Sprintf("int64_t %s = %s;", vn, counter))
 	g.emitBlockStmts(x.Body)
 	g.indent--
 	g.line("}")
@@ -104,26 +110,52 @@ func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 		g.line("return;")
 		return
 	}
-	if len(x.Values) == 1 {
-		val := g.emitExpr(x.Values[0])
-		t := g.info.TypeOf(x.Values[0])
-		if isEnumType(t) {
-			g.line(fmt.Sprintf("return %s;", val))
+	values := x.Values
+	if len(values) == 1 {
+		// A single parenthesised tuple (`return (7, "ok")`) is a TupleLit
+		// (possibly wrapped in ParenExpr), not a multi-value return. Pack it
+		// element-wise so heap elements are retained individually; retaining
+		// the whole tuple would cast a struct value to a pointer.
+		if tup, ok := returnTuple(x.Values[0]); ok {
+			values = make([]ast.Expr, len(tup.Elems))
+			for i, e := range tup.Elems {
+				values[i] = e.Value
+			}
+		} else {
+			val := g.emitExpr(x.Values[0])
+			t := g.info.TypeOf(x.Values[0])
+			if isEnumType(t) {
+				g.line(fmt.Sprintf("return %s;", val))
+				return
+			}
+			g.line(fmt.Sprintf("return %s;", emitRetain(g, val, t)))
 			return
 		}
-		g.line(fmt.Sprintf("return %s;", emitRetain(g, val, t)))
-		return
 	}
 	// Multi-value return: pack into a tuple struct.
-	elems := make([]types.Type, len(x.Values))
-	fields := make([]string, len(x.Values))
-	for i, v := range x.Values {
+	elems := make([]types.Type, len(values))
+	fields := make([]string, len(values))
+	for i, v := range values {
 		vt := g.info.TypeOf(v)
 		elems[i] = vt
 		fields[i] = fmt.Sprintf(". _%d = %s", i, emitRetain(g, g.emitExpr(v), vt))
 	}
 	tupName := cTupleName(g, &types.Tuple{Elems: elems})
 	g.line(fmt.Sprintf("return (%s){%s };", tupName, strings.Join(fields, ", ")))
+}
+
+// returnTuple reports whether e is a tuple literal, unwrapping parentheses.
+func returnTuple(e ast.Expr) (*ast.TupleLit, bool) {
+	for {
+		switch t := e.(type) {
+		case *ast.TupleLit:
+			return t, true
+		case *ast.ParenExpr:
+			e = t.X
+		default:
+			return nil, false
+		}
+	}
 }
 
 // emitBreakStmt emits break, or goto to a label for labeled breaks.

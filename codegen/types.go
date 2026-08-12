@@ -368,6 +368,9 @@ func cLiteral(g *generator, lit ast.Expr, t types.Type) string {
 // stringify extracts the full text of a StringLit, interpolations included,
 // as the raw source span. For non-interpolated literals this is just the text.
 func stringify(s *ast.StringLit) string {
+	if len(s.Parts) == 0 {
+		return ""
+	}
 	if len(s.Parts) == 1 && s.Parts[0].Kind == ast.PartText {
 		return s.Parts[0].Text
 	}

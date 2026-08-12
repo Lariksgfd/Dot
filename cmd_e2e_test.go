@@ -88,7 +88,7 @@ func TestE2E_ReassignLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build+run failed: %v\noutput: %s", err, out)
 	}
-	if !contains(out, "135|ab|21|inner42|ok") {
+	if !contains(out, "12345|ab|21|inner42|ok") {
 		t.Errorf("expected reassignment output, got: %s", out)
 	}
 }
@@ -100,6 +100,16 @@ func TestE2E_StrCmpMatch(t *testing.T) {
 	}
 	if !contains(out, "eq|ne|empty|notempty|WfallbackEMPTY") {
 		t.Errorf("expected string comparison output, got: %s", out)
+	}
+}
+
+func TestE2E_TupleReturn(t *testing.T) {
+	out, err := buildAndRun(t, "testdata/tuple_return.dot")
+	if err != nil {
+		t.Fatalf("build+run failed: %v\noutput: %s", err, out)
+	}
+	if !contains(out, "7|ok|7|ok|") {
+		t.Errorf("expected tuple return output, got: %s", out)
 	}
 }
 
