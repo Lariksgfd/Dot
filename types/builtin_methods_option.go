@@ -19,7 +19,7 @@ func optionMethod(t Type, name string) (methodSpec, bool) {
 		}}, true
 	case "unwrap_or_else":
 		return methodSpec{Name: "unwrap_or_else", Build: func(u *Universe, r Type) *Fn {
-			return &Fn{Params: []Param{{Name: "f", Type: fnOf(t)}}}
+			return &Fn{Params: []Param{{Name: "f", Type: fnOf(t)}}, Result: t}
 		}}, true
 	case "is_some":
 		return methodSpec{Name: "is_some", Build: func(u *Universe, r Type) *Fn {

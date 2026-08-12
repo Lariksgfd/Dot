@@ -8,6 +8,7 @@ package types
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/dotlang/dot/ast"
 	"github.com/dotlang/dot/errors"
@@ -198,6 +199,10 @@ type fnContext struct {
 	sig    *Fn
 	async  bool
 	result Type
+	// spawn marks the context of a `spawn { ... }` block: a value-return
+	// determines the task's result type instead of being checked against
+	// a declared signature.
+	spawn bool
 }
 
 // Check type checks a parsed program and returns the collected information.
@@ -359,7 +364,7 @@ func (c *Checker) hint(d *errors.Diagnostic, hint string) {
 // span returns the position and byte length covered by a node, falling back to
 // the file start for a nil node.
 func (c *Checker) span(node ast.Node) (ast.Position, int) {
-	if node == nil {
+	if node == nil || isTypedNil(node) {
 		return ast.Position{File: c.file, Line: 1, Column: 1}, 1
 	}
 	pos, end := node.Pos(), node.End()
@@ -371,6 +376,19 @@ func (c *Checker) span(node ast.Node) (ast.Position, int) {
 		length = 1
 	}
 	return pos, length
+}
+
+// isTypedNil reports whether v is a non-nil interface wrapping a nil pointer
+// (or another nilable value). Such values still satisfy ast.Node but panic
+// when methods dereference their receiver.
+func isTypedNil(v any) bool {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Interface,
+		reflect.Chan, reflect.Func:
+		return rv.IsNil()
+	}
+	return false
 }
 
 // newTypeVar allocates a fresh inference variable.

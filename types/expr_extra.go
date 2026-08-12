@@ -13,7 +13,12 @@ func (c *Checker) checkCompoundAssign(x *ast.AssignExpr, want, got Type) {
 	u := Underlying(want)
 	switch x.Op {
 	case lexer.TokenPlusAssign:
-		if IsStringType(u) && IsStringType(Underlying(got)) {
+		if IsStringType(u) {
+			// `+=` on a string target is concatenation: the right-hand side
+			// must be usable as a string.
+			if !AssignableTo(got, want) {
+				c.errorf(x, "cannot use %s as %s in assignment", got, want)
+			}
 			return
 		}
 		fallthrough
@@ -143,8 +148,9 @@ func (c *Checker) checkAwait(x *ast.AwaitExpr) Type {
 
 // checkSpawn types `spawn { ... }`, whose value is a task handle.
 func (c *Checker) checkSpawn(x *ast.SpawnExpr) Type {
-	sig := &Fn{Result: Void, Async: true}
+	sig := &Fn{Async: true}
 	c.enterFn(sig)
+	c.fnStack[len(c.fnStack)-1].spawn = true
 	pop := c.push(ScopeFunc, x)
 	prevLoop := c.loopDepth
 	c.loopDepth = 0

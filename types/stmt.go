@@ -324,6 +324,24 @@ func (c *Checker) checkReturn(stmt *ast.ReturnStmt) {
 		return
 	}
 	want := fn.result
+	if fn.spawn {
+		switch len(stmt.Values) {
+		case 0:
+			// A bare return supplies no value for the spawned task.
+		case 1:
+			got := c.checkExpr(stmt.Values[0])
+			if IsVoid(want) {
+				fn.result = Default(got)
+			} else {
+				c.assignCompatible(stmt.Values[0], got, want, "return value")
+			}
+		default:
+			for _, v := range stmt.Values {
+				c.checkExpr(v)
+			}
+		}
+		return
+	}
 
 	switch len(stmt.Values) {
 	case 0:

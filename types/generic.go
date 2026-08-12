@@ -129,12 +129,15 @@ func mentionsSelf(sig *Fn, selfParam *TypeParam) bool {
 }
 
 // typeContainsParam reports whether t references param anywhere structurally.
+// A type parameter matches by identity or by name, so that the Self
+// placeholder embedded in trait signatures (a fresh pointer per trait) is
+// recognised even though it is not pointer-identical to the probe.
 func typeContainsParam(t Type, param *TypeParam) bool {
-	if t == nil {
+	if t == nil || param == nil {
 		return false
 	}
 	if tp, ok := t.(*TypeParam); ok {
-		return tp == param
+		return tp == param || tp.Name == param.Name
 	}
 	switch x := t.(type) {
 	case *Slice:

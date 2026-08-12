@@ -513,7 +513,6 @@ func TestBuiltinMethodNames_OptionResult(t *testing.T) {
 }
 
 func TestBuiltinMethodNames_NonOptionNamedBug(t *testing.T) {
-	t.Skip("BUG: builtinMethodNames returns optionNames for ANY Named with 1 TypeArg, not just Option; a generic struct Foo[int] would advertise unwrap/is_some etc.")
 	got := builtinMethodNames(&Named{Name: "Foo", TypeArgs: []Type{Int}})
 	if got != nil {
 		t.Errorf("non-Option Named with 1 TypeArg = %v, want nil", got)
@@ -708,7 +707,6 @@ func TestLookupBuiltinMethodField_FieldFlags(t *testing.T) {
 // --- bug documentation ------------------------------------------------------
 
 func TestLookupBuiltinMethod_NilBasicPanics(t *testing.T) {
-	t.Skip("BUG: builtinMethodSpec/methodNames call x.Kind() on a typed-nil *Basic receiver and panic instead of returning not-found")
 	u := NewUniverse()
 	var b *Basic
 	wantNotFound(t, u, b, "len")

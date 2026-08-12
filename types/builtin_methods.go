@@ -40,15 +40,16 @@ func lookupBuiltinMethodField(u *Universe, recv Type, name string) (*Fn, bool, b
 func builtinMethodNames(recv Type) []string {
 	var names []string
 	if n, ok := recv.(*Named); ok {
-		switch len(n.TypeArgs) {
-		case 1:
+		switch {
+		case n.Name == "Option" && len(n.TypeArgs) == 1:
 			names = optionNames
-		case 2:
+		case n.Name == "Result" && len(n.TypeArgs) == 2:
 			names = resultNames
 		}
 	} else {
 		names = methodNames(recv)
 	}
+	names = append([]string(nil), names...)
 	sort.Strings(names)
 	return names
 }
@@ -75,6 +76,9 @@ func builtinMethodSpec(u *Universe, recv Type, name string) (methodSpec, bool) {
 			return resultMethod(ok_, err, name)
 		}
 	case *Basic:
+		if x == nil {
+			return methodSpec{}, false
+		}
 		switch {
 		case x.Kind() == KindString:
 			return stringMethod(name)
@@ -101,6 +105,9 @@ func methodNames(recv Type) []string {
 	case *Future:
 		return futureNames
 	case *Basic:
+		if recv.(*Basic) == nil {
+			return nil
+		}
 		switch recv.(interface{ Kind() Kind }).Kind() {
 		case KindString:
 			return stringNames

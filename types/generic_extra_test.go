@@ -176,6 +176,9 @@ func TestCheckObjectSafe(t *testing.T) {
 		{"static_method", &Trait{Name: "Static", Methods: []Method{
 			{Name: "make", Static: true, Sig: &Fn{Result: Int}},
 		}}, false, 1, "static method"},
+		{"self_param", &Trait{Name: "TakesSelf", Methods: []Method{
+			{Name: "clone", Sig: &Fn{Recv: recv, Params: []Param{{Type: &TypeParam{Name: "Self"}}}, Result: Void}},
+		}}, false, 1, "takes a 'Self' parameter"},
 		{"generic_method", &Trait{Name: "Generic", Methods: []Method{
 			{Name: "id", Sig: &Fn{Recv: recv, Result: Void, TypeParams: []*TypeParam{{Name: "U"}}}},
 		}}, false, 1, "is generic"},
@@ -526,7 +529,7 @@ func TestCheckCompoundAssign(t *testing.T) {
 		checkDotError(t, "fn main() { f = 1.5\n f += \"s\" }", "cannot use")
 	})
 	t.Run("string_plus_int_error", func(t *testing.T) {
-		checkDotError(t, "fn main() { s = \"a\"\n s += 1 }", "requires a numeric target")
+		checkDotError(t, "fn main() { s = \"a\"\n s += 1 }", "cannot use")
 	})
 }
 
@@ -634,8 +637,16 @@ func TestCheckSpawn(t *testing.T) {
 			t.Errorf("spawn type = %v, want Future[void]", info.TypeOf(se))
 		}
 	})
-	t.Run("return_value_inside_spawn_errors", func(t *testing.T) {
-		checkDotError(t, "fn main() { h = spawn { return 42 } }", "cannot use")
+	t.Run("return_value_inside_spawn", func(t *testing.T) {
+		prog, info := parseCheckDot(t, "fn main() { h = spawn { return 42 } }")
+		se := findSpawnExpr(t, prog)
+		f, ok := info.TypeOf(se).(*Future)
+		if !ok {
+			t.Fatalf("spawn type = %v, want *Future", info.TypeOf(se))
+		}
+		if f.Result != Int {
+			t.Errorf("spawn result = %v, want int", f.Result)
+		}
 	})
 }
 
