@@ -370,3 +370,90 @@ fn match_to_c(subj string, subj_ty string, patterns []string, bodies []string) -
     bwrite(b, "}}")
     return bfinish(b)
 }
+
+fn named_type_to_c(t string) -> string {
+    c = type_to_c(t)
+    if str_eq(c, "void*") {
+        return "Dot" + t
+    }
+    return c
+}
+
+fn struct_to_c(name string, fields []string) -> string {
+    b = new_builder()
+    bwrite(b, "typedef struct {{\n")
+    i = 0
+    for i < fields.len {
+        bwrite(b, "    ")
+        bwrite(b, named_type_to_c(param_type(fields[i])))
+        bwrite(b, " ")
+        bwrite(b, param_name(fields[i]))
+        bwrite(b, ";\n")
+        i += 1
+    }
+    bwrite(b, "}} ")
+    bwrite(b, name)
+    bwrite(b, ";")
+    return bfinish(b)
+}
+
+fn method_to_c(struct_name string, method_name string, ret string, params []string) -> string {
+    b = new_builder()
+    bwrite(b, named_type_to_c(ret))
+    bwrite(b, " Dot_")
+    bwrite(b, struct_name)
+    bwrite(b, "_")
+    bwrite(b, method_name)
+    bwrite(b, "(Dot")
+    bwrite(b, struct_name)
+    bwrite(b, "* self")
+    i = 0
+    for i < params.len {
+        bwrite(b, ", ")
+        bwrite(b, named_type_to_c(param_type(params[i])))
+        bwrite(b, " ")
+        bwrite(b, param_name(params[i]))
+        i += 1
+    }
+    bwrite(b, ")")
+    return bfinish(b)
+}
+
+fn generic_mangle(fn_name string, type_args []string) -> string {
+    b = new_builder()
+    bwrite(b, fn_name)
+    bwrite(b, "__")
+    i = 0
+    for i < type_args.len {
+        if i > 0 {
+            bwrite(b, "_")
+        }
+        bwrite(b, type_args[i])
+        i += 1
+    }
+    return bfinish(b)
+}
+
+fn struct_literal_to_c(struct_name string, fields []string, values []string) -> string {
+    b = new_builder()
+    bwrite(b, "((Dot")
+    bwrite(b, struct_name)
+    bwrite(b, "){{ ")
+    i = 0
+    for i < fields.len {
+        if i > 0 {
+            bwrite(b, ", ")
+        }
+        bwrite(b, ".")
+        bwrite(b, fields[i])
+        bwrite(b, " = ")
+        if i < values.len {
+            bwrite(b, values[i])
+        } else {
+            bwrite(b, "0")
+        }
+        i += 1
+    }
+    bwrite(b, " }})")
+    return bfinish(b)
+}

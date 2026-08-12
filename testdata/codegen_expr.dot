@@ -68,4 +68,19 @@ fn main() {
     print(match_to_c("x", "int", []string{"0", "1", "_"}, []string{"print(\"zero\");", "print(\"one\");", "print(\"other\");"}))
     print(match_to_c("s", "string", []string{"abc", "_"}, []string{"print(\"abc\");", "print(\"no\");"}))
     print(match_to_c("b", "bool", []string{"true", "false"}, []string{"print(\"t\");", "print(\"f\");"}))
+
+    print(struct_to_c("DotPoint", []string{"x:float", "y:float"}))
+    print(struct_to_c("DotUser", []string{"name:string", "age:int", "active:bool"}))
+
+    print(method_to_c("Point", "distance", "float", []string{"other:Point"}))
+    print(method_to_c("User", "greet", "void", []string{}))
+    print(method_to_c("Stack", "push", "void", []string{"item:int"}))
+
+    print(generic_mangle("max", []string{"int"}))
+    print(generic_mangle("foo", []string{"int", "string"}))
+    print(generic_mangle("wrap", []string{"bool", "float32", "uint8"}))
+
+    print(struct_literal_to_c("Point", []string{"x", "y"}, []string{"1.5", "2.5"}))
+    print(struct_literal_to_c("User", []string{"name", "age"}, []string{"dot_string_from_lit(\"b\", 1)", "14"}))
+    print(struct_literal_to_c("Empty", []string{}, []string{}))
 }
