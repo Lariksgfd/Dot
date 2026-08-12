@@ -1,2 +1,59 @@
 ﻿// net module
 
+@extern("C") fn dot_net_init() -> int
+@extern("C") fn dot_net_cleanup()
+@extern("C") fn dot_net_bind(host string, port int) -> int
+@extern("C") fn dot_net_listen(fd int, backlog int) -> int
+@extern("C") fn dot_net_accept(fd int) -> int
+@extern("C") fn dot_net_connect(host string, port int) -> int
+@extern("C") fn dot_net_read(fd int, n int) -> string
+@extern("C") fn dot_net_write(fd int, data string) -> int
+@extern("C") fn dot_net_close(fd int)
+
+pub struct TcpStream {
+    fd int
+}
+
+impl TcpStream {
+    pub fn connect(host string, port int) -> TcpStream {
+        dot_net_init()
+        fd = dot_net_connect(host, port)
+        return TcpStream { fd: fd }
+    }
+
+    pub fn read(self, n int) -> string {
+        return dot_net_read(self.fd, n)
+    }
+
+    pub fn write(self, data string) -> int {
+        return dot_net_write(self.fd, data)
+    }
+
+    pub fn close(self) {
+        dot_net_close(self.fd)
+    }
+}
+
+pub struct TcpListener {
+    fd int
+}
+
+impl TcpListener {
+    pub fn bind(host string, port int) -> TcpListener {
+        dot_net_init()
+        fd = dot_net_bind(host, port)
+        if fd != -1 {
+            dot_net_listen(fd, 128)
+        }
+        return TcpListener { fd: fd }
+    }
+
+    pub fn accept(self) -> TcpStream {
+        client_fd = dot_net_accept(self.fd)
+        return TcpStream { fd: client_fd }
+    }
+
+    pub fn close(self) {
+        dot_net_close(self.fd)
+    }
+}

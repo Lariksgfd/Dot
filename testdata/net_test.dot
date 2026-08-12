@@ -1,0 +1,18 @@
+import "../stdlib/net.dot"
+
+fn main() {
+    listener = TcpListener.bind("127.0.0.1", 9998)
+    client = TcpStream.connect("127.0.0.1", 9998)
+    
+    server_conn = listener.accept()
+    client.write("ping")
+    
+    msg = server_conn.read(4)
+    server_conn.write("pong")
+    
+    resp = client.read(4)
+    
+    client.close()
+    server_conn.close()
+    listener.close()
+}
