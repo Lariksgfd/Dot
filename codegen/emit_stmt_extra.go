@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/dotlang/dot/ast"
+	"github.com/dotlang/dot/types"
 )
 
 // emitForStmt emits a for loop. Infinite loops become for(;;), conditional
@@ -114,12 +115,15 @@ func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 		return
 	}
 	// Multi-value return: pack into a tuple struct.
-	var fields []string
+	elems := make([]types.Type, len(x.Values))
+	fields := make([]string, len(x.Values))
 	for i, v := range x.Values {
 		vt := g.info.TypeOf(v)
-		fields = append(fields, fmt.Sprintf(". _%d = %s", i, emitRetain(g, g.emitExpr(v), vt)))
+		elems[i] = vt
+		fields[i] = fmt.Sprintf(". _%d = %s", i, emitRetain(g, g.emitExpr(v), vt))
 	}
-	g.line(fmt.Sprintf("return (DotTuple){%s };", strings.Join(fields, ", ")))
+	tupName := cTupleName(g, &types.Tuple{Elems: elems})
+	g.line(fmt.Sprintf("return (%s){%s };", tupName, strings.Join(fields, ", ")))
 }
 
 // emitBreakStmt emits break, or goto to a label for labeled breaks.

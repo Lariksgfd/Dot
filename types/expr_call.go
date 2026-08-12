@@ -40,10 +40,15 @@ func (c *Checker) recordGenericCallInstance(x *ast.CallExpr, sig *Fn) {
 	if sig == nil || len(sig.TypeParams) == 0 {
 		return
 	}
-	args := make([]Type, len(sig.TypeParams))
-	for i, tp := range sig.TypeParams {
-		if i < len(args) {
-			args[i] = tp
+	var args []Type
+	if idx, ok := x.Fn.(*ast.IndexExpr); ok {
+		for _, a := range idx.Indices {
+			args = append(args, c.typeFromExpr(a))
+		}
+	}
+	if len(args) == 0 {
+		for _, tp := range sig.TypeParams {
+			args = append(args, tp)
 		}
 	}
 	base := genericFuncName(x)
@@ -68,15 +73,26 @@ func genericFuncName(x *ast.CallExpr) string {
 		return f.Name
 	case *ast.FieldExpr:
 		return f.Name
+	case *ast.IndexExpr:
+		if id, ok := f.X.(*ast.Ident); ok {
+			return id.Name
+		}
 	}
 	return "fn"
 }
 
 // genericFuncSymbol returns the symbol of the callee, if resolvable.
 func (c *Checker) genericFuncSymbol(x *ast.CallExpr) *Symbol {
-	if id, ok := x.Fn.(*ast.Ident); ok {
-		if sym, ok := c.scope.Lookup(id.Name); ok {
+	switch fn := x.Fn.(type) {
+	case *ast.Ident:
+		if sym, ok := c.scope.Lookup(fn.Name); ok {
 			return sym
+		}
+	case *ast.IndexExpr:
+		if id, ok := fn.X.(*ast.Ident); ok {
+			if sym, ok := c.scope.Lookup(id.Name); ok {
+				return sym
+			}
 		}
 	}
 	return nil

@@ -21,6 +21,8 @@ type generator struct {
 	defers     []string
 	scopeVars  []scopeVar
 	unusedIdx  int
+	tupleDefs  map[string]*tupleInfo
+	tupleList  []*tupleInfo
 }
 
 // Generate translates a typed Dot program into a complete C source string.
@@ -78,7 +80,81 @@ func (g *generator) emitHeader() error {
 		g.line("#include \"" + m + ".h\"")
 	}
 	g.line("")
+	g.predeclareTuples()
+	for _, t := range g.tupleList {
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("typedef struct { "))
+		for i, f := range t.Fields {
+			b.WriteString(fmt.Sprintf("%s _%d; ", f, i))
+		}
+		b.WriteString(fmt.Sprintf("} %s;", t.Name))
+		g.line(b.String())
+	}
+	if len(g.tupleList) > 0 {
+		g.line("")
+	}
 	return nil
+}
+
+// predeclareTuples walks every function signature before any C is emitted so
+// that tuple typedefs are declared in the header even though tuple shapes are
+// only discovered when types are rendered.
+func (g *generator) predeclareTuples() {
+	for _, decl := range g.prog.Decls {
+		switch d := decl.(type) {
+		case *ast.FnDecl:
+			if ft := g.fnType(d); ft != nil {
+				registerTupleTypes(g, ft.Result)
+				for _, p := range ft.Params {
+					registerTupleTypes(g, p.Type)
+				}
+			}
+		case *ast.ImplDecl:
+			recv := g.implRecvType(d)
+			for _, m := range d.Methods {
+				ft := g.fnType(m)
+				if ft == nil && recv != nil {
+					ft = g.methodType(m, recv)
+				}
+				if ft == nil {
+					continue
+				}
+				registerTupleTypes(g, ft.Result)
+				for _, p := range ft.Params {
+					registerTupleTypes(g, p.Type)
+				}
+			}
+		}
+	}
+}
+
+// registerTupleTypes registers the tuple shapes mentioned by t, recursively
+// for the composite types that can contain them.
+func registerTupleTypes(g *generator, t types.Type) {
+	switch x := t.(type) {
+	case *types.Tuple:
+		cTupleName(g, x)
+	case *types.Slice:
+		registerTupleTypes(g, x.Elem)
+	case *types.Array:
+		registerTupleTypes(g, x.Elem)
+	case *types.Map:
+		registerTupleTypes(g, x.Key)
+		registerTupleTypes(g, x.Value)
+	case *types.Pointer:
+		registerTupleTypes(g, x.Elem)
+	case *types.Weak:
+		registerTupleTypes(g, x.Elem)
+	case *types.Fn:
+		for _, p := range x.Params {
+			registerTupleTypes(g, p.Type)
+		}
+		registerTupleTypes(g, x.Result)
+	case *types.Named:
+		for _, a := range x.TypeArgs {
+			registerTupleTypes(g, a)
+		}
+	}
 }
 
 // emitMain wraps top-level statements inside C main().

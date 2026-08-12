@@ -44,6 +44,10 @@ func (g *generator) emitStmt(s ast.Stmt) {
 // #define macro; regular declarations emit a C variable with an optional
 // retain for heap-allocated initialisers.
 func (g *generator) emitVarDecl(x *ast.VarDecl) {
+	if len(x.Names) > 1 && len(x.Values) == 1 {
+		g.emitTupleDecl(x)
+		return
+	}
 	for i, name := range x.Names {
 		vn := varName(g, name)
 		var val string
@@ -81,6 +85,32 @@ func (g *generator) emitVarDecl(x *ast.VarDecl) {
 		} else {
 			g.line(fmt.Sprintf("%s %s = %s;", ct, vn, val))
 		}
+	}
+}
+
+// emitTupleDecl emits a multi-name declaration initialised by one multi-value
+// call: a temporary tuple struct holds the result and each name is bound to
+// the matching field.
+func (g *generator) emitTupleDecl(x *ast.VarDecl) {
+	val := g.emitExpr(x.Values[0])
+	t := g.info.TypeOf(x.Values[0])
+	tup, ok := t.(*types.Tuple)
+	if !ok {
+		g.line(fmt.Sprintf("/* multi-name decl of %s */ %s;", cType(g, t), val))
+		return
+	}
+	tupName := cTupleName(g, tup)
+	tmp := fmt.Sprintf("_dot_tup_%d", g.unusedIdx)
+	g.unusedIdx++
+	g.line(fmt.Sprintf("%s %s = %s;", tupName, tmp, val))
+	for i, name := range x.Names {
+		if _, ok := name.(*ast.UnderscoreExpr); ok {
+			continue
+		}
+		vn := varName(g, name)
+		declType := g.info.TypeOf(name)
+		ct := cType(g, declType)
+		g.line(fmt.Sprintf("%s %s = %s._%d;", ct, vn, tmp, i))
 	}
 }
 

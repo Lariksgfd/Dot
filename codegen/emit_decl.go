@@ -251,7 +251,10 @@ func (g *generator) emitTypeDefs() error {
 func (g *generator) emitFuncDecls() error {
 	for _, decl := range g.prog.Decls {
 		switch d := decl.(type) {
-  		case *ast.FnDecl:
+		case *ast.FnDecl:
+			if len(d.TypeParams) > 0 {
+				continue
+			}
 			if isExtern(d) {
 				fnType := g.fnType(d)
 				if fnType == nil {
@@ -307,8 +310,40 @@ func (g *generator) emitFuncDecls() error {
 			}
 		}
 	}
+	g.emitMonomorphisedDecls()
 	g.line("")
 	return nil
+}
+
+// emitMonomorphisedDecls emits forward declarations for every monomorphised
+// generic function so that call sites appearing before the definitions still
+// see a complete prototype.
+func (g *generator) emitMonomorphisedDecls() {
+	for _, inst := range g.info.InstanceList {
+		if inst == nil || inst.Generic == nil || inst.Generic.Kind != types.SymFunc {
+			continue
+		}
+		fn := inst.Generic.Fn
+		if fn == nil || inst.Mangled == "" {
+			continue
+		}
+		result := cType(g, fn.Result)
+		if isEnumType(fn.Result) {
+			result += "*"
+		}
+		var params []string
+		for _, p := range fn.Params {
+			ct := cType(g, p.Type)
+			if isEnumType(p.Type) {
+				ct += "*"
+			}
+			params = append(params, ct)
+		}
+		if len(params) == 0 {
+			params = append(params, "void")
+		}
+		g.line(fmt.Sprintf("%s %s(%s);", result, inst.Mangled, strings.Join(params, ", ")))
+	}
 }
 
 // emitFuncDefs emits all function definitions (user + monomorphised).
@@ -319,6 +354,9 @@ func (g *generator) emitFuncDefs() error {
 		switch d := decl.(type) {
 		case *ast.FnDecl:
 			if isExtern(d) {
+				continue
+			}
+			if len(d.TypeParams) > 0 {
 				continue
 			}
 			g.emitFuncDef(d, nil)
@@ -380,20 +418,38 @@ func (g *generator) emitMonomorphised() {
 	}
 }
 
-// emitMonomorphisedFunc emits a monomorphised generic function.
+// emitMonomorphisedFunc emits a monomorphised generic function: the mangled
+// name carries the type arguments and the body is emitted from the generic
+// declaration's AST.
 func (g *generator) emitMonomorphisedFunc(inst *types.Instance) {
 	fn := inst.Generic.Fn
 	if fn == nil {
 		return
 	}
-	result := cType(g, inst.Result)
+	result := cType(g, fn.Result)
+	if isEnumType(fn.Result) {
+		result += "*"
+	}
 	var params []string
-	for i, p := range fn.Params {
-		ct := cType(g, inst.TypeArgs[i])
-		params = append(params, fmt.Sprintf("%s %s", ct, cFieldName(p.Name)))
+	for _, p := range fn.Params {
+		ct := cType(g, p.Type)
+		if isEnumType(p.Type) {
+			ct += "*"
+		}
+		params = append(params, fmt.Sprintf("%s %s", ct, p.Name))
 	}
 	g.line(fmt.Sprintf("%s %s(%s) {", result, inst.Mangled, strings.Join(params, ", ")))
 	g.line(fmt.Sprintf("    /* monomorphised: %s */", inst.Generic.Name))
+	if decl, ok := inst.Generic.Decl.(*ast.FnDecl); ok && decl != nil {
+		if decl.Body != nil {
+			for _, s := range decl.Body.Stmts {
+				g.emitStmt(s)
+			}
+		} else if decl.ExprBody != nil {
+			expr := g.emitExpr(decl.ExprBody)
+			g.line(fmt.Sprintf("    return %s;", expr))
+		}
+	}
 	g.line("}")
 	g.line("")
 }

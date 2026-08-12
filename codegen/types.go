@@ -33,7 +33,7 @@ func cType(g *generator, t types.Type) string {
 	case *types.Map:
 		return "DotMap*"
 	case *types.Tuple:
-		return cTupleStruct(g, x)
+		return cTupleName(g, x)
 	case *types.Fn:
 		return cFnPtr(g, x)
 	case *types.Pointer:
@@ -122,6 +122,36 @@ func cTupleStruct(g *generator, t *types.Tuple) string {
 	}
 	b.WriteString("}")
 	return b.String()
+}
+
+// tupleInfo records one positional tuple struct typedef.
+type tupleInfo struct {
+	Name   string
+	Fields []string
+}
+
+// cTupleName returns a stable typedef name for a tuple shape, registering the
+// typedef for emission in the header. Identical shapes share one typedef so
+// that declarations, definitions and returns all reference the same C type.
+func cTupleName(g *generator, t *types.Tuple) string {
+	fields := make([]string, len(t.Elems))
+	for i, e := range t.Elems {
+		fields[i] = cType(g, e)
+	}
+	key := strings.Join(fields, ",")
+	if g.tupleDefs == nil {
+		g.tupleDefs = make(map[string]*tupleInfo)
+	}
+	if info, ok := g.tupleDefs[key]; ok {
+		return info.Name
+	}
+	info := &tupleInfo{
+		Name:   fmt.Sprintf("DotTuple_%d", len(g.tupleList)),
+		Fields: fields,
+	}
+	g.tupleDefs[key] = info
+	g.tupleList = append(g.tupleList, info)
+	return info.Name
 }
 
 // cFnPtr emits a function pointer type: R (*)(A, B).

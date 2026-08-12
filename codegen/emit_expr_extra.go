@@ -48,6 +48,8 @@ func emitIndex(g *generator, x *ast.IndexExpr) string {
 		elemType := tt.Elem
 		if isStructOrEnum(elemType) {
 			res = fmt.Sprintf("(*(%s*)%s)", cType(g, elemType), res)
+		} else if !types.IsHeap(elemType) && !isPointerLike(elemType) {
+			res = fmt.Sprintf("((%s)(intptr_t)%s)", cType(g, elemType), res)
 		}
 		return res
 	case *types.Array:

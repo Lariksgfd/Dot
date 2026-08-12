@@ -113,9 +113,12 @@ func Identical(a, b Type) bool {
 			}
 		}
 		return true
-	case *Named, *TypeParam, *Trait:
+	case *Named, *Trait:
 		// Nominal: pointer identity (already handled at the top for ==).
 		return false
+	case *TypeParam:
+		y := b.(*TypeParam)
+		return x.Name == y.Name && x.Index == y.Index
 	case *TypeVar:
 		return false // pointer identity only
 	}
