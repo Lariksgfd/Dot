@@ -79,12 +79,22 @@ func (e *emitter) namedTypeOf(expr ast.Expr) string {
 // { ptr, i32 } fat-pointer string representation, so no C runtime layout
 // assumptions leak into the IR; only libc malloc/puts/exit are used.
 func (e *emitter) emitRuntimeHelpers() {
-	oobName := e.formatString("index out of range")
+	oobName := e.runtimeString("index out of range", "@.dot.oob")
+	upName := e.runtimeString("unwrap panic: bad variant", "@.dot.unwrappanic")
 
 	e.emit("")
 	e.emit("define internal void @dot_bounds_panic() {")
 	e.emit("entry:")
 	e.emit("  %s = call i32 @puts(ptr %s)", e.nextTmp(), oobName)
+	e.emit("  call void @exit(i32 1)")
+	e.emit("  unreachable")
+	e.emit("}")
+	e.emit("")
+
+	e.emit("")
+	e.emit("define internal void @dot_unwrap_panic() {")
+	e.emit("entry:")
+	e.emit("  %s = call i32 @puts(ptr %s)", e.nextTmp(), upName)
 	e.emit("  call void @exit(i32 1)")
 	e.emit("  unreachable")
 	e.emit("}")
@@ -234,27 +244,79 @@ func (e *emitter) emitStringConcat(left, right string) string {
 	return tmp
 }
 
-// materializeStruct copies the struct pointed to by val into a fresh heap
-// allocation and returns the heap pointer. Used when a function returns an
-// aggregate: the stack alloca would dangle after the return.
-func (e *emitter) materializeStruct(structName, val string) string {
-	fieldTypes := e.structFieldTypes[structName]
+// alignOf returns the LLVM ABI alignment in bytes of an LLVM type string.
+func alignOf(t string) int64 {
+	switch t {
+	case "i1", "i8":
+		return 1
+	case "i16":
+		return 2
+	case "i32", "float":
+		return 4
+	case "i64", "double", "ptr":
+		return 8
+	case "{ ptr, i32 }", "{ ptr, i32, i32 }":
+		return 8
+	}
+	return 8
+}
+
+// layoutSize computes the in-memory size of a struct built from the given
+// field types, honouring LLVM padding and tail alignment.
+func layoutSize(fieldTypes []string) int64 {
 	total := int64(0)
+	maxAlign := int64(1)
 	for _, ft := range fieldTypes {
+		a := alignOf(ft)
+		if a > maxAlign {
+			maxAlign = a
+		}
+		total = (total + a - 1) / a * a
 		total += sizeOf(ft)
 	}
-	heap := e.nextTmp()
-	e.emit("  %s = call ptr @malloc(i64 %d)", heap, total)
-	for i, ft := range fieldTypes {
-		src := e.nextTmp()
-		e.emit("  %s = getelementptr %%%s, ptr %s, i32 0, i32 %d", src, structName, val, i)
-		v := e.nextTmp()
-		e.emit("  %s = load %s, ptr %s", v, ft, src)
-		dst := e.nextTmp()
-		e.emit("  %s = getelementptr %%%s, ptr %s, i32 0, i32 %d", dst, structName, heap, i)
-		e.emit("  store %s %s, ptr %s", ft, v, dst)
+	return (total + maxAlign - 1) / maxAlign * maxAlign
+}
+
+// materializeAgg copies the aggregate (struct or enum) pointed to by val
+// into a fresh heap allocation and returns the heap pointer. Used when a
+// function returns an aggregate: the stack alloca would dangle after the
+// return.
+func (e *emitter) materializeAgg(aggName, val string) string {
+	if fieldTypes, ok := e.structFieldTypes[aggName]; ok {
+		total := layoutSize(fieldTypes)
+		heap := e.nextTmp()
+		e.emit("  %s = call ptr @malloc(i64 %d)", heap, total)
+		for i, ft := range fieldTypes {
+			src := e.nextTmp()
+			e.emit("  %s = getelementptr %%%s, ptr %s, i32 0, i32 %d", src, aggName, val, i)
+			v := e.nextTmp()
+			e.emit("  %s = load %s, ptr %s", v, ft, src)
+			dst := e.nextTmp()
+			e.emit("  %s = getelementptr %%%s, ptr %s, i32 0, i32 %d", dst, aggName, heap, i)
+			e.emit("  store %s %s, ptr %s", ft, v, dst)
+		}
+		return heap
 	}
-	return heap
+	if fields, ok := e.enumFieldList[aggName]; ok {
+		typesList := make([]string, len(fields))
+		for i, f := range fields {
+			typesList[i] = f.Type
+		}
+		total := layoutSize(typesList)
+		heap := e.nextTmp()
+		e.emit("  %s = call ptr @malloc(i64 %d)", heap, total)
+		for _, f := range fields {
+			src := e.nextTmp()
+			e.emit("  %s = getelementptr %%%s, ptr %s, i32 0, i32 %d", src, aggName, val, f.Idx)
+			v := e.nextTmp()
+			e.emit("  %s = load %s, ptr %s", v, f.Type, src)
+			dst := e.nextTmp()
+			e.emit("  %s = getelementptr %%%s, ptr %s, i32 0, i32 %d", dst, aggName, heap, f.Idx)
+			e.emit("  store %s %s, ptr %s", f.Type, v, dst)
+		}
+		return heap
+	}
+	return val
 }
 
 // llvmAggType converts a checked type to an LLVM value type, extended with
@@ -287,12 +349,16 @@ func (e *emitter) structFieldLLVMType(fieldType ast.Type) string {
 // skipARC reports whether a heap-typed value should not get dot_retain/
 // dot_release calls in this backend. Strings are value fat pointers
 // ({ ptr, i32 }) and slices are stack headers; both are stack values, so
-// ARC calls on their allocas would corrupt memory.
+// ARC calls on their allocas would corrupt memory. Enums (including
+// Option/Result) are stack allocas in this backend whose first field is the
+// tag, so a retain would corrupt the discriminant.
 func (e *emitter) skipARC(t types.Type) bool {
 	switch types.Underlying(t).(type) {
 	case *types.Basic:
 		return t.Kind() == types.KindString
 	case *types.Slice:
+		return true
+	case *types.Enum:
 		return true
 	}
 	return false
@@ -369,6 +435,14 @@ func (e *emitter) storeToField(fe *ast.FieldExpr, val string) {
 // emitFieldExpr emits a field access: a builtin property (len/cap) on
 // collections, or a struct field load.
 func (e *emitter) emitFieldExpr(ex *ast.FieldExpr) string {
+	if e.info != nil {
+		if sel, ok := e.info.Selections[ex]; ok && sel.Kind == types.SelectVariant {
+			// Bare unit variant value: Color.Red.
+			if name := e.enumNameOfExpr(ex); name != "" {
+				return e.emitEnumLit(name, sel.Variant.Name, nil)
+			}
+		}
+	}
 	if ex.Name == "len" || ex.Name == "cap" {
 		if v := e.emitLenProp(ex); v != "" {
 			return v
@@ -424,8 +498,38 @@ func (e *emitter) emitCallExpr(ex *ast.CallExpr) string {
 		return e.emitPrint(ex)
 	}
 	if fe, ok := ex.Fn.(*ast.FieldExpr); ok && e.info != nil {
-		if sel, ok := e.info.Selections[fe]; ok && sel.Kind == types.SelectMethod && sel.Method != nil {
-			return e.emitMethodCall(ex, fe, sel)
+		if sel, ok := e.info.Selections[fe]; ok {
+			switch sel.Kind {
+			case types.SelectMethod:
+				if sel.Method != nil {
+					return e.emitMethodCall(ex, fe, sel)
+				}
+			case types.SelectBuiltinMethod:
+				return e.emitBuiltinMethodCall(ex, fe)
+			case types.SelectVariant:
+				// Qualified payload constructor: Shape.Circle(2.0).
+				if name := e.enumNameOfExpr(ex); name != "" {
+					var args []ast.Expr
+					for _, a := range ex.Args {
+						args = append(args, a.Value)
+					}
+					return e.emitEnumLit(name, sel.Variant.Name, args)
+				}
+			}
+		}
+	}
+	if e.info != nil {
+		if ident, ok := ex.Fn.(*ast.Ident); ok {
+			if sym, ok := e.info.Uses[ident]; ok && sym.Kind == types.SymVariant {
+				// Unqualified payload constructor: Some(x), Ok(v), Err(e).
+				if name := e.enumNameOfExpr(ex); name != "" {
+					var args []ast.Expr
+					for _, a := range ex.Args {
+						args = append(args, a.Value)
+					}
+					return e.emitEnumLit(name, sym.Variant.Name, args)
+				}
+			}
 		}
 	}
 	fnName := ""
@@ -511,9 +615,9 @@ func (e *emitter) emitAssignExpr(ex *ast.AssignExpr) string {
 			}
 			tmp := e.nextTmp()
 			if e.ptrVars[tgt.Name] {
-				e.emit("  %s = load ptr, ptr %%%s", tmp, tgt.Name)
+				e.emit("  %s = load ptr, ptr %%%s", tmp, e.allocaName(tgt.Name))
 			} else {
-				e.emit("  %s = load %s, ptr %%%s", tmp, t, tgt.Name)
+				e.emit("  %s = load %s, ptr %%%s", tmp, t, e.allocaName(tgt.Name))
 			}
 			cur = tmp
 		case *ast.FieldExpr:
@@ -532,13 +636,13 @@ func (e *emitter) emitAssignExpr(ex *ast.AssignExpr) string {
 	switch tgt := target.(type) {
 	case *ast.Ident:
 		if e.ptrVars[tgt.Name] {
-			e.emit("  store ptr %s, ptr %%%s", val, tgt.Name)
+			e.emit("  store ptr %s, ptr %%%s", val, e.allocaName(tgt.Name))
 		} else {
 			t := "i64"
 			if vt, ok := e.varTypes[tgt.Name]; ok {
 				t = vt
 			}
-			e.emit("  store %s %s, ptr %%%s", t, val, tgt.Name)
+			e.emit("  store %s %s, ptr %%%s", t, val, e.allocaName(tgt.Name))
 		}
 	case *ast.FieldExpr:
 		e.storeToField(tgt, val)
@@ -707,10 +811,14 @@ func (e *emitter) emitForIterable(s *ast.ForStmt) {
 	if namedAgg {
 		e.varTypes[loopVar] = elemType
 		e.ptrVars[loopVar] = true
-		e.emit("  %%%s = alloca ptr", loopVar)
+		loopAlloc := e.uniqueAllocaName(loopVar)
+		e.varAllocas[loopVar] = bindAlloca{name: loopAlloc, ptr: true, typ: elemType}
+		e.emit("  %%%s = alloca ptr", loopAlloc)
 	} else {
 		e.varTypes[loopVar] = elemType
-		e.emit("  %%%s = alloca %s", loopVar, elemType)
+		loopAlloc := e.uniqueAllocaName(loopVar)
+		e.varAllocas[loopVar] = bindAlloca{name: loopAlloc, ptr: false, typ: elemType}
+		e.emit("  %%%s = alloca %s", loopAlloc, elemType)
 	}
 
 	idxVar := ""
@@ -721,12 +829,16 @@ func (e *emitter) emitForIterable(s *ast.ForStmt) {
 			idxVar = e.nextLabel("for.idx")
 		}
 		e.varTypes[idxVar] = "i64"
-		e.emit("  %%%s = alloca i64", idxVar)
+		idxAlloc := e.uniqueAllocaName(idxVar)
+		e.varAllocas[idxVar] = bindAlloca{name: idxAlloc, ptr: false, typ: "i64"}
+		e.emit("  %%%s = alloca i64", idxAlloc)
 	} else {
 		idxVar = e.nextLabel("for.idx")
-		e.emit("  %%%s = alloca i64", idxVar)
+		idxAlloc := e.uniqueAllocaName(idxVar)
+		e.varAllocas[idxVar] = bindAlloca{name: idxAlloc, ptr: false, typ: "i64"}
+		e.emit("  %%%s = alloca i64", idxAlloc)
 	}
-	e.emit("  store i64 0, ptr %%%s", idxVar)
+	e.emit("  store i64 0, ptr %%%s", e.allocaName(idxVar))
 
 	condBlock := e.nextLabel("for.cond")
 	bodyBlock := e.nextLabel("for.body")
@@ -737,28 +849,28 @@ func (e *emitter) emitForIterable(s *ast.ForStmt) {
 
 	e.emit("\n%s:", condBlock)
 	cur := e.nextTmp()
-	e.emit("  %s = load i64, ptr %%%s", cur, idxVar)
+	e.emit("  %s = load i64, ptr %%%s", cur, e.allocaName(idxVar))
 	cmpT := e.nextTmp()
 	e.emit("  %s = icmp slt i64 %s, %s", cmpT, cur, lenVal)
 	e.emit("  br i1 %s, label %%%s, label %%%s", cmpT, bodyBlock, endBlock)
 
 	e.emit("\n%s:", bodyBlock)
 	cur2 := e.nextTmp()
-	e.emit("  %s = load i64, ptr %%%s", cur2, idxVar)
+	e.emit("  %s = load i64, ptr %%%s", cur2, e.allocaName(idxVar))
 	elemPtr := e.nextTmp()
 	if namedAgg {
 		e.emit("  %s = getelementptr ptr, ptr %s, i64 %s", elemPtr, dataPtr, cur2)
 		v := e.nextTmp()
 		e.emit("  %s = load ptr, ptr %s", v, elemPtr)
-		e.emit("  store ptr %s, ptr %%%s", v, loopVar)
+		e.emit("  store ptr %s, ptr %%%s", v, e.allocaName(loopVar))
 	} else {
 		e.emit("  %s = getelementptr %s, ptr %s, i64 %s", elemPtr, elemType, dataPtr, cur2)
 		v := e.nextTmp()
 		e.emit("  %s = load %s, ptr %s", v, elemType, elemPtr)
-		e.emit("  store %s %s, ptr %%%s", elemType, v, loopVar)
+		e.emit("  store %s %s, ptr %%%s", elemType, v, e.allocaName(loopVar))
 	}
 	if s.Key != nil {
-		e.emit("  store i64 %s, ptr %%%s", cur2, idxVar)
+		e.emit("  store i64 %s, ptr %%%s", cur2, e.allocaName(idxVar))
 	}
 	if s.Body != nil {
 		for _, bs := range s.Body.Stmts {
@@ -769,10 +881,10 @@ func (e *emitter) emitForIterable(s *ast.ForStmt) {
 
 	e.emit("\n%s:", stepBlock)
 	cur3 := e.nextTmp()
-	e.emit("  %s = load i64, ptr %%%s", cur3, idxVar)
+	e.emit("  %s = load i64, ptr %%%s", cur3, e.allocaName(idxVar))
 	nextV := e.nextTmp()
 	e.emit("  %s = add i64 %s, 1", nextV, cur3)
-	e.emit("  store i64 %s, ptr %%%s", nextV, idxVar)
+	e.emit("  store i64 %s, ptr %%%s", nextV, e.allocaName(idxVar))
 	e.emit("  br label %%%s", condBlock)
 
 	e.emit("\n%s:", endBlock)

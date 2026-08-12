@@ -6,13 +6,25 @@ import (
 	"github.com/dotlang/dot/ast"
 )
 
+// runtimeString registers a runtime helper message under a fixed global
+// name, so helper strings do not consume the @.str.N numbering of user
+// string literals.
+func (e *emitter) runtimeString(content, name string) string {
+	if _, exists := e.stringLits[content]; !exists {
+		e.stringLits[content] = name
+	}
+	return name
+}
+
 // formatString registers a printf/puts format or constant string global and
-// returns its @.str.N name.
+// returns its @.str.N name. User string literals and formats share one
+// counter; runtime helper messages use fixed names (runtimeString).
 func (e *emitter) formatString(content string) string {
 	if name, ok := e.stringLits[content]; ok {
 		return name
 	}
-	name := fmt.Sprintf("@.str.%d", len(e.stringLits))
+	name := fmt.Sprintf("@.str.%d", e.strID)
+	e.strID++
 	e.stringLits[content] = name
 	return name
 }

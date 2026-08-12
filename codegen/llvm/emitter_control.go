@@ -151,13 +151,15 @@ func (e *emitter) emitForIn(s *ast.ForStmt) {
 	}
 	e.varTypes[loopVar] = loopType
 
-	e.emit("  %%%s = alloca %s", loopVar, loopType)
+	allocName := e.uniqueAllocaName(loopVar)
+	e.varAllocas[loopVar] = bindAlloca{name: allocName, ptr: false, typ: loopType}
+	e.emit("  %%%s = alloca %s", allocName, loopType)
 
 	loVal := "0"
 	if rangeExpr.Low != nil {
 		loVal = e.emitExpr(rangeExpr.Low)
 	}
-	e.emit("  store %s %s, ptr %%%s", loopType, loVal, loopVar)
+	e.emit("  store %s %s, ptr %%%s", loopType, loVal, allocName)
 
 	condBlock := e.nextLabel("for.cond")
 	bodyBlock := e.nextLabel("for.body")
@@ -168,7 +170,7 @@ func (e *emitter) emitForIn(s *ast.ForStmt) {
 
 	e.emit("\n%s:", condBlock)
 	curVal := e.nextTmp()
-	e.emit("  %s = load %s, ptr %%%s", curVal, loopType, loopVar)
+	e.emit("  %s = load %s, ptr %%%s", curVal, loopType, allocName)
 
 	hiVal := "0"
 	if rangeExpr.High != nil {
@@ -193,10 +195,10 @@ func (e *emitter) emitForIn(s *ast.ForStmt) {
 
 	e.emit("\n%s:", stepBlock)
 	stepVal := e.nextTmp()
-	e.emit("  %s = load %s, ptr %%%s", stepVal, loopType, loopVar)
+	e.emit("  %s = load %s, ptr %%%s", stepVal, loopType, allocName)
 	nextVal := e.nextTmp()
 	e.emit("  %s = add %s %s, 1", nextVal, loopType, stepVal)
-	e.emit("  store %s %s, ptr %%%s", loopType, nextVal, loopVar)
+	e.emit("  store %s %s, ptr %%%s", loopType, nextVal, allocName)
 	e.emit("  br label %%%s", condBlock)
 
 	e.emit("\n%s:", endBlock)

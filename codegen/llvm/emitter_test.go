@@ -101,10 +101,10 @@ enum Option {
 	if !strings.Contains(c, "%Color = type { i32 }") {
 		t.Errorf("Missing Color enum definition, got: %s", c)
 	}
-	if !strings.Contains(c, "%Shape = type { i32, i32, i32 }") {
-		t.Errorf("Missing Shape enum definition (tag + 2 payload fields), got: %s", c)
+	if !strings.Contains(c, "%Shape = type { i32, i64, i64, i64 }") {
+		t.Errorf("Missing Shape enum definition (tag + concat payload fields), got: %s", c)
 	}
-	if !strings.Contains(c, "%Option = type { i32, i32 }") {
+	if !strings.Contains(c, "%Option = type { i32, i64 }") {
 		t.Errorf("Missing Option enum definition (tag + 1 payload field), got: %s", c)
 	}
 }

@@ -1,0 +1,142 @@
+enum Color {
+	Red
+	Green
+	Blue
+}
+
+struct User {
+	name string
+	age  int
+}
+
+enum Shape {
+	Circle(radius float)
+	Rectangle(width float, height float)
+}
+
+fn find_user(id int) -> Option[User] {
+	if id == 1 {
+		return Some(User { name: "bogdan", age: 13 })
+	}
+	return None
+}
+
+fn classify(opt Option[int]) -> string {
+	return match opt {
+		Some(v) if v > 10 => "big"
+		Some(v) => "small"
+		None => "none"
+	}
+}
+
+fn hex(color Color) -> string {
+	return match color {
+		Color.Red => "red"
+		Color.Green => "green"
+		Color.Blue => "blue"
+	}
+}
+
+fn area(shape Shape) -> float {
+	return match shape {
+		Shape.Circle(r) => 3.14159 * r * r
+		Shape.Rectangle(w, h) => w * h
+	}
+}
+
+fn describe(opt Option[int]) -> int {
+	return match opt {
+		Some(v) => v
+		None => -1
+	}
+}
+
+fn divide(a int, b int) -> Result[int, string] {
+	if b == 0 {
+		return Err("division by zero")
+	}
+	return Ok(a / b)
+}
+
+fn get_name(id int) -> Option[string] {
+	if id == 1 {
+		return Some("bogdan")
+	}
+	return None
+}
+
+fn main() {
+	c = Color.Red
+	print(hex(c))
+	print(hex(Color.Blue))
+
+	s = Shape.Circle(2.0)
+	print(area(s))
+	r = Shape.Rectangle(3.0, 4.0)
+	print(area(r))
+
+	o = Some(42)
+	print(describe(o))
+	n = describe(Some(7))
+	print(n)
+
+	print(o.is_some())
+	o2 = Some(1)
+	print(o2.is_some())
+	o3 = None
+	print(o3.is_none())
+	print(o3.is_some())
+
+	g = get_name(1)
+	print(match g {
+		Some(name) => name
+		None => "not found"
+	})
+	print(get_name(2).unwrap_or("nobody"))
+
+	d1 = divide(10, 2)
+	print(d1.is_ok())
+	print(d1.is_err())
+	print(d1.unwrap())
+
+	d2 = divide(5, 0)
+	print(d2.is_ok())
+	print(d2.is_err())
+	print(d2.unwrap_or(99))
+
+	print(match d1 {
+		Ok(v) => v
+		Err(msg) => -1
+	})
+	print(match d2 {
+		Ok(v) => v
+		Err(msg) => 0
+	})
+
+	print(match get_name(1) {
+		Some(n2) => n2
+		None => "none"
+	})
+
+	total = match r {
+		Shape.Circle(rad) => rad
+		Shape.Rectangle(w, h) => w + h
+	}
+	print(total)
+
+	print(classify(Some(42)))
+	print(classify(Some(5)))
+	print(classify(None))
+
+	u = find_user(1)
+	print(match u {
+		Some(user) => user.age
+		None => 0
+	})
+	print(match u {
+		Some(user) => user.name
+		None => "unknown"
+	})
+	u2 = find_user(2)
+	print(u2.is_none())
+}

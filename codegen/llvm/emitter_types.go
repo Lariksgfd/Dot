@@ -16,6 +16,12 @@ func (e *emitter) llvmType(t types.Type) string {
 	if t == nil {
 		return "i64"
 	}
+	if tv, ok := t.(*types.TypeVar); ok {
+		if tv.Bound != nil {
+			return e.llvmType(tv.Bound)
+		}
+		return "i64"
+	}
 	if b, ok := t.(*types.Basic); ok {
 		switch b.Kind() {
 		case types.KindBool, types.KindUntypedBool:
@@ -39,7 +45,7 @@ func (e *emitter) llvmType(t types.Type) string {
 		}
 	}
 	if n, ok := t.(*types.Named); ok {
-		return "%" + n.Name
+		return namedLLVMType(n)
 	}
 	if a, ok := t.(*types.Array); ok {
 		return fmt.Sprintf("[%d x %s]", a.Len, e.llvmType(a.Elem))
@@ -51,6 +57,72 @@ func (e *emitter) llvmType(t types.Type) string {
 		return "ptr"
 	}
 	return "i64"
+}
+
+// namedLLVMType returns the LLVM named-type spelling for a Dot named type.
+// Instantiated generics get a mangled name (Option[int] -> %Option__i64) so
+// that different instantiations of the same generic enum do not collide.
+func namedLLVMType(n *types.Named) string {
+	if len(n.TypeArgs) > 0 {
+		parts := make([]string, len(n.TypeArgs))
+		for i, a := range n.TypeArgs {
+			parts[i] = llvmMangleArg(a)
+		}
+		return "%" + n.Name + "__" + strings.Join(parts, "_")
+	}
+	return "%" + n.Name
+}
+
+// llvmMangleArg builds a deterministic identifier fragment for a type
+// argument, used in mangled instantiation names.
+func llvmMangleArg(t types.Type) string {
+	if t == nil {
+		return "?"
+	}
+	switch x := t.(type) {
+	case *types.Basic:
+		switch x.Kind() {
+		case types.KindBool, types.KindUntypedBool:
+			return "bool"
+		case types.KindInt, types.KindUint, types.KindUntypedInt:
+			return "i64"
+		case types.KindInt8, types.KindUint8:
+			return "i8"
+		case types.KindInt16, types.KindUint16:
+			return "i16"
+		case types.KindInt32, types.KindUint32, types.KindRune:
+			return "i32"
+		case types.KindFloat, types.KindUntypedFloat:
+			return "double"
+		case types.KindFloat32:
+			return "float"
+		case types.KindString:
+			return "str"
+		}
+		return "basic"
+	case *types.Named:
+		if len(x.TypeArgs) > 0 {
+			parts := make([]string, len(x.TypeArgs))
+			for i, a := range x.TypeArgs {
+				parts[i] = llvmMangleArg(a)
+			}
+			return x.Name + "_" + strings.Join(parts, "_")
+		}
+		return x.Name
+	case *types.TypeVar:
+		if x.Bound != nil {
+			return llvmMangleArg(x.Bound)
+		}
+		return fmt.Sprintf("t%d", x.ID)
+	case *types.Slice:
+		return "slice_" + llvmMangleArg(x.Elem)
+	case *types.Array:
+		return fmt.Sprintf("arr%d_%s", x.Len, llvmMangleArg(x.Elem))
+	case *types.Pointer:
+		return "ptr_" + llvmMangleArg(x.Elem)
+	default:
+		return strings.NewReplacer(" ", "_", "[", "", "]", "").Replace(t.String())
+	}
 }
 
 // isTypeParam reports whether name is one of fn's generic type parameters.

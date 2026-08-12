@@ -18,9 +18,15 @@ type emitter struct {
 	structFields     map[string]map[string]int
 	structFieldTypes map[string][]string
 	enumVariants     map[string]map[string]int
+	enumLayouts      map[string]map[string]enumVariantLayout
+	enumFieldList    map[string][]enumFieldInfo
 	ptrVars          map[string]bool
 	varTypes         map[string]string
+	varAllocas       map[string]bindAlloca
+	emittedAllocas   map[string]bool
+	bindingID        int
 	stringLits       map[string]string
+	strID            int
 	implMethods      map[string]*ast.FnDecl
 	genericArgs      map[string]types.Type
 	implRecv         string
@@ -38,6 +44,93 @@ func (e *emitter) nextLabel(prefix string) string {
 	return fmt.Sprintf("%s%d", prefix, e.lblID)
 }
 
+// bindAlloca records where a name is bound in the current function. Pattern
+// bindings may repeat the same name across match arms, so each binding keeps
+// its own alloca when the storage kind differs.
+type bindAlloca struct {
+	name string
+	ptr  bool
+	typ  string
+}
+
+// allocaName returns the alloca register bound to name in the current
+// function, falling back to the name itself.
+func (e *emitter) allocaName(name string) string {
+	if b, ok := e.varAllocas[name]; ok {
+		return b.name
+	}
+	return name
+}
+
+// uniqueAllocaName returns an alloca register name for a Dot variable name
+// that is guaranteed unique inside the current function. It is fed by a
+// function-wide registry that survives scope snapshots, so allocas emitted
+// in different match arms can never collide.
+func (e *emitter) uniqueAllocaName(name string) string {
+	if e.emittedAllocas == nil {
+		e.emittedAllocas = make(map[string]bool)
+	}
+	if e.emittedAllocas[name] {
+		e.bindingID++
+		name = fmt.Sprintf("%s.%d", name, e.bindingID)
+	}
+	e.emittedAllocas[name] = true
+	return name
+}
+
+// bindName binds name to a fresh alloca of the given kind and returns the
+// alloca register name. Bindings never reuse an earlier alloca because a
+// match arm's block does not dominate later blocks; repeated names get a
+// numbered suffix.
+func (e *emitter) bindName(name string, isPtr bool, valType, storeType string) string {
+	allocName := e.uniqueAllocaName(name)
+	declType := storeType
+	if isPtr {
+		declType = "ptr"
+	}
+	e.emit("  %%%s = alloca %s", allocName, declType)
+	e.varAllocas[name] = bindAlloca{name: allocName, ptr: isPtr, typ: storeType}
+	e.ptrVars[name] = isPtr
+	if isPtr {
+		e.varTypes[name] = valType
+	} else {
+		e.varTypes[name] = storeType
+	}
+	return allocName
+}
+
+// varScope snapshots the per-function variable binding state so match arms
+// can bind names without leaking them into later arms.
+type varScope struct {
+	allocas map[string]bindAlloca
+	ptrs    map[string]bool
+	types   map[string]string
+}
+
+// snapshotScope copies the current variable binding state.
+func (e *emitter) snapshotScope() varScope {
+	allocas := make(map[string]bindAlloca, len(e.varAllocas))
+	for k, v := range e.varAllocas {
+		allocas[k] = v
+	}
+	ptrs := make(map[string]bool, len(e.ptrVars))
+	for k, v := range e.ptrVars {
+		ptrs[k] = v
+	}
+	types := make(map[string]string, len(e.varTypes))
+	for k, v := range e.varTypes {
+		types[k] = v
+	}
+	return varScope{allocas: allocas, ptrs: ptrs, types: types}
+}
+
+// restoreScope reinstates a previously snapshotted variable binding state.
+func (e *emitter) restoreScope(s varScope) {
+	e.varAllocas = s.allocas
+	e.ptrVars = s.ptrs
+	e.varTypes = s.types
+}
+
 func (e *emitter) emit(format string, args ...any) {
 	e.sb.WriteString(fmt.Sprintf(format, args...))
 	e.sb.WriteString("\n")
@@ -50,9 +143,14 @@ func Generate(info *types.Info, prog *ast.Program) (string, error) {
 		structFields:     make(map[string]map[string]int),
 		structFieldTypes: make(map[string][]string),
 		enumVariants:     make(map[string]map[string]int),
+		enumLayouts:      make(map[string]map[string]enumVariantLayout),
+		enumFieldList:    make(map[string][]enumFieldInfo),
 		ptrVars:          make(map[string]bool),
 		varTypes:         make(map[string]string),
+		varAllocas:       make(map[string]bindAlloca),
+		emittedAllocas:   make(map[string]bool),
 		stringLits:       make(map[string]string),
+		strID:            1,
 	}
 
 	e.emit("declare void @dot_retain(ptr)")
@@ -71,6 +169,7 @@ func Generate(info *types.Info, prog *ast.Program) (string, error) {
 			e.emitEnumDecl(d)
 		}
 	}
+	e.collectInstantiatedEnumDecls()
 
 	for _, decl := range prog.Decls {
 		if impl, ok := decl.(*ast.ImplDecl); ok {
@@ -140,205 +239,14 @@ func (e *emitter) emitStructDecl(sd *ast.StructDecl) {
 	e.emit("%%%s = type { %s }", sd.Name, strings.Join(fields, ", "))
 }
 
-func (e *emitter) emitEnumDecl(ed *ast.EnumDecl) {
-	maxFields := 0
-	for _, v := range ed.Variants {
-		if len(v.Fields) > maxFields {
-			maxFields = len(v.Fields)
-		}
-	}
-
-	variantMap := make(map[string]int)
-	for i, v := range ed.Variants {
-		variantMap[v.Name] = i
-	}
-	e.enumVariants[ed.Name] = variantMap
-
-	fields := make([]string, 0, 1+maxFields)
-	fields = append(fields, "i32")
-	for i := 0; i < maxFields; i++ {
-		fields = append(fields, "i32")
-	}
-	e.emit("%%%s = type { %s }", ed.Name, strings.Join(fields, ", "))
-}
-
-func (e *emitter) emitEnumLit(enumName string, variantName string, args []ast.Expr) string {
-	tmp := e.nextTmp()
-	e.emit("  %s = alloca %%%s", tmp, enumName)
-
-	tag := 0
-	if vmap, ok := e.enumVariants[enumName]; ok {
-		tag = vmap[variantName]
-	}
-
-	tagPtr := e.nextTmp()
-	e.emit("  %s = getelementptr %%%s, ptr %s, i32 0, i32 0", tagPtr, enumName, tmp)
-	e.emit("  store i32 %d, ptr %s", tag, tagPtr)
-
-	for i, arg := range args {
-		val := e.emitExpr(arg)
-		fieldPtr := e.nextTmp()
-		e.emit("  %s = getelementptr %%%s, ptr %s, i32 0, i32 %d", fieldPtr, enumName, tmp, i+1)
-		e.emit("  store i32 %s, ptr %s", val, fieldPtr)
-	}
-
-	return tmp
-}
-
-func (e *emitter) matchEnumNameFromPatterns(me *ast.MatchExpr) string {
-	for _, arm := range me.Arms {
-		pat := arm.Pattern
-		if gp, ok := pat.(*ast.GuardedPattern); ok {
-			pat = gp.Pattern
-		}
-		if ep, ok := pat.(*ast.EnumPattern); ok {
-			if ep.Enum != "" {
-				return ep.Enum
-			}
-		}
-	}
-	return ""
-}
-
-func (e *emitter) emitMatchExpr(me *ast.MatchExpr) string {
-	enumName := e.matchEnumNameFromPatterns(me)
-
-	subjectPtr := e.emitExpr(me.Subject)
-
-	matchType := e.exprType(me)
-	if matchType == "void" {
-		matchType = "i64"
-	}
-	if isNamedAgg(matchType) {
-		matchType = "ptr"
-	}
-
-	resPtr := "%" + e.nextLabel("match.res")
-	e.emit("  %s = alloca %s", resPtr, matchType)
-
-	endBlock := e.nextLabel("match.end")
-	failBlock := e.nextLabel("match.default")
-
-	var armLabels []string
-	for i := range me.Arms {
-		armLabels = append(armLabels, e.nextLabel(fmt.Sprintf("match.arm%d", i)))
-	}
-	nextLabels := make([]string, len(me.Arms))
-	for i := range me.Arms {
-		nextLabels[i] = e.nextLabel(fmt.Sprintf("match.next%d", i))
-	}
-
-	var tagVal string
-	tagType := "i32"
-	if enumName != "" {
-		tagPtr := e.nextTmp()
-		e.emit("  %s = getelementptr %%%s, ptr %s, i32 0, i32 0", tagPtr, enumName, subjectPtr)
-		tagVal = e.nextTmp()
-		e.emit("  %s = load i32, ptr %s", tagVal, tagPtr)
-	} else {
-		tagVal = subjectPtr
-		tagType = e.exprType(me.Subject)
-	}
-
-	for i, arm := range me.Arms {
-		if i == 0 {
-			e.emit("  br label %%%s", armLabels[0])
-		}
-
-		e.emit("\n%s:", armLabels[i])
-		pat := arm.Pattern
-		var guardExpr ast.Expr
-		if gp, ok := pat.(*ast.GuardedPattern); ok {
-			pat = gp.Pattern
-			guardExpr = gp.Guard
-		}
-
-		var branchCond string
-
-		if ep, ok := pat.(*ast.EnumPattern); ok {
-			tag := 0
-			epEnumName := ep.Enum
-			if epEnumName == "" {
-				epEnumName = enumName
-			}
-			if vmap, ok := e.enumVariants[epEnumName]; ok {
-				tag = vmap[ep.Variant]
-			}
-			cmpTmp := e.nextTmp()
-			e.emit("  %s = icmp eq i32 %s, %d", cmpTmp, tagVal, tag)
-			branchCond = cmpTmp
-		} else if lp, ok := pat.(*ast.LiteralPattern); ok {
-			litVal := e.emitExpr(lp.Value)
-			if tagType == "{ ptr, i32 }" {
-				branchCond = e.emitStringEq(tagVal, litVal)
-			} else {
-				cmpTmp := e.nextTmp()
-				e.emit("  %s = icmp eq %s %s, %s", cmpTmp, tagType, tagVal, litVal)
-				branchCond = cmpTmp
-			}
-		} else if _, ok := pat.(*ast.WildcardPattern); ok {
-			bodyVal := e.emitExpr(arm.Body)
-			e.emit("  store %s %s, ptr %s", matchType, bodyVal, resPtr)
-			e.emit("  br label %%%s", endBlock)
-			continue
-		} else if ip, ok := pat.(*ast.IdentPattern); ok {
-			e.emit("  %%%s = alloca %s", ip.Name, tagType)
-			e.emit("  store %s %s, ptr %%%s", tagType, tagVal, ip.Name)
-			if guardExpr != nil {
-				guardVal := e.emitExpr(guardExpr)
-				branchCond = guardVal
-				if i+1 < len(armLabels) {
-					e.emit("  br i1 %s, label %%%s, label %%%s", branchCond, nextLabels[i], armLabels[i+1])
-				} else {
-					e.emit("  br i1 %s, label %%%s, label %%%s", branchCond, nextLabels[i], failBlock)
-				}
-				e.emit("\n%s:", nextLabels[i])
-			}
-			bodyVal := e.emitExpr(arm.Body)
-			e.emit("  store %s %s, ptr %s", matchType, bodyVal, resPtr)
-			e.emit("  br label %%%s", endBlock)
-			continue
-		} else {
-			bodyVal := e.emitExpr(arm.Body)
-			e.emit("  store %s %s, ptr %s", matchType, bodyVal, resPtr)
-			e.emit("  br label %%%s", endBlock)
-			continue
-		}
-
-		if guardExpr != nil {
-			guardVal := e.emitExpr(guardExpr)
-			andTmp := e.nextTmp()
-			e.emit("  %s = and i1 %s, %s", andTmp, branchCond, guardVal)
-			branchCond = andTmp
-		}
-
-		if i+1 < len(armLabels) {
-			e.emit("  br i1 %s, label %%%s, label %%%s", branchCond, nextLabels[i], armLabels[i+1])
-		} else {
-			e.emit("  br i1 %s, label %%%s, label %%%s", branchCond, nextLabels[i], failBlock)
-		}
-
-		e.emit("\n%s:", nextLabels[i])
-		bodyVal := e.emitExpr(arm.Body)
-		e.emit("  store %s %s, ptr %s", matchType, bodyVal, resPtr)
-		e.emit("  br label %%%s", endBlock)
-	}
-
-	e.emit("\n%s:", failBlock)
-	e.emit("  store %s %s, ptr %s", matchType, zeroConst(matchType), resPtr)
-	e.emit("  br label %%%s", endBlock)
-
-	e.emit("\n%s:", endBlock)
-	tmp := e.nextTmp()
-	e.emit("  %s = load %s, ptr %s", tmp, matchType, resPtr)
-	return tmp
-}
-
 func (e *emitter) emitFn(fn *ast.FnDecl, name string, recvName string) {
 	// Variable state is per-function: reset it so names don't leak
 	// between functions.
 	e.varTypes = make(map[string]string)
 	e.ptrVars = make(map[string]bool)
+	e.varAllocas = make(map[string]bindAlloca)
+	e.emittedAllocas = make(map[string]bool)
+	e.bindingID = 0
 	e.implRecv = recvName
 	e.selfName = "self"
 
@@ -346,6 +254,12 @@ func (e *emitter) emitFn(fn *ast.FnDecl, name string, recvName string) {
 	if fn.Sig != nil && fn.Sig.Result != nil {
 		if nt, ok := fn.Sig.Result.(*ast.NamedType); ok && e.isTypeParam(fn, nt.Name) {
 			retType = e.instantiatedType(nt.Name)
+		} else if e.info != nil {
+			if sym, ok := e.info.Defs[fn]; ok && sym.Fn != nil && sym.Fn.Result != nil {
+				retType = e.llvmType(sym.Fn.Result)
+			} else {
+				retType = e.resolveType(fn.Sig.Result)
+			}
 		} else {
 			retType = e.resolveType(fn.Sig.Result)
 		}
@@ -373,6 +287,12 @@ func (e *emitter) emitFn(fn *ast.FnDecl, name string, recvName string) {
 			if p.Type != nil {
 				if nt, ok := p.Type.(*ast.NamedType); ok && e.isTypeParam(fn, nt.Name) {
 					pt = e.instantiatedType(nt.Name)
+				} else if e.info != nil {
+					if sym, ok := e.info.Defs[p]; ok && sym.Type != nil {
+						pt = e.llvmType(sym.Type)
+					} else {
+						pt = e.resolveType(p.Type)
+					}
 				} else {
 					pt = e.resolveType(p.Type)
 				}
@@ -399,14 +319,16 @@ func (e *emitter) emitFn(fn *ast.FnDecl, name string, recvName string) {
 			if isNamedAgg(pt) {
 				declPT = "ptr"
 			}
-			e.emit("  %%%s = alloca %s", p.Name, declPT)
-			e.emit("  store %s %%%s.arg, ptr %%%s", declPT, p.Name, p.Name)
+			allocName := e.uniqueAllocaName(p.Name)
+			e.varAllocas[p.Name] = bindAlloca{name: allocName, ptr: isNamedAgg(pt), typ: pt}
+			e.emit("  %%%s = alloca %s", allocName, declPT)
+			e.emit("  store %s %%%s.arg, ptr %%%s", declPT, p.Name, allocName)
 		}
 	}
 	if fn.ExprBody != nil {
 		val := e.emitExpr(fn.ExprBody)
 		if isNamedAgg(retType) {
-			val = e.materializeStruct(strings.TrimPrefix(retType, "%"), val)
+			val = e.materializeAgg(strings.TrimPrefix(retType, "%"), val)
 		}
 		e.emit("  ret %s %s", sigRetType, val)
 		e.emit("}")
@@ -455,7 +377,7 @@ func (e *emitter) emitStmt(stmt ast.Stmt) {
 				if aggName == "" || !isNamedAgg(t) {
 					aggName = strings.TrimPrefix(e.currentRetType, "%")
 				}
-				val = e.materializeStruct(aggName, val)
+				val = e.materializeAgg(aggName, val)
 				e.emit("  ret ptr %s", val)
 			} else {
 				e.emit("  ret %s %s", t, val)
@@ -504,9 +426,9 @@ func (e *emitter) emitStmt(stmt ast.Stmt) {
 				if isReassign {
 					oldVal := e.nextTmp()
 					if e.ptrVars[ident.Name] {
-						e.emit("  %s = load ptr, ptr %%%s", oldVal, ident.Name)
+						e.emit("  %s = load ptr, ptr %%%s", oldVal, e.allocaName(ident.Name))
 					} else {
-						e.emit("  %s = load %s, ptr %%%s", oldVal, e.varTypes[ident.Name], ident.Name)
+						e.emit("  %s = load %s, ptr %%%s", oldVal, e.varTypes[ident.Name], e.allocaName(ident.Name))
 					}
 					e.emit("  call void @dot_release(ptr %s)", oldVal)
 				}
@@ -531,20 +453,24 @@ func (e *emitter) emitStmt(stmt ast.Stmt) {
 				}
 				if !isReassign {
 					e.ptrVars[ident.Name] = true
-					e.emit("  %%%s = alloca ptr", ident.Name)
+					allocName := e.uniqueAllocaName(ident.Name)
+					e.varAllocas[ident.Name] = bindAlloca{name: allocName, ptr: true, typ: llvmType}
+					e.emit("  %%%s = alloca ptr", allocName)
 				}
 				if shape := e.shapeType(expr); shape != "" {
 					e.varTypes[ident.Name] = shape
 				} else if isNamedAgg(llvmType) {
 					e.varTypes[ident.Name] = llvmType
 				}
-				e.emit("  store ptr %s, ptr %%%s", val, ident.Name)
+				e.emit("  store ptr %s, ptr %%%s", val, e.allocaName(ident.Name))
 			} else {
 				if !isReassign {
 					e.varTypes[ident.Name] = llvmType
-					e.emit("  %%%s = alloca %s", ident.Name, llvmType)
+					allocName := e.uniqueAllocaName(ident.Name)
+					e.varAllocas[ident.Name] = bindAlloca{name: allocName, ptr: false, typ: llvmType}
+					e.emit("  %%%s = alloca %s", allocName, llvmType)
 				}
-				e.emit("  store %s %s, ptr %%%s", llvmType, val, ident.Name)
+				e.emit("  store %s %s, ptr %%%s", llvmType, val, e.allocaName(ident.Name))
 			}
 		}
 	case *ast.ForStmt:
@@ -569,9 +495,16 @@ func (e *emitter) emitExpr(expr ast.Expr) string {
 		}
 		return "false"
 	case *ast.Ident:
+		if e.info != nil {
+			if sym, ok := e.info.Uses[ex]; ok && sym.Kind == types.SymVariant {
+				if name := e.enumNameOfExpr(ex); name != "" {
+					return e.emitEnumLit(name, sym.Variant.Name, nil)
+				}
+			}
+		}
 		tmp := e.nextTmp()
 		if e.ptrVars[ex.Name] {
-			e.emit("  %s = load ptr, ptr %%%s", tmp, ex.Name)
+			e.emit("  %s = load ptr, ptr %%%s", tmp, e.allocaName(ex.Name))
 		} else {
 			t := "i64"
 			if vt, ok := e.varTypes[ex.Name]; ok {
@@ -579,7 +512,7 @@ func (e *emitter) emitExpr(expr ast.Expr) string {
 			} else {
 				t = e.exprType(ex)
 			}
-			e.emit("  %s = load %s, ptr %%%s", tmp, t, ex.Name)
+			e.emit("  %s = load %s, ptr %%%s", tmp, t, e.allocaName(ex.Name))
 		}
 		return tmp
 	case *ast.BinaryExpr:
@@ -728,7 +661,7 @@ func (e *emitter) emitExpr(expr ast.Expr) string {
 func (e *emitter) emitAddrOf(expr ast.Expr) string {
 	switch ex := expr.(type) {
 	case *ast.Ident:
-		return "%" + ex.Name
+		return "%" + e.allocaName(ex.Name)
 	case *ast.FieldExpr:
 		structPtr := e.emitExpr(ex.X)
 		structName := "Unknown"
@@ -754,13 +687,13 @@ func (e *emitter) emitDeref(expr ast.Expr) string {
 	case *ast.Ident:
 		if e.ptrVars[ex.Name] {
 			ptrVal := e.nextTmp()
-			e.emit("  %s = load ptr, ptr %%%s", ptrVal, ex.Name)
+			e.emit("  %s = load ptr, ptr %%%s", ptrVal, e.allocaName(ex.Name))
 			tmp := e.nextTmp()
 			e.emit("  %s = load %s, ptr %s", tmp, t, ptrVal)
 			return tmp
 		}
 		tmp := e.nextTmp()
-		e.emit("  %s = load %s, ptr %%%s", tmp, t, ex.Name)
+		e.emit("  %s = load %s, ptr %%%s", tmp, t, e.allocaName(ex.Name))
 		return tmp
 	default:
 		ptr := e.emitExpr(expr)
@@ -847,7 +780,8 @@ func (e *emitter) emitStringLit(sl *ast.StringLit) string {
 
 	name, ok := e.stringLits[text]
 	if !ok {
-		name = fmt.Sprintf("@.str.%d", len(e.stringLits))
+		name = fmt.Sprintf("@.str.%d", e.strID)
+		e.strID++
 		e.stringLits[text] = name
 	}
 
