@@ -1,0 +1,40 @@
+import "../stdlib/sync.dot"
+
+fn main() {
+    print("Testing Thread Channels...")
+    
+    // 1. Happy path: single thread send and recv
+    let ch = create_channel[int]()
+    ch.send(42)
+    let (val1, ok1) = ch.try_recv()
+    if !ok1 {
+        print("Bug: channel recv failed")
+    } else {
+        print("Recv 1: " + (val1 as string))
+    }
+
+    // 2. Empty queue check
+    let (val2, ok2) = ch.try_recv()
+    if ok2 {
+        print("Bug: received from empty channel")
+    } else {
+        print("Empty check OK")
+    }
+
+    // 3. Multiple values (FIFO)
+    ch.send(1)
+    ch.send(2)
+    ch.send(3)
+
+    let (v1, _) = ch.try_recv()
+    let (v2, _) = ch.try_recv()
+    let (v3, _) = ch.try_recv()
+    if v1 == 1 && v2 == 2 && v3 == 3 {
+        print("FIFO order OK")
+    } else {
+        print("Bug: FIFO order violated")
+    }
+
+    ch.close()
+    print("Test finished")
+}

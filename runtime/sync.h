@@ -1,39 +1,32 @@
-#ifndef DOT_SYNC_H
-#define DOT_SYNC_H
+#ifndef DOT_RUNTIME_SYNC_H
+#define DOT_RUNTIME_SYNC_H
 
-#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 
-#ifdef _WIN32
-#include <windows.h>
+// Lock-free queue node
+typedef struct dot_sync_node {
+    void* data;
+    _Atomic(struct dot_sync_node*) next;
+} dot_sync_node_t;
+
+// Lock-free queue (channel)
 typedef struct {
-    CRITICAL_SECTION cs;
-} DotMutex;
-#else
-#include <pthread.h>
-typedef struct {
-    pthread_mutex_t m;
-} DotMutex;
-#endif
+    _Atomic(dot_sync_node_t*) head;
+    _Atomic(dot_sync_node_t*) tail;
+} dot_sync_chan_t;
 
-typedef struct {
-    volatile int32_t value;
-} DotAtomicI32;
+// Initialize a new channel
+dot_sync_chan_t* dot_sync_chan_new(void);
 
-DotMutex*    dot_mutex_new(void);
-void         dot_mutex_init(DotMutex* mu);
-void         dot_mutex_lock(DotMutex* mu);
-void         dot_mutex_unlock(DotMutex* mu);
-void         dot_mutex_destroy(DotMutex* mu);
-void         dot_mutex_free(DotMutex* mu);
+// Send data to the channel (lock-free)
+void dot_sync_chan_send(dot_sync_chan_t* chan, void* data);
 
-DotAtomicI32* dot_atomic_new(void);
-void          dot_atomic_free(DotAtomicI32* a);
+// Receive data from the channel (lock-free)
+// Returns true if data was received, false if empty
+bool dot_sync_chan_recv(dot_sync_chan_t* chan, void** data_out);
 
-int32_t       dot_atomic_load(DotAtomicI32* a);
-void          dot_atomic_store(DotAtomicI32* a, int32_t v);
-int32_t       dot_atomic_fetch_add(DotAtomicI32* a, int32_t delta);
-int32_t       dot_atomic_fetch_sub(DotAtomicI32* a, int32_t delta);
-int32_t       dot_atomic_exchange(DotAtomicI32* a, int32_t new_val);
-int           dot_atomic_compare_exchange(DotAtomicI32* a, int32_t expected, int32_t desired);
+// Free the channel
+void dot_sync_chan_free(dot_sync_chan_t* chan);
 
-#endif
+#endif // DOT_RUNTIME_SYNC_H

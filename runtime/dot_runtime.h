@@ -14,7 +14,6 @@
 #include "arena.h"
 #include "closure.h"
 #include "iter.h"
-#include "channel.h"
 #include "future.h"
 #include "weak.h"
 #include "dyn.h"

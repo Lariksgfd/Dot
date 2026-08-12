@@ -1,0 +1,35 @@
+﻿import "../stdlib/sync.dot"
+
+fn main() {
+    print("Testing Channel...")
+    
+    // Create channel
+    ch = dot_sync_chan_new(10)
+
+    // Push data
+    msg1 = "Hello"
+    msg2 = "World"
+
+    // Cast strings to any (since dot_sync_chan_send takes any)
+    b1 = dot_sync_chan_send(ch, msg1)
+    b2 = dot_sync_chan_send(ch, msg2)
+    
+    print("Sent 1 and 2")
+    
+    // Pop data
+    recv1 = dot_sync_chan_recv(ch)
+    recv2 = dot_sync_chan_recv(ch)
+    
+    // Print recv results (cast them back)
+    print(recv1 as string)
+    print(recv2 as string)
+
+    // Empty channel check (returns Invalid/nil? No, it returns any, so we'd check if it's nil)
+    // Actually any doesn't easily compare to nil directly without a method or match in this stage of Dot compiler,
+    // let's just skip the empty check for this simple e2e test, or do `if recv3 is string`.
+    
+    recv3 = dot_sync_chan_recv(ch)
+    
+    dot_sync_chan_free(ch)
+    print("Channel freed, test done.")
+}
