@@ -32,6 +32,7 @@ func (p *parser) parseBlock(context string, ownScope bool) *ast.BlockStmt {
 				p.advance()
 			}
 		}
+		out.LooseComments = p.takeDocComments()
 	})
 
 	rb, ok := p.expect(lexer.TokenRBrace, context)

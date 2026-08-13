@@ -1,5 +1,7 @@
 package ast
 
+import "github.com/dotlang/dot/lexer"
+
 // Program is one parsed .dot file (D19: top level holds Decls, and every
 // legal top-level construct — including `x = 1` — implements Decl).
 type Program struct {
@@ -8,6 +10,8 @@ type Program struct {
 	File string
 	// Decls are the top-level declarations in source order.
 	Decls []Decl
+	// LooseComments contains comments at the end of the file not attached to any decl.
+	LooseComments []lexer.Token
 }
 
 // Imports returns every *ImportDecl in Decls, in source order.
@@ -26,6 +30,8 @@ type BlockStmt struct {
 	BaseNode
 	// Stmts are the statements in source order.
 	Stmts []Stmt
+	// LooseComments contains comments inside the block not attached to any stmt.
+	LooseComments []lexer.Token
 	// LBrace is the position of '{'.
 	LBrace Position
 	// RBrace is the position of '}'.

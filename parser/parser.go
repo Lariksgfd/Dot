@@ -108,6 +108,7 @@ func (p *parser) parseProgram() *ast.Program {
 		}
 		p.skipNewlines()
 	}
+	prog.LooseComments = p.takeDocComments()
 	return prog
 }
 

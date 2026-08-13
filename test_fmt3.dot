@@ -1,0 +1,15 @@
+Program file=test_fmt3.dot
+  FnDecl name=main
+    FnSig
+      <nil>
+      <nil>
+    BlockStmt
+      LooseComments
+        // inside block
+    <nil>
+  FnDecl name=other
+    FnSig
+      <nil>
+      <nil>
+    BlockStmt
+    <nil>

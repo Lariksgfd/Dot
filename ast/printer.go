@@ -160,10 +160,24 @@ func (p *printer) print(n Node) {
 		for i := range v.Decls {
 			p.child(v.Decls[i])
 		}
+		if len(v.LooseComments) > 0 {
+			p.nodeHead("LooseComments", "")
+			for _, c := range v.LooseComments {
+				p.line("%s", c.Lexeme)
+			}
+			p.nodeTail()
+		}
 		p.nodeTail()
 	case *BlockStmt:
 		p.nodeHead("BlockStmt", "")
 		walkFunc(p, v.Stmts)
+		if len(v.LooseComments) > 0 {
+			p.nodeHead("LooseComments", "")
+			for _, c := range v.LooseComments {
+				p.line("%s", c.Lexeme)
+			}
+			p.nodeTail()
+		}
 		p.nodeTail()
 	case *ExprStmt:
 		p.nodeHead("ExprStmt", "")
