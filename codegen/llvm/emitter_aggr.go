@@ -798,7 +798,7 @@ func (e *emitter) emitForIterable(s *ast.ForStmt) {
 		e.emit("  %s = getelementptr [%d x %s], ptr %s, i64 0, i64 0", dataPtr, tt.Len, e.llvmType(tt.Elem), base)
 		lenVal = fmt.Sprintf("%d", tt.Len)
 	default:
-		e.emitForCond(s)
+		e.emitForIterator(s)
 		return
 	}
 

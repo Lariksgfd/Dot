@@ -32,6 +32,7 @@ type emitter struct {
 	implRecv         string
 	currentRetType   string
 	selfName         string
+	tasks            []string
 }
 
 func (e *emitter) nextTmp() string {
@@ -159,6 +160,9 @@ func Generate(info *types.Info, prog *ast.Program) (string, error) {
 	e.emit("declare i32 @printf(ptr, ...)")
 	e.emit("declare ptr @malloc(i64)")
 	e.emit("declare void @exit(i32)")
+	e.emit("declare ptr @dot_map_new()")
+	e.emit("declare void @dot_map_set(ptr, ptr, ptr)")
+	e.emit("declare ptr @dot_spawn(ptr, ptr)")
 	e.emitRuntimeHelpers()
 
 	for _, decl := range prog.Decls {
@@ -220,6 +224,11 @@ func Generate(info *types.Info, prog *ast.Program) (string, error) {
 		globalsSb.WriteString(fmt.Sprintf("%s = private unnamed_addr constant [%d x i8] c\"%s\\00\"\n", name, length, llvmEscape(content)))
 	}
 	globalsSb.WriteString("\n")
+
+	for _, t := range e.tasks {
+		globalsSb.WriteString(t)
+		globalsSb.WriteString("\n")
+	}
 
 	return globalsSb.String() + e.sb.String(), nil
 }
@@ -698,6 +707,10 @@ func (e *emitter) emitExpr(expr ast.Expr) string {
 		return e.emitFnLit(ex)
 	case *ast.TryExpr:
 		return e.emitTryExpr(ex)
+	case *ast.MapLit:
+		return e.emitMapLit(ex)
+	case *ast.SpawnExpr:
+		return e.emitSpawnExpr(ex)
 	}
 	return "0"
 }
