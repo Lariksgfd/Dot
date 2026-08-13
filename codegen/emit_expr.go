@@ -221,6 +221,32 @@ func emitCall(g *generator, x *ast.CallExpr) string {
 		if inst, ok := g.info.Instances[x]; ok && inst.Mangled != "" {
 			return emitMangledCall(g, inst.Mangled, x, info)
 		}
+
+		// Check if it's a direct call to a top-level function
+		isDirect := false
+		var directName string
+		if ident, ok := x.Fn.(*ast.Ident); ok {
+			if sym, ok := g.info.Uses[ident]; ok && sym.Kind == types.SymFunc {
+				isDirect = true
+				directName = "Dot_" + sym.Name
+			}
+		}
+
+		if isDirect {
+			return emitMangledCall(g, directName, x, info)
+		}
+
+		// If it's an indirect call (via closure variable or expression), we must call via the struct.
+		fnType := g.info.TypeOf(x.Fn)
+		if _, isFnType := fnType.(*types.Fn); isFnType {
+			fnExpr := g.emitExpr(x.Fn)
+			args := emitCallArgs(g, x, info)
+			if len(args) == 0 {
+				return fmt.Sprintf("(%s).fn((%s).env)", fnExpr, fnExpr)
+			}
+			return fmt.Sprintf("(%s).fn((%s).env, %s)", fnExpr, fnExpr, strings.Join(args, ", "))
+		}
+
 		return emitMangledCall(g, callFuncName(g, x), x, info)
 	}
 	return fmt.Sprintf("/* TODO: call %T */", x)

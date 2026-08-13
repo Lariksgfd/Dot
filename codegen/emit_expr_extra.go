@@ -140,19 +140,17 @@ func emitBlockExpr(g *generator, x *ast.BlockExpr) string {
 	return b.String()
 }
 
-// emitFnLit emits a lambda as a closure constructor call.
+// emitFnLit emits a lambda as a closure struct constructor.
 func emitFnLit(g *generator, x *ast.FnLit) string {
 	name := fmt.Sprintf("_dot_closure_%d", g.nextClosure())
-	params := ""
+	params := "void* _env"
 	fnType := g.info.TypeOf(x)
 	var fnParams []types.Param
 	if ft, ok := fnType.(*types.Fn); ok {
 		fnParams = ft.Params
 	}
 	for i, p := range x.Sig.Params {
-		if i > 0 {
-			params += ", "
-		}
+		params += ", "
 		var pt types.Type
 		if i < len(fnParams) {
 			pt = fnParams[i].Type
@@ -161,17 +159,56 @@ func emitFnLit(g *generator, x *ast.FnLit) string {
 		}
 		params += cType(g, pt) + " " + p.Name
 	}
+
+	captures := g.info.Captures[x]
+	envName := fmt.Sprintf("%s_env", name)
+
+	var envStruct strings.Builder
+	if len(captures) > 0 {
+		envStruct.WriteString(fmt.Sprintf("typedef struct { "))
+		for i, cap := range captures {
+			envStruct.WriteString(fmt.Sprintf("%s v%d; ", cType(g, cap.Type), i))
+		}
+		envStruct.WriteString(fmt.Sprintf("} %s;", envName))
+		g.addClosure(envStruct.String())
+	}
+
 	body := "0"
 	if x.ExprBody != nil {
 		body = g.emitExpr(x.ExprBody)
 	} else if x.Body != nil {
 		body = emitBlockExpr(g, &ast.BlockExpr{Block: x.Body})
 	}
+
+	var retType string
+	if ft, ok := fnType.(*types.Fn); ok {
+		retType = cType(g, ft.Result)
+	} else {
+		retType = "void*"
+	}
 	result := cType(g, fnType)
-	src := fmt.Sprintf("%s %s(%s) { return %s; }", result, name, params, body)
-	g.addClosure(src)
-	captures := emitCaptures(g, x)
-	return fmt.Sprintf("dot_closure_new((void*)%s, %s)", name, captures)
+	var funcCode strings.Builder
+	funcCode.WriteString(fmt.Sprintf("%s %s(%s) { ", retType, name, params))
+	if len(captures) > 0 {
+		funcCode.WriteString(fmt.Sprintf("%s* env = (%s*)_env; ", envName, envName))
+		for i, cap := range captures {
+			funcCode.WriteString(fmt.Sprintf("%s %s = env->v%d; ", cType(g, cap.Type), cap.Name, i))
+		}
+	}
+	funcCode.WriteString(fmt.Sprintf("return %s; }", body))
+	g.addClosure(funcCode.String())
+
+	if len(captures) > 0 {
+		var init strings.Builder
+		init.WriteString(fmt.Sprintf("({ %s* env = malloc(sizeof(%s)); ", envName, envName))
+		for i, cap := range captures {
+			init.WriteString(fmt.Sprintf("env->v%d = %s; ", i, emitIdent(g, &ast.Ident{Name: cap.Name})))
+		}
+		init.WriteString(fmt.Sprintf("((%s){ .fn = %s, .env = env }); })", result, name))
+		return init.String()
+	}
+
+	return fmt.Sprintf("((%s){ .fn = %s, .env = NULL })", result, name)
 }
 
 // emitTupleLit emits a tuple literal as a compound literal.

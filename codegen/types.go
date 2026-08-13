@@ -154,17 +154,15 @@ func cTupleName(g *generator, t *types.Tuple) string {
 	return info.Name
 }
 
-// cFnPtr emits a function pointer type: R (*)(A, B).
+// cFnPtr emits a function type as a closure struct: struct { R (*fn)(void*, A, B); void* env; }.
 func cFnPtr(g *generator, f *types.Fn) string {
 	result := cType(g, f.Result)
 	var params []string
+	params = append(params, "void*") // env pointer is always first
 	for _, p := range f.Params {
 		params = append(params, cType(g, p.Type))
 	}
-	if len(params) == 0 {
-		return fmt.Sprintf("%s (*)(void)", result)
-	}
-	return fmt.Sprintf("%s (*)(%s)", result, strings.Join(params, ", "))
+	return fmt.Sprintf("struct { %s (*fn)(%s); void* env; }", result, strings.Join(params, ", "))
 }
 
 // cNamed handles a user-declared nominal type. Generic instances use
