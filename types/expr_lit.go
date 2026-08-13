@@ -222,7 +222,7 @@ func (c *Checker) checkFnLit(x *ast.FnLit, want Type) Type {
 	if x.Sig != nil {
 		c.declareParams(x.Sig.Params, sig)
 	}
-	c.enterFn(sig)
+	c.enterFn(x, sig)
 
 	switch {
 	case x.ExprBody != nil:

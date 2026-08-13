@@ -145,6 +145,23 @@ func (c *Checker) checkIdent(x *ast.Ident) Type {
 		return Invalid
 	}
 	c.recordUse(x, sym)
+	
+	if sym.Kind == SymVar || sym.Kind == SymParam {
+		if sym.Scope != nil && sym.Scope.Depth() > 1 {
+			for i := len(c.fnStack) - 1; i >= 0; i-- {
+				fnCtx := c.fnStack[i]
+				fnLit, isLit := fnCtx.node.(*ast.FnLit)
+				if !isLit {
+					continue
+				}
+				fnScope := c.info.Scopes[fnLit]
+				if fnScope != nil && fnScope.Depth() > sym.Scope.Depth() {
+					c.recordCapture(fnLit, sym)
+				}
+			}
+		}
+	}
+
 	switch sym.Kind {
 	case SymVariant:
 		return c.variantValue(sym, x)

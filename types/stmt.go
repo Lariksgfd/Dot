@@ -60,7 +60,7 @@ func (c *Checker) checkFnBody(decl *ast.FnDecl, recv Type) {
 		c.declareParams(decl.Sig.Params, sig)
 	}
 
-	c.enterFn(sig)
+	c.enterFn(decl, sig)
 	defer c.leaveFn()
 
 	switch {

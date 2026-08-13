@@ -149,7 +149,7 @@ func (c *Checker) checkAwait(x *ast.AwaitExpr) Type {
 // checkSpawn types `spawn { ... }`, whose value is a task handle.
 func (c *Checker) checkSpawn(x *ast.SpawnExpr) Type {
 	sig := &Fn{Async: true}
-	c.enterFn(sig)
+	c.enterFn(x, sig)
 	c.fnStack[len(c.fnStack)-1].spawn = true
 	pop := c.push(ScopeFunc, x)
 	prevLoop := c.loopDepth

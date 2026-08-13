@@ -118,6 +118,8 @@ type Info struct {
 	// Implicits records types the checker synthesised at nodes that have no
 	// syntax of their own, such as an inferred loop variable type.
 	Implicits map[ast.Node]Type
+	// Captures maps a closure to the variables it captures from outer scopes.
+	Captures map[*ast.FnLit][]*Symbol
 	// Escapes marks whether an expression is heap or stack allocated.
 	Escapes map[ast.Expr]Escape
 	// Heap marks expressions whose value is heap allocated and so ARC managed.
@@ -145,6 +147,7 @@ func newInfo(u *Universe) *Info {
 		Scopes:      make(map[ast.Node]*Scope),
 		Universe:    u,
 		Implicits:   make(map[ast.Node]Type),
+		Captures:    make(map[*ast.FnLit][]*Symbol),
 		Heap:        make(map[ast.Expr]bool),
 		Arena:       make(map[ast.Node]bool),
 		Terminates:  make(map[ast.Stmt]bool),
@@ -197,6 +200,7 @@ type Checker struct {
 // fnContext is the per-function state the checker needs while checking a body.
 type fnContext struct {
 	sig    *Fn
+	node   ast.Node // the *ast.FnLit, *ast.FnDecl or spawn block owning this context
 	async  bool
 	result Type
 	// spawn marks the context of a `spawn { ... }` block: a value-return
@@ -280,13 +284,13 @@ func (c *Checker) currentFn() *fnContext {
 }
 
 // enterFn pushes a function context.
-func (c *Checker) enterFn(sig *Fn) {
+func (c *Checker) enterFn(node ast.Node, sig *Fn) {
 	result := Type(Void)
 	if sig != nil && sig.Result != nil {
 		result = sig.Result
 	}
 	async := sig != nil && sig.Async
-	c.fnStack = append(c.fnStack, &fnContext{sig: sig, async: async, result: result})
+	c.fnStack = append(c.fnStack, &fnContext{sig: sig, node: node, async: async, result: result})
 }
 
 // leaveFn pops a function context.
@@ -321,6 +325,17 @@ func (c *Checker) recordDef(node ast.Node, sym *Symbol) {
 	if node != nil && sym != nil {
 		c.info.Defs[node] = sym
 	}
+}
+
+// recordCapture marks sym as captured by the closure fnLit.
+func (c *Checker) recordCapture(fnLit *ast.FnLit, sym *Symbol) {
+	captures := c.info.Captures[fnLit]
+	for _, existing := range captures {
+		if existing == sym {
+			return
+		}
+	}
+	c.info.Captures[fnLit] = append(captures, sym)
 }
 
 // --- diagnostics ---------------------------------------------------------
