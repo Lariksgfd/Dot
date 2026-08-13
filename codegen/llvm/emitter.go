@@ -306,6 +306,46 @@ func (e *emitter) emitFn(fn *ast.FnDecl, name string, recvName string) {
 			params = append(params, fmt.Sprintf("%s %%%s.arg", declPT, p.Name))
 		}
 	}
+
+	isExtern := false
+	for _, ann := range fn.Annotations {
+		if ann.Name == "extern" {
+			isExtern = true
+			break
+		}
+	}
+
+	if isExtern {
+		var typeParams []string
+		if fn.Sig != nil && fn.Sig.Recv != nil && recvName != "" {
+			typeParams = append(typeParams, "ptr")
+		}
+		if fn.Sig != nil {
+			for _, p := range fn.Sig.Params {
+				pt := "i64"
+				if p.Type != nil {
+					if nt, ok := p.Type.(*ast.NamedType); ok && e.isTypeParam(fn, nt.Name) {
+						pt = e.instantiatedType(nt.Name)
+					} else if e.info != nil {
+						if sym, ok := e.info.Defs[p]; ok && sym.Type != nil {
+							pt = e.llvmType(sym.Type)
+						} else {
+							pt = e.resolveType(p.Type)
+						}
+					} else {
+						pt = e.resolveType(p.Type)
+					}
+				}
+				if isNamedAgg(pt) {
+					pt = "ptr"
+				}
+				typeParams = append(typeParams, pt)
+			}
+		}
+		e.emit("declare %s @%s(%s)", sigRetType, name, strings.Join(typeParams, ", "))
+		return
+	}
+
 	e.emit("define %s @%s(%s) {", sigRetType, name, strings.Join(params, ", "))
 	e.emit("entry:")
 	if fn.Sig != nil && fn.Sig.Recv != nil && recvName != "" {
@@ -654,6 +694,10 @@ func (e *emitter) emitExpr(expr ast.Expr) string {
 		return e.emitAssignExpr(ex)
 	case *ast.StringLit:
 		return e.emitStringLit(ex)
+	case *ast.FnLit:
+		return e.emitFnLit(ex)
+	case *ast.TryExpr:
+		return e.emitTryExpr(ex)
 	}
 	return "0"
 }
