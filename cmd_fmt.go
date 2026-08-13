@@ -32,7 +32,7 @@ func runFmt(args []string) error {
 		return reportErr("formatting", parseErr, source)
 	}
 
-	formatted := ast.Print(prog)
+	formatted := ast.Format(prog)
 
 	if checkOnly {
 		if source != formatted {
