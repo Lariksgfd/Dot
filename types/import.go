@@ -101,8 +101,24 @@ func (c *Checker) resolveImportsRecursive(prog *ast.Program, stdlibDir string, l
 			continue
 		}
 		
-		if len(imp.Path) == 1 && (imp.Path[0][0] == '.' || imp.Path[0][0] == '/' || imp.Path[0][0] == '\\') {
+		if len(imp.Path) == 0 {
+			c.errorf(imp, "empty import path")
+			continue
+		}
+		
+		isStd := len(imp.Path) >= 2 && imp.Path[0] == "std"
+		
+		if !isStd {
 			relPath := imp.Path[0]
+			if len(imp.Path) > 1 {
+				relPath = filepath.Join(imp.Path...)
+			}
+			
+			// Append .dot if it doesn't have an extension
+			if filepath.Ext(relPath) == "" {
+				relPath += ".dot"
+			}
+
 			dir := filepath.Dir(c.file) // fallback
 			if prog.File != "" {
 			    dir = filepath.Dir(prog.File)
@@ -113,7 +129,6 @@ func (c *Checker) resolveImportsRecursive(prog *ast.Program, stdlibDir string, l
 				continue
 			}
 			if loaded[absPath] {
-				c.errorf(imp, "circular import detected: %s", relPath)
 				continue
 			}
 			loaded[absPath] = true
@@ -136,6 +151,12 @@ func (c *Checker) resolveImportsRecursive(prog *ast.Program, stdlibDir string, l
 			}
 			
 		} else {
+			stdPath := imp.PathString()
+			if loaded[stdPath] {
+				continue
+			}
+			loaded[stdPath] = true
+			
 			imported, cMods, err := resolveStdlibImport(imp, stdlibDir)
 			if err != nil {
 				c.errorf(imp, "%s", err.Error())

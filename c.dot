@@ -1,0 +1,5 @@
+import a.b
+
+fn c_func() -> int {
+    return b_func() + 1
+}
