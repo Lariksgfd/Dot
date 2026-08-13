@@ -2,91 +2,64 @@ package dotpm
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
 // ResolveURL constructs a download URL for a dependency.
-// Can be overridden in tests.
 var ResolveURL = func(name, version string) string {
-	return "https://registry.dotlang.sh/" + name + "/" + version + ".dot"
+	return "https://" + name
 }
 
-// Install reads dot-lock.json and ensures all dependencies are present
-// and match their recorded hashes. Missing or mismatched deps are downloaded.
+// Install reads dot.toml and clones all dependencies into .dot/modules/
 func Install(workDir string) error {
-	lockPath := filepath.Join(workDir, "dot-lock.json")
-	lock, err := ParseLock(lockPath)
+	manifestPath := filepath.Join(workDir, "dot.toml")
+	m, err := ParseManifest(manifestPath)
 	if err != nil {
-		return fmt.Errorf("parse lock: %w", err)
+		return fmt.Errorf("parse manifest: %w", err)
 	}
 
-	modulesDir := filepath.Join(workDir, "dot_modules")
+	modulesDir := filepath.Join(workDir, ".dot", "modules")
 	if err := os.MkdirAll(modulesDir, 0755); err != nil {
-		return fmt.Errorf("create dot_modules/: %w", err)
+		return fmt.Errorf("create .dot/modules/: %w", err)
 	}
 
-	for name, entry := range lock.Dependencies {
-		if !needsInstall(modulesDir, name, entry.Hash) {
+	for repo, version := range m.Dependencies {
+		dest := filepath.Join(modulesDir, repo)
+		
+		// If already exists, skip or we could pull/checkout, but skipping is simplest for now
+		if _, err := os.Stat(dest); err == nil {
+			fmt.Printf("Dependency %s already exists, skipping.\n", repo)
 			continue
 		}
 
-		url := entry.URL
-		if url == "" {
-			url = ResolveURL(name, entry.Version)
+		fmt.Printf("Installing %s@%s...\n", repo, version)
+		
+		url := "https://" + repo
+		
+		cmd := exec.Command("git", "clone", "--branch", version, "--depth", "1", url, dest)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		
+		if err := cmd.Run(); err != nil {
+			// Fallback: try without branch if the version might not be a valid branch/tag
+			fmt.Printf("Failed to clone with branch %s, trying default branch...\n", version)
+			cmd = exec.Command("git", "clone", url, dest)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("install %s: %w", repo, err)
+			}
+			
+			// Try to checkout the specific version after clone
+			checkoutCmd := exec.Command("git", "-C", dest, "checkout", version)
+			checkoutCmd.Stdout = os.Stdout
+			checkoutCmd.Stderr = os.Stderr
+			if err := checkoutCmd.Run(); err != nil {
+				fmt.Printf("Warning: failed to checkout version %s for %s\n", version, repo)
+			}
 		}
-
-		if err := downloadDep(modulesDir, name, url); err != nil {
-			return fmt.Errorf("install %s: %w", name, err)
-		}
-	}
-
-	return nil
-}
-
-// needsInstall returns true if the dependency is missing or its hash doesn't match.
-func needsInstall(modulesDir, name, expectedHash string) bool {
-	depPath, isDir, found := findDepPath(modulesDir, name)
-	if !found {
-		return true
-	}
-
-	var hash string
-	var err error
-	if isDir {
-		hash, err = hashDir(depPath)
-	} else {
-		hash, err = computeFileHash(depPath)
-	}
-	if err != nil {
-		return true
-	}
-	return hash != expectedHash
-}
-
-// downloadDep downloads a dependency from url into dot_modules/<name>.dot.
-func downloadDep(modulesDir, name, url string) error {
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("fetch %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch %s: unexpected status %d", url, resp.StatusCode)
-	}
-
-	dest := filepath.Join(modulesDir, name+".dot")
-	f, err := os.Create(dest)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", dest, err)
-	}
-	defer f.Close()
-
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		return fmt.Errorf("write %s: %w", dest, err)
 	}
 
 	return nil
