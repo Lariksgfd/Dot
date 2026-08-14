@@ -35,9 +35,13 @@ func (g *generator) emitEnumFwd(name string) {
 	g.line(fmt.Sprintf("typedef struct Dot%s Dot%s;", name, name))
 }
 
-// emitEnumDef emits a tagged-union enum definition.
+// emitEnumDef emits a tagged-union enum definition. Every enum object is
+// heap-allocated and ARC-managed, so the struct starts with a DotRefcnt
+// header: dot_retain/dot_release cast the object pointer straight to
+// DotRefcnt* and must find the refcount at offset 0.
 func (g *generator) emitEnumDef(name string, en *types.Enum) {
 	g.line(fmt.Sprintf("struct Dot%s {", name))
+	g.line("    DotRefcnt _rc;")
 	g.line("    int32_t tag;")
 	if len(en.Variants) > 0 {
 		hasPayload := false

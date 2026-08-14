@@ -99,7 +99,7 @@ func emitIdent(g *generator, x *ast.Ident) string {
 		if sym.Kind == types.SymVariant && sym.Variant != nil {
 			typ := g.info.TypeOf(x)
 			cname := cType(g, typ)
-			return fmt.Sprintf("((%s*)dot_box_struct(sizeof(%s), (&((%s){ .tag = %d }))))", cname, cname, cname, sym.Variant.Tag)
+			return emitUnitVariantAlloc(g, cname, sym.Variant.Tag)
 		}
 		return sym.Name
 	}
@@ -374,6 +374,18 @@ func emitMethodCall(g *generator, call *ast.CallExpr, info *types.CallInfo) stri
 	return fmt.Sprintf("%s(%s)", name, strings.Join(args, ", "))
 }
 
+// emitUnitVariantAlloc emits a statement expression constructing a fresh
+// unit enum variant: a dot_alloc'd heap object with its ARC header
+// initialised (refcount 1, no dtor) and its tag set to the variant's real
+// discriminant. dot_alloc zeroes the memory and initialises the DotRefcnt
+// header, so the result is safe to dot_release.
+func emitUnitVariantAlloc(g *generator, cname string, tag int) string {
+	tmp := fmt.Sprintf("_dot_v_%d", g.unusedIdx)
+	g.unusedIdx++
+	return fmt.Sprintf("({ %s* %s = (%s*)dot_alloc(sizeof(%s)); %s->tag = %d; %s; })",
+		cname, tmp, cname, cname, tmp, tag, tmp)
+}
+
 // emitVariantCall emits an enum payload constructor call such as Some(x) or
 // Shape.Circle(r): a heap-allocated tagged union whose tag is the variant's
 // and whose union members receive the payload arguments in field order.
@@ -384,7 +396,11 @@ func emitVariantCall(g *generator, call *ast.CallExpr, info *types.CallInfo, var
 	}
 	cname := cType(g, enumType)
 	args := emitCallArgs(g, call, info)
-	fields := []string{fmt.Sprintf(". tag = %d", variant.Tag)}
+	tmp := fmt.Sprintf("_dot_v_%d", g.unusedIdx)
+	g.unusedIdx++
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("({ %s* %s = (%s*)dot_alloc(sizeof(%s)); ", cname, tmp, cname, cname))
+	b.WriteString(fmt.Sprintf("%s->tag = %d; ", tmp, variant.Tag))
 	for i, f := range variant.Fields {
 		var arg string
 		if i < len(args) {
@@ -392,10 +408,10 @@ func emitVariantCall(g *generator, call *ast.CallExpr, info *types.CallInfo, var
 		} else {
 			arg = zeroValue(f.Type)
 		}
-		fields = append(fields, fmt.Sprintf(". %s = %s", variantFieldName(variant.Name, f.Name), arg))
+		b.WriteString(fmt.Sprintf("%s->%s = %s; ", tmp, variantFieldName(variant.Name, f.Name), arg))
 	}
-	return fmt.Sprintf("((%s*)dot_box_struct(sizeof(%s), (&((%s){ %s }))))",
-		cname, cname, cname, strings.Join(fields, ", "))
+	b.WriteString(fmt.Sprintf("%s; })", tmp))
+	return b.String()
 }
 
 // isSelfParam reports whether e refers to the method receiver `self`. In C
@@ -580,7 +596,7 @@ func emitVariantCtor(g *generator, x *ast.FieldExpr, sel *types.Selection) strin
 	if sel.Variant != nil {
 		typ := g.info.TypeOf(x)
 		cname := cType(g, typ)
-		return fmt.Sprintf("((%s*)dot_box_struct(sizeof(%s), (&((%s){ .tag = %d }))))", cname, cname, cname, sel.Variant.Tag)
+		return emitUnitVariantAlloc(g, cname, sel.Variant.Tag)
 	}
 	return fmt.Sprintf("/* variant %s */", x.Name)
 }
@@ -688,22 +704,44 @@ func matchResultType(g *generator, subj string, resType types.Type) string {
 	return cFieldType(g, resType)
 }
 
-// emitEnumMatch emits a switch on the enum tag for each arm.
+// emitEnumMatch emits a switch on the enum tag for each arm. EnumPattern
+// arms become case labels carrying the variant's REAL discriminant (not the
+// arm's index); wildcard/binding arms become a default case; literal,
+// guarded and other non-variant patterns are dispatched inside default via
+// an if/else chain, never as case indices.
 func emitEnumMatch(g *generator, subj string, subjType types.Type, resType types.Type, x *ast.MatchExpr) string {
 	var b strings.Builder
+	tmp := fmt.Sprintf("_dot_match_%d", g.unusedIdx)
+	g.unusedIdx++
 	b.WriteString("({ ")
+	b.WriteString(cFieldType(g, subjType))
+	b.WriteString(" ")
+	b.WriteString(tmp)
+	b.WriteString(" = ")
+	b.WriteString(subj)
+	b.WriteString("; ")
 	b.WriteString(matchResultType(g, subj, resType))
 	b.WriteString(" _match_res; switch (")
-	b.WriteString(subj)
+	b.WriteString(tmp)
 	b.WriteString("->tag) { ")
-	for i, arm := range x.Arms {
-		b.WriteString("case ")
-		b.WriteString(strconv.Itoa(i))
-		b.WriteString(": { ")
-		b.WriteString(patternBindings(g, subj, arm.Pattern, subjType))
-		b.WriteString("_match_res = ")
-		b.WriteString(g.emitExpr(arm.Body))
-		b.WriteString("; break; } ")
+	var fallback []*ast.MatchArm
+	for _, arm := range x.Arms {
+		if tag, ok := enumVariantTag(g, subjType, arm.Pattern); ok {
+			b.WriteString("case ")
+			b.WriteString(strconv.Itoa(tag))
+			b.WriteString(": { ")
+			b.WriteString(patternBindings(g, tmp, arm.Pattern, subjType))
+			b.WriteString("_match_res = ")
+			b.WriteString(g.emitExpr(arm.Body))
+			b.WriteString("; break; } ")
+		} else {
+			fallback = append(fallback, arm)
+		}
+	}
+	if len(fallback) > 0 {
+		b.WriteString("default: { ")
+		writeMatchFallbackExprs(&b, g, tmp, subjType, fallback)
+		b.WriteString(" } ")
 	}
 	b.WriteString("} _match_res; })")
 	return b.String()
@@ -716,21 +754,105 @@ func emitLiteralMatch(g *generator, subj string, resType types.Type, x *ast.Matc
 	b.WriteString("({ ")
 	b.WriteString(matchResultType(g, subj, resType))
 	b.WriteString(" _match_res; ")
-	for i, arm := range x.Arms {
-		if i > 0 {
-			b.WriteString(" else ")
-		}
-		pat := patternCond(g, subj, arm.Pattern)
-		b.WriteString("if (")
-		b.WriteString(pat)
-		b.WriteString(") { ")
-		b.WriteString(patternBindings(g, subj, arm.Pattern, subjType))
-		b.WriteString("_match_res = ")
-		b.WriteString(g.emitExpr(arm.Body))
-		b.WriteString("; }")
-	}
+	writeMatchFallbackExprs(&b, g, subj, subjType, x.Arms)
 	b.WriteString(" _match_res; })")
 	return b.String()
+}
+
+// enumVariantTag returns the tag of the variant matched by an unguarded
+// EnumPattern arm. ok is false for any other arm kind (wildcard, literal,
+// guarded, ...), which must be dispatched through the default branch.
+func enumVariantTag(g *generator, subjType types.Type, pat ast.Pattern) (int, bool) {
+	ep, ok := pat.(*ast.EnumPattern)
+	if !ok {
+		return 0, false
+	}
+	en := enumUnderlying(subjType)
+	if en == nil {
+		return 0, false
+	}
+	v, ok := en.Variant(ep.Variant)
+	if !ok {
+		return 0, false
+	}
+	return v.Tag, true
+}
+
+// matchArmCond returns the C dispatch condition, the pattern-binding
+// declarations and the guard expression ("" when absent) for one match arm
+// pattern matched against subj of type subjType. Enum patterns compare the
+// subject's tag to the variant's real discriminant; wildcard and binding
+// patterns always match; or-patterns join their alternatives; everything
+// else falls back to patternCond.
+func matchArmCond(g *generator, subj string, subjType types.Type, pat ast.Pattern) (cond, bindings, guard string) {
+	switch p := pat.(type) {
+	case *ast.GuardedPattern:
+		c, b, _ := matchArmCond(g, subj, subjType, p.Pattern)
+		return c, b, g.emitExpr(p.Guard)
+	case *ast.EnumPattern:
+		if tag, ok := enumVariantTag(g, subjType, pat); ok {
+			return fmt.Sprintf("((%s) != NULL && (%s)->tag == %d)", subj, subj, tag),
+				patternBindings(g, subj, pat, subjType), ""
+		}
+		// Unknown variant: the arm can never match.
+		return "false", "", ""
+	case *ast.OrPattern:
+		conds := make([]string, 0, len(p.Alts))
+		for _, alt := range p.Alts {
+			c, _, _ := matchArmCond(g, subj, subjType, alt)
+			conds = append(conds, "("+c+")")
+		}
+		return strings.Join(conds, " || "), "", ""
+	}
+	return patternCond(g, subj, pat), patternBindings(g, subj, pat, subjType), ""
+}
+
+// writeMatchFallbackExprs renders an if/else chain of match arms in
+// expression position, assigning the arm body to _match_res. Catch-all arms
+// end the chain; guarded arms nest the rest of the chain in the guard's else
+// branch so a failed guard tries the next arm.
+func writeMatchFallbackExprs(b *strings.Builder, g *generator, subj string, subjType types.Type, arms []*ast.MatchArm) {
+	var emitChain func(i int)
+	emitChain = func(i int) {
+		if i >= len(arms) {
+			return
+		}
+		arm := arms[i]
+		cond, bindings, guard := matchArmCond(g, subj, subjType, arm.Pattern)
+		last := i == len(arms)-1
+		if cond == "true" && guard == "" && last {
+			b.WriteString(bindings)
+			b.WriteString("_match_res = ")
+			b.WriteString(g.emitExpr(arm.Body))
+			b.WriteString("; ")
+			return
+		}
+		b.WriteString("if (")
+		b.WriteString(cond)
+		b.WriteString(") { ")
+		b.WriteString(bindings)
+		if guard != "" {
+			b.WriteString("if (")
+			b.WriteString(guard)
+			b.WriteString(") { ")
+			b.WriteString("_match_res = ")
+			b.WriteString(g.emitExpr(arm.Body))
+			b.WriteString("; } else { ")
+			emitChain(i + 1)
+			b.WriteString(" }")
+		} else {
+			b.WriteString("_match_res = ")
+			b.WriteString(g.emitExpr(arm.Body))
+			b.WriteString("; ")
+		}
+		b.WriteString("}")
+		if !last {
+			b.WriteString(" else { ")
+			emitChain(i + 1)
+			b.WriteString("}")
+		}
+	}
+	emitChain(0)
 }
 
 // patternCond emits a C condition matching the given pattern against subj.
@@ -744,6 +866,12 @@ func patternCond(g *generator, subj string, pat ast.Pattern) string {
 			return fmt.Sprintf("dot_string_eq(%s, %s)", subj, val)
 		}
 		return fmt.Sprintf("(%s == %s)", subj, val)
+	case *ast.OrPattern:
+		conds := make([]string, 0, len(p.Alts))
+		for _, alt := range p.Alts {
+			conds = append(conds, patternCond(g, subj, alt))
+		}
+		return "(" + strings.Join(conds, " || ") + ")"
 	case *ast.TuplePattern:
 		return "true"
 	}

@@ -363,45 +363,104 @@ func (g *generator) emitIfCond(x *ast.IfExpr) (cond string, bindings string) {
 }
 
 // emitMatchStmt emits a match expression in statement position. Enum matches
-// become a switch on the tag; literal matches become an if/else chain.
+// become a switch on the tag with one case per variant arm (using the
+// variant's real discriminant, not the arm index) and a default case
+// dispatching wildcard/binding/other arms; literal matches become an if/else
+// chain.
 func (g *generator) emitMatchStmt(x *ast.MatchExpr) {
 	subj := g.emitExpr(x.Subject)
 	subjType := g.info.TypeOf(x.Subject)
 	if subjType != nil && isEnumType(subjType) {
-		g.line(fmt.Sprintf("switch ((%s)->tag) {", subj))
-		for i, arm := range x.Arms {
-			// Each case gets its own braces so arm-local declarations (pattern
-			// bindings and body locals) do not leak into sibling cases.
-			g.line(fmt.Sprintf("case %d: {", i))
-			g.indent++
-			if bindings := patternBindings(g, subj, arm.Pattern, subjType); bindings != "" {
-				g.line(bindings)
+		// Evaluate the subject once into a temporary: the switch header and
+		// the fallback conditions below all reference it.
+		tmp := fmt.Sprintf("_dot_match_%d", g.unusedIdx)
+		g.unusedIdx++
+		g.line(fmt.Sprintf("{ %s %s = %s;", cFieldType(g, subjType), tmp, subj))
+		g.line(fmt.Sprintf("switch (%s->tag) {", tmp))
+		var fallback []*ast.MatchArm
+		for _, arm := range x.Arms {
+			if tag, ok := enumVariantTag(g, subjType, arm.Pattern); ok {
+				// Each case gets its own braces so arm-local declarations
+				// (pattern bindings and body locals) do not leak into
+				// sibling cases.
+				g.line(fmt.Sprintf("case %d: {", tag))
+				g.indent++
+				if bindings := patternBindings(g, tmp, arm.Pattern, subjType); bindings != "" {
+					g.line(bindings)
+				}
+				g.emitMatchArmBody(arm)
+				g.indent--
+				g.line("}")
+			} else {
+				fallback = append(fallback, arm)
 			}
-			g.emitMatchArmBody(arm)
+		}
+		if len(fallback) > 0 {
+			g.line("default: {")
+			g.indent++
+			g.emitMatchFallbackStmts(tmp, subjType, fallback)
 			g.indent--
 			g.line("}")
 		}
 		g.line("}")
+		g.line("}")
 		return
 	}
 	// Literal match: if/else chain.
-	for i, arm := range x.Arms {
-		pcond := patternCond(g, subj, arm.Pattern)
-		if i == 0 {
-			g.line(fmt.Sprintf("if (%s) {", pcond))
-		} else {
-			g.line(fmt.Sprintf("} else if (%s) {", pcond))
+	if len(x.Arms) > 0 {
+		g.emitMatchFallbackStmts(subj, subjType, x.Arms)
+	}
+}
+
+// emitMatchFallbackStmts emits an if/else chain of match arms in statement
+// position. Catch-all arms end the chain; guarded arms nest the rest of the
+// chain in the guard's else branch so a failed guard tries the next arm.
+func (g *generator) emitMatchFallbackStmts(subj string, subjType types.Type, arms []*ast.MatchArm) {
+	var emitChain func(i int)
+	emitChain = func(i int) {
+		if i >= len(arms) {
+			return
 		}
+		arm := arms[i]
+		cond, bindings, guard := matchArmCond(g, subj, subjType, arm.Pattern)
+		last := i == len(arms)-1
+		if cond == "true" && guard == "" && last {
+			if bindings != "" {
+				g.line(bindings)
+			}
+			g.emitMatchArmBody(arm)
+			return
+		}
+		g.line(fmt.Sprintf("if (%s) {", cond))
 		g.indent++
-		if bindings := patternBindings(g, subj, arm.Pattern, subjType); bindings != "" {
+		if bindings != "" {
 			g.line(bindings)
 		}
-		g.emitMatchArmBody(arm)
+		if guard != "" {
+			g.line(fmt.Sprintf("if (%s) {", guard))
+			g.indent++
+			g.emitMatchArmBody(arm)
+			g.indent--
+			g.line("} else {")
+			g.indent++
+			emitChain(i + 1)
+			g.indent--
+			g.line("}")
+		} else {
+			g.emitMatchArmBody(arm)
+		}
 		g.indent--
+		if last {
+			g.line("}")
+		} else {
+			g.line("} else {")
+			g.indent++
+			emitChain(i + 1)
+			g.indent--
+			g.line("}")
+		}
 	}
-	if len(x.Arms) > 0 {
-		g.line("}")
-	}
+	emitChain(0)
 }
 
 // emitMatchArmBody emits the body of a match arm in statement position. Arm

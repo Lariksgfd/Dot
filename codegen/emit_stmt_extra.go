@@ -122,7 +122,9 @@ func (g *generator) emitForIterator(x *ast.ForStmt) {
 	elemCType := cFieldType(g, elemType)
 	var init string
 	if isStructOrEnum(elemType) {
-		init = fmt.Sprintf("*(%s*)%s", elemCType, ivName)
+		// Boxed elements carry a DotRefcnt header before the payload
+		// (dot_box_struct): skip it to reach the stored value/pointer.
+		init = fmt.Sprintf("*(%s*)dot_box_payload(%s)", elemCType, ivName)
 	} else {
 		init = fmt.Sprintf("(%s)%s", elemCType, ivName)
 	}
@@ -134,8 +136,12 @@ func (g *generator) emitForIterator(x *ast.ForStmt) {
 	g.line("}")
 }
 
-// emitReturnStmt emits a return statement. Defers run before the return;
-// the value is retained if it is a heap type.
+// emitReturnStmt emits a return statement. Defers run before the return.
+// The return value is materialised into a temporary BEFORE scope cleanup
+// runs: cleanup frees local heap values (enums included), and a return
+// expression referencing them (a struct literal holding enum/string fields,
+// a call on a local, ...) must be evaluated and take its owns while they
+// are still alive.
 func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 	g.emitDefers()
 
@@ -166,12 +172,25 @@ func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 			shadowed[sv.name] = true
 		}
 	}
-	emitScopeCleanupStmts(g, toCleanup)
 
 	if len(x.Values) == 0 {
+		emitScopeCleanupStmts(g, toCleanup)
 		g.line("return;")
 		return
 	}
+
+	// returnRetVal emits one value expression into a temp, applying the same
+	// ownership rules the old code used: moved identifiers are not retained,
+	// heap lvalues are retained, everything else is transferred as-is.
+	returnRetVal := func(v ast.Expr, useRetain func(expr string, t types.Type) string) string {
+		val := g.emitExpr(v)
+		t := g.info.TypeOf(v)
+		if id, ok := v.(*ast.Ident); ok && returnedVars[varName(g, id)] {
+			return val
+		}
+		return useRetain(val, t)
+	}
+
 	values := x.Values
 	if len(values) == 1 {
 		// A single parenthesised tuple (`return (7, "ok")`) is a TupleLit
@@ -184,36 +203,52 @@ func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 				values[i] = e.Value
 			}
 		} else {
-			val := g.emitExpr(x.Values[0])
 			t := g.info.TypeOf(x.Values[0])
-			if isEnumType(t) {
-				g.line(fmt.Sprintf("return %s;", val))
+			if t != nil && (t == types.Void || t.Kind() == types.KindVoid) {
+				g.line(fmt.Sprintf("%s;", g.emitExpr(x.Values[0])))
+				emitScopeCleanupStmts(g, toCleanup)
+				g.line("return;")
 				return
 			}
-			if id, ok := x.Values[0].(*ast.Ident); ok && returnedVars[varName(g, id)] {
-				// moved, do not retain
-				g.line(fmt.Sprintf("return %s;", val))
-			} else {
-				g.line(fmt.Sprintf("return %s;", emitRetain(g, val, t)))
+			// Enums are pointers: the old code transferred them without an
+			// extra retain regardless of the source, keep that rule.
+			useRetain := func(val string, t types.Type) string {
+				if isEnumType(t) {
+					return val
+				}
+				if isLValue(x.Values[0]) {
+					return emitRetain(g, val, t)
+				}
+				return val
 			}
+			tmp := fmt.Sprintf("_dot_ret_%d", g.unusedIdx)
+			g.unusedIdx++
+			g.line(fmt.Sprintf("%s %s = %s;", cFieldType(g, t), tmp, returnRetVal(x.Values[0], useRetain)))
+			emitScopeCleanupStmts(g, toCleanup)
+			g.line(fmt.Sprintf("return %s;", tmp))
 			return
 		}
 	}
-	// Multi-value return: pack into a tuple struct.
+	// Multi-value return: pack into a tuple struct before cleanup.
 	elems := make([]types.Type, len(values))
 	fields := make([]string, len(values))
 	for i, v := range values {
 		vt := g.info.TypeOf(v)
 		elems[i] = vt
-		exprVal := g.emitExpr(v)
-		if id, ok := v.(*ast.Ident); ok && returnedVars[varName(g, id)] {
-			fields[i] = fmt.Sprintf(". _%d = %s", i, exprVal)
-		} else {
-			fields[i] = fmt.Sprintf(". _%d = %s", i, emitRetain(g, exprVal, vt))
-		}
+		exprVal := returnRetVal(v, func(val string, t types.Type) string {
+			if isLValue(v) {
+				return emitRetain(g, val, t)
+			}
+			return val
+		})
+		fields[i] = fmt.Sprintf(". _%d = %s", i, exprVal)
 	}
 	tupName := cTupleName(g, &types.Tuple{Elems: elems})
-	g.line(fmt.Sprintf("return (%s){%s };", tupName, strings.Join(fields, ", ")))
+	tmp := fmt.Sprintf("_dot_ret_%d", g.unusedIdx)
+	g.unusedIdx++
+	g.line(fmt.Sprintf("%s %s = (%s){%s };", tupName, tmp, tupName, strings.Join(fields, ", ")))
+	emitScopeCleanupStmts(g, toCleanup)
+	g.line(fmt.Sprintf("return %s;", tmp))
 }
 
 // returnTuple reports whether e is a tuple literal, unwrapping parentheses.

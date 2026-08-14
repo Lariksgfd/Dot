@@ -13,5 +13,6 @@ typedef struct {
 
 void* dot_retain(void* ptr);
 void dot_release(void* ptr);
+DotAny dot_alloc(int32_t size);
 
 #endif // DOT_ARC_H

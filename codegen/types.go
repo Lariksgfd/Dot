@@ -231,10 +231,12 @@ func cAnonStruct(g *generator, s *types.Struct) string {
 	return b.String()
 }
 
-// cAnonEnum emits an anonymous enum as a tagged union struct.
+// cAnonEnum emits an anonymous enum as a tagged union struct. Like named
+// enums (emitEnumDef) it starts with a DotRefcnt header so retain/release
+// work on the object pointer directly.
 func cAnonEnum(g *generator, e *types.Enum) string {
 	var b strings.Builder
-	b.WriteString("struct { int32_t tag; union { ")
+	b.WriteString("struct { DotRefcnt _rc; int32_t tag; union { ")
 	for _, v := range e.Variants {
 		for _, f := range v.Fields {
 			b.WriteString(cFieldType(g, f.Type))

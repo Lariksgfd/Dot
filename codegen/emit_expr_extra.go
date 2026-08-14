@@ -48,9 +48,12 @@ func emitIndex(g *generator, x *ast.IndexExpr) string {
 		elemType := tt.Elem
 		if isStructOrEnum(elemType) {
 			// Struct elements are stored boxed by value; enum elements are
-			// stored boxed by pointer. cFieldType renders the storage shape
-			// (enums become pointers), so the deref yields the right kind.
-			res = fmt.Sprintf("(*(%s*)%s)", cFieldType(g, elemType), res)
+			// stored boxed by pointer. Boxes carry a DotRefcnt header before
+			// the payload (dot_box_struct), so the payload is reached by
+			// skipping sizeof(DotRefcnt); cFieldType renders the storage
+			// shape (enums become pointers), so the deref yields the right
+			// kind.
+			res = fmt.Sprintf("(*(%s*)dot_box_payload(%s))", cFieldType(g, elemType), res)
 		} else if !types.IsHeap(elemType) && !isPointerLike(elemType) {
 			res = fmt.Sprintf("((%s)(intptr_t)%s)", cType(g, elemType), res)
 		}
