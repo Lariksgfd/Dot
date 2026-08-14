@@ -261,6 +261,10 @@ func isStructOrEnum(t types.Type) bool {
 	switch x := t.(type) {
 	case *types.Struct, *types.Enum: return true
 	case *types.Named: return isStructOrEnum(x.Underlying)
+	case *types.TypeVar:
+		if x.Bound != nil {
+			return isStructOrEnum(x.Bound)
+		}
 	}
 	return false
 }
@@ -269,6 +273,10 @@ func isEnumType(t types.Type) bool {
 	switch x := t.(type) {
 	case *types.Enum: return true
 	case *types.Named: return isEnumType(x.Underlying)
+	case *types.TypeVar:
+		if x.Bound != nil {
+			return isEnumType(x.Bound)
+		}
 	}
 	return false
 }

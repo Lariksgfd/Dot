@@ -83,19 +83,10 @@ func (g *generator) emitHeader() error {
 		g.line("#include \"" + m + ".h\"")
 	}
 	g.line("")
+	// Tuple typedefs are emitted by emitSortedTypeDefs (emit_types.go) in
+	// dependency order together with the named types; predeclareTuples only
+	// registers the shapes early so they are known before any C is rendered.
 	g.predeclareTuples()
-	for _, t := range g.tupleList {
-		var b strings.Builder
-		b.WriteString(fmt.Sprintf("typedef struct { "))
-		for i, f := range t.Fields {
-			b.WriteString(fmt.Sprintf("%s _%d; ", f, i))
-		}
-		b.WriteString(fmt.Sprintf("} %s;", t.Name))
-		g.line(b.String())
-	}
-	if len(g.tupleList) > 0 {
-		g.line("")
-	}
 	return nil
 }
 

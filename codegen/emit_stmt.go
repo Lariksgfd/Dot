@@ -96,7 +96,7 @@ func (g *generator) emitVarDecl(x *ast.VarDecl) {
 		}
 		ct := cType(g, declType)
 		isEnum := false
-		if _, ok := declType.(*types.Enum); ok {
+		if isEnumType(declType) {
 			isEnum = true
 			ct += "*"
 		}

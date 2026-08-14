@@ -112,12 +112,24 @@ func cBasic(b *types.Basic) string {
 	return "void*"
 }
 
+// cFieldType returns the C type used for a field declaration inside a struct,
+// tuple or enum union. Enums (including Option/Result instantiations) are
+// heap-allocated and therefore stored by pointer; every other type is stored
+// by value, matching cType.
+func cFieldType(g *generator, t types.Type) string {
+	ct := cType(g, t)
+	if isEnumType(t) {
+		ct += "*"
+	}
+	return ct
+}
+
 // cTupleStruct emits an anonymous tuple as a positional C struct.
 func cTupleStruct(g *generator, t *types.Tuple) string {
 	var b strings.Builder
 	b.WriteString("struct { ")
 	for i, e := range t.Elems {
-		b.WriteString(cType(g, e))
+		b.WriteString(cFieldType(g, e))
 		b.WriteString(fmt.Sprintf(" _%d; ", i))
 	}
 	b.WriteString("}")
@@ -126,8 +138,9 @@ func cTupleStruct(g *generator, t *types.Tuple) string {
 
 // tupleInfo records one positional tuple struct typedef.
 type tupleInfo struct {
-	Name   string
-	Fields []string
+	Name      string
+	Fields    []string // rendered C types, in element order
+	ElemTypes []types.Type
 }
 
 // cTupleName returns a stable typedef name for a tuple shape, registering the
@@ -136,7 +149,7 @@ type tupleInfo struct {
 func cTupleName(g *generator, t *types.Tuple) string {
 	fields := make([]string, len(t.Elems))
 	for i, e := range t.Elems {
-		fields[i] = cType(g, e)
+		fields[i] = cFieldType(g, e)
 	}
 	key := strings.Join(fields, ",")
 	if g.tupleDefs == nil {
@@ -146,8 +159,9 @@ func cTupleName(g *generator, t *types.Tuple) string {
 		return info.Name
 	}
 	info := &tupleInfo{
-		Name:   fmt.Sprintf("DotTuple_%d", len(g.tupleList)),
-		Fields: fields,
+		Name:      fmt.Sprintf("DotTuple_%d", len(g.tupleList)),
+		Fields:    fields,
+		ElemTypes: t.Elems,
 	}
 	g.tupleDefs[key] = info
 	g.tupleList = append(g.tupleList, info)
@@ -204,7 +218,7 @@ func cAnonStruct(g *generator, s *types.Struct) string {
 	var b strings.Builder
 	b.WriteString("struct { ")
 	for _, f := range s.Fields {
-		b.WriteString(cType(g, f.Type))
+		b.WriteString(cFieldType(g, f.Type))
 		b.WriteString(" ")
 		b.WriteString(cFieldName(f.Name))
 		b.WriteString("; ")
@@ -219,9 +233,9 @@ func cAnonEnum(g *generator, e *types.Enum) string {
 	b.WriteString("struct { int32_t tag; union { ")
 	for _, v := range e.Variants {
 		for _, f := range v.Fields {
-			b.WriteString(cType(g, f.Type))
+			b.WriteString(cFieldType(g, f.Type))
 			b.WriteString(" ")
-			b.WriteString(cFieldName(v.Name + "_" + f.Name))
+			b.WriteString(variantFieldName(v.Name, f.Name))
 			b.WriteString("; ")
 		}
 	}
@@ -233,6 +247,16 @@ func cAnonEnum(g *generator, e *types.Enum) string {
 // and Dot builtins (e.g. `len`, `tag`).
 func cFieldName(name string) string {
 	return "dot_" + name
+}
+
+// variantFieldName returns the unique C union member name for one payload
+// field of an enum variant. All variants of an enum share a single C union,
+// so a bare field name is ambiguous: IntLit(value) and StringLit(value) both
+// have a `value`. Prefixing with the variant name keeps every member unique.
+// This is the single source of truth for the naming scheme; definition
+// emission (emitEnumDef, cAnonEnum) and every payload access must use it.
+func variantFieldName(variant, field string) string {
+	return "dot_" + variant + "_" + field
 }
 
 // mangleType produces a type's mangled suffix for monomorphisation.

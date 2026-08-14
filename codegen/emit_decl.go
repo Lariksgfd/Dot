@@ -1,4 +1,4 @@
-﻿package codegen
+package codegen
 
 import (
 	"fmt"
@@ -8,24 +8,35 @@ import (
 	"github.com/dotlang/dot/types"
 )
 
-// emitStructDef emits a struct definition: `typedef struct DotFoo DotFoo; struct DotFoo { ... };`.
-func (g *generator) emitStructDef(name string, st *types.Struct) {
+// emitStructFwd emits the typedef declaration for a struct, so that pointer
+// fields and parameters can reference it before its full definition appears.
+func (g *generator) emitStructFwd(name string) {
 	g.line(fmt.Sprintf("typedef struct Dot%s Dot%s;", name, name))
+}
+
+// emitStructDef emits a struct definition: `struct DotFoo { ... };`.
+// The typedef declaration is emitted separately by emitStructFwd so that all
+// forward declarations can be grouped before any definition (see emit_types.go).
+func (g *generator) emitStructDef(name string, st *types.Struct) {
 	g.line(fmt.Sprintf("struct Dot%s {", name))
 	for _, f := range st.Fields {
 		if f.Embedded {
 			continue
 		}
-		ft := cType(g, f.Type)
+		ft := cFieldType(g, f.Type)
 		g.line(fmt.Sprintf("    %s %s;", ft, cFieldName(f.Name)))
 	}
 	g.line("};")
 	g.line("")
 }
 
+// emitEnumFwd emits the typedef declaration for a tagged-union enum.
+func (g *generator) emitEnumFwd(name string) {
+	g.line(fmt.Sprintf("typedef struct Dot%s Dot%s;", name, name))
+}
+
 // emitEnumDef emits a tagged-union enum definition.
 func (g *generator) emitEnumDef(name string, en *types.Enum) {
-	g.line(fmt.Sprintf("typedef struct Dot%s Dot%s;", name, name))
 	g.line(fmt.Sprintf("struct Dot%s {", name))
 	g.line("    int32_t tag;")
 	if len(en.Variants) > 0 {
@@ -44,8 +55,8 @@ func (g *generator) emitEnumDef(name string, en *types.Enum) {
 				}
 				g.line(fmt.Sprintf("        /* %s */", v.Name))
 				for _, p := range v.Fields {
-					pt := cType(g, p.Type)
-					g.line(fmt.Sprintf("        %s %s;", pt, cFieldName(p.Name)))
+					pt := cFieldType(g, p.Type)
+					g.line(fmt.Sprintf("        %s %s;", pt, variantFieldName(v.Name, p.Name)))
 				}
 			}
 			g.line("    };")
@@ -94,11 +105,11 @@ func (g *generator) emitFuncDef(fn *ast.FnDecl, recv *types.Named) {
 		return
 	}
 
-  	result := cType(g, fnType.Result)
-  	if isEnumType(fnType.Result) {
-  		result += "*"
-  	}
-  	funcName := g.funcName(fn, recv)
+	result := cType(g, fnType.Result)
+	if isEnumType(fnType.Result) {
+		result += "*"
+	}
+	funcName := g.funcName(fn, recv)
 
 	params := g.emitParams(fn.Sig, fnType, recv)
 
@@ -109,7 +120,7 @@ func (g *generator) emitFuncDef(fn *ast.FnDecl, recv *types.Named) {
 		for _, s := range fn.Body.Stmts {
 			g.emitStmt(s)
 		}
-		
+
 		needsCleanup := true
 		if len(fn.Body.Stmts) > 0 {
 			if _, isReturn := fn.Body.Stmts[len(fn.Body.Stmts)-1].(*ast.ReturnStmt); isReturn {
@@ -153,7 +164,7 @@ func (g *generator) emitForwardParams(fnType *types.Fn) string {
 	var parts []string
 	for _, p := range fnType.Params {
 		ct := cType(g, p.Type)
-		if _, isEnum := p.Type.(*types.Enum); isEnum {
+		if isEnumType(p.Type) {
 			ct += "*"
 		}
 		parts = append(parts, ct)
@@ -169,17 +180,17 @@ func (g *generator) emitParams(sig *ast.FnSig, fnType *types.Fn, recv *types.Nam
 		parts = append(parts, fmt.Sprintf("Dot%s* self", recv.Name))
 	}
 	for _, p := range sig.Params {
-  		var pt types.Type = types.Invalid
-  		if paramIdx < len(fnType.Params) {
-  			pt = fnType.Params[paramIdx].Type
-  		}
-  		ct := cType(g, pt)
-  		if isEnum := isEnumType(pt); isEnum {
-  			ct += "*"
-  		}
-  		parts = append(parts, fmt.Sprintf("%s %s", ct, p.Name))
-  		paramIdx++
-  	}
+		var pt types.Type = types.Invalid
+		if paramIdx < len(fnType.Params) {
+			pt = fnType.Params[paramIdx].Type
+		}
+		ct := cType(g, pt)
+		if isEnum := isEnumType(pt); isEnum {
+			ct += "*"
+		}
+		parts = append(parts, fmt.Sprintf("%s %s", ct, p.Name))
+		paramIdx++
+	}
 	return strings.Join(parts, ", ")
 }
 
@@ -209,59 +220,12 @@ func (g *generator) fnType(fn *ast.FnDecl) *types.Fn {
 	return nil
 }
 
-// emitTypeDefs emits all type definitions (structs, enums, traits).
+// emitTypeDefs emits all type definitions (structs, enums, traits) plus the
+// monomorphised type instances, in dependency order: forward typedefs first,
+// then definitions topologically sorted by value-field dependencies.
+// The implementation lives in emit_types.go.
 func (g *generator) emitTypeDefs() error {
-	for _, decl := range g.prog.Decls {
-		switch d := decl.(type) {
-		case *ast.StructDecl:
-			isExtern := false
-			for _, ann := range d.Annotations {
-				if ann.Name == "extern" {
-					isExtern = true
-					break
-				}
-			}
-			if isExtern {
-				continue
-			}
-			sym, ok := g.info.Defs[d]
-			if !ok || sym == nil || sym.Type == nil {
-				continue
-			}
-			named, ok := sym.Type.(*types.Named)
-			if !ok {
-				continue
-			}
-			if st, ok := named.Underlying.(*types.Struct); ok {
-				g.emitStructDef(d.Name, st)
-			}
-		case *ast.EnumDecl:
-			sym, ok := g.info.Defs[d]
-			if !ok || sym == nil || sym.Type == nil {
-				continue
-			}
-			named, ok := sym.Type.(*types.Named)
-			if !ok {
-				continue
-			}
-			if en, ok := named.Underlying.(*types.Enum); ok {
-				g.emitEnumDef(d.Name, en)
-			}
-		case *ast.TraitDecl:
-			sym, ok := g.info.Defs[d]
-			if !ok || sym == nil || sym.Type == nil {
-				continue
-			}
-			named, ok := sym.Type.(*types.Named)
-			if !ok {
-				continue
-			}
-			if tr, ok := named.Underlying.(*types.Trait); ok {
-				g.emitTraitVtable(d.Name, tr)
-			}
-		}
-	}
-	return nil
+	return g.emitSortedTypeDefs()
 }
 
 // emitFuncDecls emits forward declarations for all user functions.
@@ -435,7 +399,9 @@ func (g *generator) implRecvType(d *ast.ImplDecl) *types.Named {
 	return nil
 }
 
-// emitMonomorphised emits monomorphised generic functions/types from InstanceList.
+// emitMonomorphised emits monomorphised generic functions from InstanceList.
+// Monomorphised type definitions are emitted earlier, by emitSortedTypeDefs,
+// so that they participate in the dependency-ordered type section.
 func (g *generator) emitMonomorphised() error {
 	seen := make(map[string]bool)
 	for _, inst := range g.info.InstanceList {
@@ -446,11 +412,8 @@ func (g *generator) emitMonomorphised() error {
 		if inst.Generic == nil {
 			continue
 		}
-		switch inst.Generic.Kind {
-		case types.SymFunc:
+		if inst.Generic.Kind == types.SymFunc {
 			g.emitMonomorphisedFunc(inst)
-		case types.SymType:
-			g.emitMonomorphisedType(inst)
 		}
 	}
 	return nil
@@ -490,14 +453,14 @@ func (g *generator) emitMonomorphisedFunc(inst *types.Instance) {
 			for _, s := range decl.Body.Stmts {
 				g.emitStmt(s)
 			}
-			
+
 			needsCleanup := true
 			if len(decl.Body.Stmts) > 0 {
 				if _, isReturn := decl.Body.Stmts[len(decl.Body.Stmts)-1].(*ast.ReturnStmt); isReturn {
 					needsCleanup = false
 				}
 			}
-			
+
 			if needsCleanup && len(g.scopeVars) > 0 {
 				cleanup := emitScopeCleanup(g, g.scopeVars)
 				for _, cl := range strings.Split(strings.TrimRight(cleanup, "\n"), "\n") {

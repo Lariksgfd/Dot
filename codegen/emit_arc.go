@@ -20,25 +20,21 @@ type scopeVar struct {
 }
 
 // emitRetain wraps expr in a dot_retain call when t is a heap type.
-// Non-heap values are returned unchanged.
-// Enum values are returned unchanged because they're already pointer types.
+// Non-heap values are returned unchanged. Every heap value (string, slice,
+// map, payload-carrying enum, dyn, chan, future) is a pointer in C, including
+// enums, so no address-of is ever taken here.
 func emitRetain(g *generator, expr string, t types.Type) string {
 	if types.IsHeap(t) {
-		if isStructOrEnum(t) {
-			return fmt.Sprintf("dot_retain((DotRefcnt*)(&(%s)))", expr)
-		}
 		return fmt.Sprintf("dot_retain((DotRefcnt*)(%s))", expr)
 	}
 	return expr
 }
 
 // emitRelease returns a dot_release call for heap types, or an empty string
-// for non-heap values (nothing to release).
+// for non-heap values (nothing to release). Heap values are pointers in C
+// (including enums), so the NULL check and the cast apply to expr directly.
 func emitRelease(g *generator, expr string, t types.Type) string {
 	if types.IsHeap(t) {
-		if isStructOrEnum(t) {
-			return fmt.Sprintf("if (&(%s) != NULL) { dot_release((DotRefcnt*)(&(%s))); }", expr, expr)
-		}
 		return fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); }", expr, expr)
 	}
 	return ""
@@ -109,9 +105,9 @@ func emitDeepRetain(g *generator, expr string, t types.Type) string {
 		if !types.IsHeap(x) {
 			return expr
 		}
-		// Enums are pointers in locals, but by-value in structs?
-		// Actually, enums are value types (structs in C), but IsHeap returns true if they have payload.
-		// Wait, emitRetain always uses dot_retain for Enum! 
+		// Heap enums are pointers in C (locals, params and struct fields alike),
+		// so a plain retain of the pointer is the correct deep retain: the
+		// payload's own references stay owned by the object itself.
 		return emitRetain(g, expr, t)
 	default:
 		return emitRetain(g, expr, t)
@@ -122,17 +118,37 @@ func emitDeepRetain(g *generator, expr string, t types.Type) string {
 // heap-allocated types within the given value expression. For structs, tuples,
 // and payload-carrying enums, it recursively walks the fields. For plain heap
 // types, it delegates to emitRelease.
+//
+// Recursive types (e.g. Expr -> []MatchArm -> Option[Expr] -> Expr, or
+// Decl -> Option[TypeNode] -> TypeNode -> Option[TypeNode]) would make the
+// walk diverge. emitDeepReleaseSeen therefore carries a path-scoped set of
+// already-expanded types: when a type reappears in the expansion chain, the
+// walk stops there. A repeated heap enum is still released directly (it is a
+// heap-allocated pointer), but its own fields are not re-walked. This bounds
+// the generated code and guarantees termination for any type graph.
 func emitDeepRelease(g *generator, expr string, t types.Type) string {
+	return emitDeepReleaseSeen(g, expr, t, make(map[types.Type]bool))
+}
+
+func emitDeepReleaseSeen(g *generator, expr string, t types.Type, seen map[types.Type]bool) string {
 	if t == nil {
 		return ""
 	}
 	t = types.Underlying(t)
+	// Cycle guard: do not expand a type that already appeared on this path.
+	if seen[t] {
+		if types.IsHeap(t) {
+			return fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); };\n", expr, expr)
+		}
+		return ""
+	}
+	seen[t] = true
 	switch x := t.(type) {
 	case *types.Struct:
 		var b strings.Builder
 		for _, f := range x.Fields {
 			fExpr := fmt.Sprintf("%s.%s", expr, cFieldName(f.Name))
-			if rel := emitDeepRelease(g, fExpr, f.Type); rel != "" {
+			if rel := emitDeepReleaseSeen(g, fExpr, f.Type, seen); rel != "" {
 				b.WriteString(rel)
 				if !strings.HasSuffix(rel, ";\n") {
 					b.WriteString(";\n")
@@ -144,7 +160,7 @@ func emitDeepRelease(g *generator, expr string, t types.Type) string {
 		var b strings.Builder
 		for i, e := range x.Elems {
 			fExpr := fmt.Sprintf("%s._%d", expr, i)
-			if rel := emitDeepRelease(g, fExpr, e); rel != "" {
+			if rel := emitDeepReleaseSeen(g, fExpr, e, seen); rel != "" {
 				b.WriteString(rel)
 				if !strings.HasSuffix(rel, ";\n") {
 					b.WriteString(";\n")
@@ -165,8 +181,8 @@ func emitDeepRelease(g *generator, expr string, t types.Type) string {
 			}
 			b.WriteString(fmt.Sprintf("case %d: {\n", v.Tag))
 			for _, f := range v.Fields {
-				fExpr := fmt.Sprintf("(%s)->%s", expr, cFieldName(f.Name))
-				if rel := emitDeepRelease(g, fExpr, f.Type); rel != "" {
+				fExpr := fmt.Sprintf("(%s)->%s", expr, variantFieldName(v.Name, f.Name))
+				if rel := emitDeepReleaseSeen(g, fExpr, f.Type, seen); rel != "" {
 					b.WriteString(rel)
 					if !strings.HasSuffix(rel, ";\n") {
 						b.WriteString(";\n")
@@ -189,7 +205,6 @@ func emitDeepRelease(g *generator, expr string, t types.Type) string {
 	}
 	return ""
 }
-
 
 // emitDeferRegister emits a defer registration call. The deferred call is
 // registered on the current scope's defer stack so it runs at scope exit.

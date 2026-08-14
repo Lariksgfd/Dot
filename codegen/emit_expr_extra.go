@@ -106,10 +106,10 @@ func emitTry(g *generator, x *ast.TryExpr) string {
 	inner := g.emitExpr(x.X)
 	t := g.info.TypeOf(x.X)
 	if isOptionType(t) {
-		return fmt.Sprintf("({ typeof(%s) _t = %s; if (_t.tag == 1) return DotNone; _t.value; })", inner, inner)
+		return fmt.Sprintf("({ typeof(%s) _t = %s; if (_t.tag == 1) return DotNone; _t.%s; })", inner, inner, variantFieldName("Some", "value"))
 	}
 	if isResultType(t) {
-		return fmt.Sprintf("({ typeof(%s) _t = %s; if (_t.tag == 1) return dot_result_err(_t.error); _t.value; })", inner, inner)
+		return fmt.Sprintf("({ typeof(%s) _t = %s; if (_t.tag == 1) return dot_result_err(_t.%s); _t.%s; })", inner, inner, variantFieldName("Err", "error"), variantFieldName("Ok", "value"))
 	}
 	return inner
 }
@@ -331,7 +331,7 @@ func emitAwait(g *generator, x *ast.AwaitExpr) string {
 // emitSpawn emits a spawn expression as a runtime spawn call.
 func emitSpawn(g *generator, x *ast.SpawnExpr) string {
 	name := fmt.Sprintf("_dot_fiber_%d", g.nextClosure())
-	
+
 	oldBuf := g.buf
 	oldIndent := g.indent
 	var b strings.Builder
@@ -343,10 +343,10 @@ func emitSpawn(g *generator, x *ast.SpawnExpr) string {
 	body := b.String()
 	g.buf = oldBuf
 	g.indent = oldIndent
-	
+
 	src := fmt.Sprintf("void %s(void) {\n%s}", name, body)
 	g.addClosure(src)
-	
+
 	if x.IsThread {
 		return fmt.Sprintf("(dot_thread_spawn(%s), 0)", name)
 	}
@@ -400,17 +400,22 @@ func emitIsExpr(g *generator, x *ast.IsExpr) string {
 	return "true"
 }
 
-// isPointerType reports whether t is a *types.Pointer.
+// isPointerType reports whether t is a pointer-like C type: an explicit
+// pointer, an enum (heap-allocated), or a named enum such as Option[T]/Result.
 func isPointerType(t types.Type) bool {
 	if t == nil {
 		return false
 	}
-	switch t.(type) {
+	switch x := t.(type) {
 	case *types.Pointer:
 		return true
 	case *types.Enum:
 		// Enums with payloads are heap-allocated, so they're pointer types in C.
 		return true
+	case *types.Named, *types.TypeVar:
+		// Named enums (e.g. Option[int], user-declared enums) and bound type
+		// variables resolving to enums are pointers too.
+		return isEnumType(x)
 	}
 	return false
 }
