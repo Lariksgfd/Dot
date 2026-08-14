@@ -21,8 +21,10 @@ impl Compiler {
         program = p.parse_program()
         
         if p.errors.len > 0 {
-            for err in p.errors {
-                self.errors.push(err)
+            i = 0
+            for i < p.errors.len {
+                self.errors.push(p.errors[i])
+                i += 1
             }
             return program
         }
@@ -33,8 +35,10 @@ impl Compiler {
         }
         
         if c.errors.len > 0 {
-            for err in c.errors {
-                self.errors.push(err)
+            i = 0
+            for i < c.errors.len {
+                self.errors.push(c.errors[i])
+                i += 1
             }
         }
         

@@ -21,6 +21,8 @@ pub const PREC_PREFIX int = 15
 pub const PREC_CALL int = 16
 pub const PREC_INDEX int = 17
 
+// NOTE: arms are listed in exactly the same order as the variants of Expr
+// in ast.dot; the bootstrap C codegen switches on arm index, so order matters.
 impl Expr {
     pub fn span(self) -> Span {
         return match self {
@@ -44,6 +46,13 @@ impl Expr {
     }
 }
 
+// Token-kind equality that is safe in the bootstrap C codegen: enum values
+// are compared through their stringified variant names, which are emitted
+// from real variant tags.
+fn kind_eq(a TokenType, b TokenType) -> bool {
+    return "{a}" == "{b}"
+}
+
 impl Parser {
     pub fn peek_precedence(self) -> int {
         return token_precedence(self.peek_tok.kind)
@@ -58,79 +67,419 @@ impl Parser {
         if left.is_none() {
             return None
         }
-        
-        left_expr = left.unwrap()
+        return self.parse_expr_rest(left.unwrap(), precedence)
+    }
 
-        for not self.peek_token_is(TokenType.EOF) and precedence < self.peek_precedence() {
-            if not self.has_infix_parse_fn(self.peek_tok.kind) {
-                return Some(left_expr)
-            }
-
-            self.next_token()
-            left_expr = self.parse_infix(left_expr)
+    // Recursive continuation of parse_expr. Recursion (instead of a loop with
+    // an accumulator) avoids the nested-scope shadowing semantics of Dot,
+    // where `x = expr` inside a block declares a new variable.
+    fn parse_expr_rest(mut self, left Expr, precedence int) -> Option[Expr] {
+        if self.peek_token_is(TokenType.EOF) {
+            return Some(left)
         }
-
-        return Some(left_expr)
+        if precedence >= self.peek_precedence() {
+            return Some(left)
+        }
+        if not self.has_infix_parse_fn(self.peek_tok.kind) {
+            return Some(left)
+        }
+        self.next_token()
+        new_left = self.parse_infix(left)
+        return self.parse_expr_rest(new_left, precedence)
     }
 
     fn parse_prefix(mut self) -> Option[Expr] {
-        match self.cur_tok.kind {
-            TokenType.Ident => {
-                return Some(Expr.Ident(self.cur_tok.lexeme, Span.new(self.cur_tok.pos, self.cur_tok.end)))
-            }
-            TokenType.Int => {
-                val = 0 // stdlib string -> int not implemented yet, just 0
-                return Some(Expr.IntLit(val, Span.new(self.cur_tok.pos, self.cur_tok.end)))
-            }
-            TokenType.TrueKw => {
-                return Some(Expr.BoolLit(true, Span.new(self.cur_tok.pos, self.cur_tok.end)))
-            }
-            TokenType.FalseKw => {
-                return Some(Expr.BoolLit(false, Span.new(self.cur_tok.pos, self.cur_tok.end)))
-            }
-            TokenType.NilKw => {
-                return Some(Expr.NilLit(Span.new(self.cur_tok.pos, self.cur_tok.end)))
-            }
-            TokenType.Minus | TokenType.Not | TokenType.Tilde => {
-                start = self.cur_tok.pos
-                op = self.cur_tok.kind
-                self.next_token()
-                right = self.parse_expr(PREC_PREFIX)
-                if right.is_none() {
-                    return None
-                }
-                end = self.cur_tok.end
-                return Some(Expr.Unary(op, [right.unwrap()], Span.new(start, end)))
-            }
-            TokenType.LParen => {
-                self.next_token()
-                expr = self.parse_expr(PREC_LOWEST)
-                if not self.expect_peek(TokenType.RParen) {
-                    return None
-                }
-                return expr
-            }
-            _ => {
-                self.errors.push("no prefix parse function for {self.cur_tok.kind} found")
+        if self.cur_token_is(TokenType.Ident) {
+            return Some(Expr.Ident(self.cur_tok.lexeme, Span.new(self.cur_tok.pos, self.cur_tok.end)))
+        }
+        if self.cur_token_is(TokenType.SelfKw) {
+            return Some(Expr.Ident("self", Span.new(self.cur_tok.pos, self.cur_tok.end)))
+        }
+        if self.cur_token_is(TokenType.Int) {
+            val = str_to_int(self.cur_tok.lexeme)
+            return Some(Expr.IntLit(val, Span.new(self.cur_tok.pos, self.cur_tok.end)))
+        }
+        if self.cur_token_is(TokenType.Float) {
+            val = str_to_float(self.cur_tok.lexeme)
+            return Some(Expr.FloatLit(val, Span.new(self.cur_tok.pos, self.cur_tok.end)))
+        }
+        if self.cur_token_is(TokenType.String) or self.cur_token_is(TokenType.RawString) {
+            return Some(Expr.StringLit(self.cur_tok.value, Span.new(self.cur_tok.pos, self.cur_tok.end)))
+        }
+        if self.cur_token_is(TokenType.TrueKw) {
+            return Some(Expr.BoolLit(true, Span.new(self.cur_tok.pos, self.cur_tok.end)))
+        }
+        if self.cur_token_is(TokenType.FalseKw) {
+            return Some(Expr.BoolLit(false, Span.new(self.cur_tok.pos, self.cur_tok.end)))
+        }
+        if self.cur_token_is(TokenType.NilKw) {
+            return Some(Expr.NilLit(Span.new(self.cur_tok.pos, self.cur_tok.end)))
+        }
+        if self.cur_token_is(TokenType.Minus) or self.cur_token_is(TokenType.Not) or self.cur_token_is(TokenType.Tilde) {
+            start = self.cur_tok.pos
+            op = self.cur_tok.kind
+            self.next_token()
+            right = self.parse_expr(PREC_PREFIX)
+            if right.is_none() {
                 return None
             }
+            end = self.cur_tok.end
+            return Some(Expr.Unary(op, [right.unwrap()], Span.new(start, end)))
+        }
+        if self.cur_token_is(TokenType.LParen) {
+            return self.parse_group_or_tuple()
+        }
+        if self.cur_token_is(TokenType.LBracket) {
+            return self.parse_array_lit()
+        }
+        if self.cur_token_is(TokenType.If) {
+            return self.parse_if_expr()
+        }
+        if self.cur_token_is(TokenType.Match) {
+            return self.parse_match_expr()
+        }
+        if self.cur_token_is(TokenType.Fn) {
+            self.errors.push("fn literals (closures) are not supported yet")
+            return None
+        }
+        if self.cur_token_is(TokenType.LBrace) {
+            self.errors.push("map literals are not supported yet")
+            return None
+        }
+        self.errors.push("no prefix parse function found")
+        return None
+    }
+
+    // (a) -> grouped; () / (a,) / (a, b) -> TupleLit.
+    // Named tuples (x: 1, y: 2) are not representable in ast.dot yet.
+    fn parse_group_or_tuple(mut self) -> Option[Expr] {
+        start = self.cur_tok.pos
+
+        if self.peek_token_is(TokenType.RParen) {
+            self.next_token()
+            return Some(Expr.TupleLit([]Expr{}, Span.new(start, self.cur_tok.end)))
+        }
+
+        self.next_token()
+        first = self.parse_expr(PREC_LOWEST)
+        if first.is_none() {
+            for not self.cur_token_is(TokenType.RParen) and not self.cur_token_is(TokenType.EOF) {
+                self.next_token()
+            }
+            return None
+        }
+
+        if not self.peek_token_is(TokenType.Comma) {
+            if not self.expect_peek(TokenType.RParen) {
+                return None
+            }
+            return first
+        }
+
+        elements = []Expr{first.unwrap()}
+        for self.peek_token_is(TokenType.Comma) {
+            self.next_token()
+            if self.peek_token_is(TokenType.RParen) {
+                self.next_token()
+                break
+            }
+            self.next_token()
+            el = self.parse_expr(PREC_LOWEST)
+            if el.is_some() {
+                elements.push(el.unwrap())
+            }
+        }
+
+        if not self.expect_peek(TokenType.RParen) {
+            return None
+        }
+        return Some(Expr.TupleLit(elements, Span.new(start, self.cur_tok.end)))
+    }
+
+    // [1, 2, 3] -> ArrayLit; []int{1, 2} -> ArrayLit (type annotation is dropped,
+    // ast.dot has no typed slice literal variant yet).
+    fn parse_array_lit(mut self) -> Option[Expr] {
+        start = self.cur_tok.pos
+
+        if self.peek_token_is(TokenType.RBracket) {
+            self.next_token() // cur = RBracket
+            if self.peek_token_is(TokenType.Ident) {
+                // []T{...} — skip the type tokens until the opening brace
+                for not self.peek_token_is(TokenType.LBrace) and not self.peek_token_is(TokenType.EOF) {
+                    self.next_token()
+                }
+                if self.peek_token_is(TokenType.LBrace) {
+                    self.next_token()
+                    elements = self.parse_array_elements()
+                    return Some(Expr.ArrayLit(elements, Span.new(start, self.cur_tok.end)))
+                }
+                self.errors.push("expected opening brace in slice literal")
+            }
+            return Some(Expr.ArrayLit([]Expr{}, Span.new(start, self.cur_tok.end)))
+        }
+
+        elements = self.parse_array_elements()
+        return Some(Expr.ArrayLit(elements, Span.new(start, self.cur_tok.end)))
+    }
+
+    fn parse_array_elements(mut self) -> []Expr {
+        elements = []Expr{}
+
+        if self.peek_token_is(TokenType.RBrace) {
+            self.next_token()
+            return elements
+        }
+
+        self.next_token()
+        first = self.parse_expr(PREC_LOWEST)
+        if first.is_some() {
+            elements.push(first.unwrap())
+        }
+
+        for self.peek_token_is(TokenType.Comma) {
+            self.next_token()
+            if self.peek_token_is(TokenType.RBrace) {
+                self.next_token()
+                break
+            }
+            self.next_token()
+            el = self.parse_expr(PREC_LOWEST)
+            if el.is_some() {
+                elements.push(el.unwrap())
+            }
+        }
+
+        if not self.expect_peek(TokenType.RBrace) {
+            return []Expr{}
+        }
+        return elements
+    }
+
+    // if cond { ... } else { ... } / else if ... -> Expr.If.
+    // else-branch is stored as a list of expressions (one per expression
+    // statement in the block); the []Expr shape comes from ast.dot.
+    fn parse_if_expr(mut self) -> Option[Expr] {
+        start = self.cur_tok.pos
+
+        self.next_token()
+        cond = self.parse_expr(PREC_LOWEST)
+        if cond.is_none() {
+            return None
+        }
+
+        if not self.peek_after_newline_is(TokenType.LBrace) {
+            self.peek_error(TokenType.LBrace)
+            return None
+        }
+        self.next_token() // cur = LBrace
+
+        then_stmts = self.parse_block_stmt()
+
+        if self.peek_token_is(TokenType.Else) or self.peek_after_newline_is(TokenType.Else) {
+            self.next_token() // cur = Else
+            if self.peek_after_newline_is(TokenType.If) {
+                self.next_token() // cur = If
+                nested = self.parse_if_expr()
+                if nested.is_some() {
+                    else_exprs = []Expr{nested.unwrap()}
+                    end = self.cur_tok.end
+                    return Some(Expr.If([cond.unwrap()], then_stmts, else_exprs, Span.new(start, end)))
+                }
+                return None
+            }
+            if self.peek_after_newline_is(TokenType.LBrace) {
+                self.next_token() // cur = LBrace
+                else_exprs = self.parse_else_block_exprs()
+                end = self.cur_tok.end
+                return Some(Expr.If([cond.unwrap()], then_stmts, else_exprs, Span.new(start, end)))
+            }
+            self.errors.push("expected if or block after else")
+            return None
+        }
+
+        end = self.cur_tok.end
+        return Some(Expr.If([cond.unwrap()], then_stmts, []Expr{}, Span.new(start, end)))
+    }
+
+    fn parse_else_block_exprs(mut self) -> []Expr {
+        exprs = []Expr{}
+        stmts = self.parse_block_stmt()
+        i = 0
+        for i < stmts.len {
+            match stmts[i] {
+                Stmt.ExprStmt(e, span) => exprs.push(e)
+                _ => {}
+            }
+            i += 1
+        }
+        return exprs
+    }
+
+    // match value { pat => expr, _ => other } -> Expr.Match.
+    // Only Literal (int), Ident / Enum-variant-path and Wildcard patterns
+    // are supported: ast.dot has no EnumPattern-with-payload variant.
+    fn parse_match_expr(mut self) -> Option[Expr] {
+        start = self.cur_tok.pos
+
+        self.next_token()
+        subject = self.parse_expr(PREC_LOWEST)
+        if subject.is_none() {
+            return None
+        }
+
+        if not self.expect_peek(TokenType.LBrace) {
+            return None
+        }
+
+        arms = self.parse_match_arms()
+        end = self.cur_tok.end
+        return Some(Expr.Match([subject.unwrap()], arms, Span.new(start, end)))
+    }
+
+    fn parse_match_arms(mut self) -> []MatchArm {
+        arms = []MatchArm{}
+        self.next_token() // cur = first pattern or RBrace
+
+        for not self.cur_token_is(TokenType.RBrace) and not self.cur_token_is(TokenType.EOF) {
+            arm = self.parse_match_arm()
+            if arm.is_some() {
+                arms.push(arm.unwrap())
+            }
+            if self.peek_token_is(TokenType.Comma) {
+                self.next_token() // cur = Comma
+                self.next_token() // cur = next pattern
+            } else if self.peek_token_is(TokenType.RBrace) or self.peek_token_is(TokenType.EOF) {
+                self.next_token()
+            } else {
+                self.next_token()
+            }
+        }
+        return arms
+    }
+
+    fn parse_match_arm(mut self) -> Option[MatchArm] {
+        pat = self.parse_pattern()
+        if pat.is_none() {
+            return None
+        }
+
+        guard = self.parse_match_guard()
+
+        if not self.expect_peek(TokenType.FatArrow) {
+            return None
+        }
+
+        self.next_token() // cur = arm body
+
+        // Block-bodied arms cannot be represented: MatchArm.body is an Expr
+        // and ast.dot has no block expression. The block is parsed and
+        // skipped, the arm is dropped.
+        if self.cur_token_is(TokenType.LBrace) {
+            self.parse_block_stmt()
+            self.errors.push("match arm block bodies are not supported yet")
+            return None
+        }
+
+        body = self.parse_expr(PREC_LOWEST)
+        if body.is_none() {
+            return None
+        }
+
+        return Some(MatchArm { pattern: pat.unwrap(), guard, body: body.unwrap() })
+    }
+
+    // Guard of a match arm: `if cond` right after the pattern.
+    fn parse_match_guard(mut self) -> Option[Expr] {
+        if self.peek_token_is(TokenType.If) {
+            self.next_token() // cur = If
+            self.next_token() // cur = guard expression
+            return self.parse_expr(PREC_LOWEST)
         }
         return None
     }
 
-    fn has_infix_parse_fn(self, t TokenType) -> bool {
-        match t {
-            TokenType.Plus | TokenType.Minus | TokenType.Star | TokenType.Slash | TokenType.Percent |
-            TokenType.EqEq | TokenType.BangEq | TokenType.Lt | TokenType.Gt | TokenType.LtEq | TokenType.GtEq |
-            TokenType.And | TokenType.Or | TokenType.Amp | TokenType.Pipe | TokenType.Caret |
-            TokenType.Shl | TokenType.Shr | TokenType.DotDot | TokenType.StarStar | TokenType.Assign => {
-                return true
-            }
-            TokenType.LParen | TokenType.LBracket | TokenType.Dot => {
-                return true
-            }
-            _ => { return false }
+    fn parse_pattern(mut self) -> Option[Pattern] {
+        if self.cur_token_is(TokenType.Underscore) {
+            return Some(Pattern.CatchAll)
         }
+        if self.cur_token_is(TokenType.Int) {
+            return Some(Pattern.IntLit(str_to_int(self.cur_tok.lexeme)))
+        }
+        if self.cur_token_is(TokenType.Ident) {
+            // Enum variant paths (Color.Red) are folded into a single name
+            // string; payload bindings (Shape.Circle(r)) are not
+            // representable in ast.dot yet.
+            return self.parse_pattern_path(self.cur_tok.lexeme)
+        }
+        self.errors.push("unsupported pattern token")
+        return None
+    }
+
+    fn parse_pattern_path(mut self, name string) -> Option[Pattern] {
+        if not self.peek_token_is(TokenType.Dot) {
+            return Some(Pattern.Ident(name))
+        }
+        self.next_token() // cur = Dot
+        if not self.peek_token_is(TokenType.Ident) {
+            return Some(Pattern.Ident(name))
+        }
+        self.next_token() // cur = Ident
+        return self.parse_pattern_path(name + "." + self.cur_tok.lexeme)
+    }
+
+    fn has_infix_parse_fn(self, t TokenType) -> bool {
+        if kind_eq(t, TokenType.Plus) { return true }
+        if kind_eq(t, TokenType.Minus) { return true }
+        if kind_eq(t, TokenType.Star) { return true }
+        if kind_eq(t, TokenType.Slash) { return true }
+        if kind_eq(t, TokenType.Percent) { return true }
+        if kind_eq(t, TokenType.EqEq) { return true }
+        if kind_eq(t, TokenType.BangEq) { return true }
+        if kind_eq(t, TokenType.Lt) { return true }
+        if kind_eq(t, TokenType.Gt) { return true }
+        if kind_eq(t, TokenType.LtEq) { return true }
+        if kind_eq(t, TokenType.GtEq) { return true }
+        if kind_eq(t, TokenType.And) { return true }
+        if kind_eq(t, TokenType.Or) { return true }
+        if kind_eq(t, TokenType.Amp) { return true }
+        if kind_eq(t, TokenType.Pipe) { return true }
+        if kind_eq(t, TokenType.Caret) { return true }
+        if kind_eq(t, TokenType.Shl) { return true }
+        if kind_eq(t, TokenType.Shr) { return true }
+        if kind_eq(t, TokenType.DotDot) { return true }
+        if kind_eq(t, TokenType.DotDotEq) { return true }
+        if kind_eq(t, TokenType.PipeArrow) { return true }
+        if kind_eq(t, TokenType.StarStar) { return true }
+        if kind_eq(t, TokenType.Assign) { return true }
+        if kind_eq(t, TokenType.PlusAssign) { return true }
+        if kind_eq(t, TokenType.MinusAssign) { return true }
+        if kind_eq(t, TokenType.StarAssign) { return true }
+        if kind_eq(t, TokenType.SlashAssign) { return true }
+        if kind_eq(t, TokenType.PercentAssign) { return true }
+        if kind_eq(t, TokenType.AmpAssign) { return true }
+        if kind_eq(t, TokenType.PipeAssign) { return true }
+        if kind_eq(t, TokenType.CaretAssign) { return true }
+        if kind_eq(t, TokenType.ShlAssign) { return true }
+        if kind_eq(t, TokenType.ShrAssign) { return true }
+        if kind_eq(t, TokenType.LParen) { return true }
+        if kind_eq(t, TokenType.LBracket) { return true }
+        if kind_eq(t, TokenType.Dot) { return true }
+        if kind_eq(t, TokenType.Question) { return true }
+        return false
+    }
+
+    fn is_assign_op(self, t TokenType) -> bool {
+        if kind_eq(t, TokenType.Assign) { return true }
+        if kind_eq(t, TokenType.PlusAssign) { return true }
+        if kind_eq(t, TokenType.MinusAssign) { return true }
+        if kind_eq(t, TokenType.StarAssign) { return true }
+        if kind_eq(t, TokenType.SlashAssign) { return true }
+        if kind_eq(t, TokenType.PercentAssign) { return true }
+        if kind_eq(t, TokenType.AmpAssign) { return true }
+        if kind_eq(t, TokenType.PipeAssign) { return true }
+        if kind_eq(t, TokenType.CaretAssign) { return true }
+        if kind_eq(t, TokenType.ShlAssign) { return true }
+        if kind_eq(t, TokenType.ShrAssign) { return true }
         return false
     }
 
@@ -139,55 +488,73 @@ impl Parser {
         op = self.cur_tok.kind
         precedence = self.cur_precedence()
 
-        match op {
-            TokenType.LParen => {
-                // Call
-                args = self.parse_expr_list(TokenType.RParen)
-                end = self.cur_tok.end
-                return Expr.Call([left], args, Span.new(start, end))
-            }
-            TokenType.LBracket => {
-                // Index
-                self.next_token()
-                index = self.parse_expr(PREC_LOWEST).unwrap()
-                if not self.expect_peek(TokenType.RBracket) {
-                    return left
-                }
-                end = self.cur_tok.end
-                return Expr.Index([left], [index], Span.new(start, end))
-            }
-            TokenType.Dot => {
-                // Field
-                if not self.expect_peek(TokenType.Ident) {
-                    return left
-                }
-                name = self.cur_tok.lexeme
-                end = self.cur_tok.end
-                return Expr.Field([left], name, Span.new(start, end))
-            }
-            TokenType.Assign => {
-                self.next_token()
-                right = self.parse_expr(PREC_LOWEST).unwrap()
-                end = self.cur_tok.end
-                return Expr.Assign([left], op, [right], Span.new(start, end))
-            }
-            _ => {
-                // Binary
-                self.next_token()
-                // Power operator is right-associative
-                is_starstar = match op { TokenType.StarStar => true, _ => false }
-                next_prec = if is_starstar { 
-                    precedence - 1 
-                } else { 
-                    precedence 
-                }
-                
-                right = self.parse_expr(next_prec).unwrap()
-                end = self.cur_tok.end
-                return Expr.Binary([left], op, [right], Span.new(start, end))
-            }
+        if self.cur_token_is(TokenType.LParen) {
+            // Call
+            args = self.parse_expr_list(TokenType.RParen)
+            end = self.cur_tok.end
+            return Expr.Call([left], args, Span.new(start, end))
         }
-        return left
+        if self.cur_token_is(TokenType.LBracket) {
+            // Index (including s[1..3] which becomes Index(left, [Binary(1, DotDot, 3)])
+            // since ast.dot has no SliceExpr variant)
+            self.next_token()
+            idx = self.parse_expr(PREC_LOWEST)
+            if idx.is_none() {
+                self.errors.push("expected index expression")
+                for not self.cur_token_is(TokenType.RBracket) and not self.cur_token_is(TokenType.EOF) {
+                    self.next_token()
+                }
+                return left
+            }
+            if not self.expect_peek(TokenType.RBracket) {
+                return left
+            }
+            end = self.cur_tok.end
+            return Expr.Index([left], [idx.unwrap()], Span.new(start, end))
+        }
+        if self.cur_token_is(TokenType.Dot) {
+            // Field (tuple indexing t.0 is not representable in ast.dot yet)
+            if not self.expect_peek(TokenType.Ident) {
+                return left
+            }
+            name = self.cur_tok.lexeme
+            end = self.cur_tok.end
+            return Expr.Field([left], name, Span.new(start, end))
+        }
+        if self.is_assign_op(op) {
+            self.next_token()
+            right = self.parse_expr(PREC_LOWEST)
+            if right.is_none() {
+                self.errors.push("expected expression after assignment operator")
+                return left
+            }
+            end = self.cur_tok.end
+            return Expr.Assign([left], op, [right.unwrap()], Span.new(start, end))
+        }
+        if self.cur_token_is(TokenType.Question) {
+            // try-expression `expr?` — no TryExpr variant in ast.dot yet
+            self.errors.push("try expression ? is not supported yet")
+            return left
+        }
+
+        // Binary (also covers PipeArrow pipe and DotDot/DotDotEq range,
+        // which have no dedicated variants in ast.dot yet)
+        self.next_token()
+        // Power operator is right-associative
+        is_starstar = kind_eq(op, TokenType.StarStar)
+        next_prec = if is_starstar { 
+            precedence - 1 
+        } else { 
+            precedence 
+        }
+        
+        right = self.parse_expr(next_prec)
+        if right.is_none() {
+            self.errors.push("expected expression after operator")
+            return left
+        }
+        end = self.cur_tok.end
+        return Expr.Binary([left], op, [right.unwrap()], Span.new(start, end))
     }
 
     fn parse_expr_list(mut self, end_type TokenType) -> []Expr {
@@ -199,12 +566,18 @@ impl Parser {
         }
 
         self.next_token()
-        list.push(self.parse_expr(PREC_LOWEST).unwrap())
+        first = self.parse_expr(PREC_LOWEST)
+        if first.is_some() {
+            list.push(first.unwrap())
+        }
 
         for self.peek_token_is(TokenType.Comma) {
             self.next_token()
             self.next_token()
-            list.push(self.parse_expr(PREC_LOWEST).unwrap())
+            el = self.parse_expr(PREC_LOWEST)
+            if el.is_some() {
+                list.push(el.unwrap())
+            }
         }
 
         if not self.expect_peek(end_type) {
@@ -215,23 +588,59 @@ impl Parser {
     }
 }
 
-pub fn token_precedence(t TokenType) -> int {
-    return match t {
-        TokenType.Assign => PREC_ASSIGNMENT
-        TokenType.PipeArrow => PREC_PIPE
-        TokenType.Or => PREC_LOGICAL_OR
-        TokenType.And => PREC_LOGICAL_AND
-        TokenType.EqEq | TokenType.BangEq => PREC_EQUALITY
-        TokenType.Lt | TokenType.Gt | TokenType.LtEq | TokenType.GtEq => PREC_COMPARISON
-        TokenType.Pipe => PREC_BIT_OR
-        TokenType.Caret => PREC_BIT_XOR
-        TokenType.Amp => PREC_BIT_AND
-        TokenType.Shl | TokenType.Shr => PREC_SHIFT
-        TokenType.DotDot | TokenType.DotDotEq => PREC_RANGE
-        TokenType.Plus | TokenType.Minus => PREC_SUM
-        TokenType.Star | TokenType.Slash | TokenType.Percent => PREC_PRODUCT
-        TokenType.StarStar => PREC_POWER
-        TokenType.LParen | TokenType.Dot | TokenType.LBracket => PREC_CALL
-        _ => PREC_LOWEST
+fn parse_int_part(s string, i int, acc int) -> int {
+    if i >= s.len {
+        return acc
     }
+    ch = s[i] as int
+    if ch >= 48 and ch <= 57 {
+        return parse_int_part(s, i + 1, acc * 10 + (ch - 48))
+    }
+    return parse_int_part(s, i + 1, acc)
+}
+
+fn str_to_int(s string) -> int {
+    return parse_int_part(s, 0, 0)
+}
+
+fn parse_float_part(s string, i int, whole float, frac float, divisor float, seen_dot bool) -> float {
+    if i >= s.len {
+        return whole + frac
+    }
+    ch = s[i] as int
+    if ch == 46 {
+        return parse_float_part(s, i + 1, whole, frac, divisor, true)
+    }
+    if ch >= 48 and ch <= 57 {
+        digit = ch - 48
+        if seen_dot {
+            return parse_float_part(s, i + 1, whole, frac + (digit as float) / (divisor * 10.0), divisor * 10.0, true)
+        }
+        return parse_float_part(s, i + 1, whole * 10.0 + (digit as float), frac, divisor, false)
+    }
+    return parse_float_part(s, i + 1, whole, frac, divisor, seen_dot)
+}
+
+fn str_to_float(s string) -> float {
+    return parse_float_part(s, 0, 0.0, 0.0, 1.0, false)
+}
+
+pub fn token_precedence(t TokenType) -> int {
+    if kind_eq(t, TokenType.Assign) or kind_eq(t, TokenType.PlusAssign) or kind_eq(t, TokenType.MinusAssign) or kind_eq(t, TokenType.StarAssign) or kind_eq(t, TokenType.SlashAssign) or kind_eq(t, TokenType.PercentAssign) or kind_eq(t, TokenType.AmpAssign) or kind_eq(t, TokenType.PipeAssign) or kind_eq(t, TokenType.CaretAssign) or kind_eq(t, TokenType.ShlAssign) or kind_eq(t, TokenType.ShrAssign) { return PREC_ASSIGNMENT }
+    if kind_eq(t, TokenType.PipeArrow) { return PREC_PIPE }
+    if kind_eq(t, TokenType.Or) { return PREC_LOGICAL_OR }
+    if kind_eq(t, TokenType.And) { return PREC_LOGICAL_AND }
+    if kind_eq(t, TokenType.EqEq) or kind_eq(t, TokenType.BangEq) { return PREC_EQUALITY }
+    if kind_eq(t, TokenType.Lt) or kind_eq(t, TokenType.Gt) or kind_eq(t, TokenType.LtEq) or kind_eq(t, TokenType.GtEq) { return PREC_COMPARISON }
+    if kind_eq(t, TokenType.Pipe) { return PREC_BIT_OR }
+    if kind_eq(t, TokenType.Caret) { return PREC_BIT_XOR }
+    if kind_eq(t, TokenType.Amp) { return PREC_BIT_AND }
+    if kind_eq(t, TokenType.Shl) or kind_eq(t, TokenType.Shr) { return PREC_SHIFT }
+    if kind_eq(t, TokenType.DotDot) or kind_eq(t, TokenType.DotDotEq) { return PREC_RANGE }
+    if kind_eq(t, TokenType.Plus) or kind_eq(t, TokenType.Minus) { return PREC_SUM }
+    if kind_eq(t, TokenType.Star) or kind_eq(t, TokenType.Slash) or kind_eq(t, TokenType.Percent) { return PREC_PRODUCT }
+    if kind_eq(t, TokenType.StarStar) { return PREC_POWER }
+    if kind_eq(t, TokenType.LParen) or kind_eq(t, TokenType.Dot) or kind_eq(t, TokenType.LBracket) { return PREC_CALL }
+    if kind_eq(t, TokenType.Question) { return PREC_CALL }
+    return PREC_LOWEST
 }

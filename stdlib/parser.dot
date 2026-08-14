@@ -3,10 +3,11 @@ import ast
 import parser_pratt
 
 pub struct Parser {
-    l        Lexer
-    cur_tok  Token
-    peek_tok Token
-    errors   []string
+    l         Lexer
+    cur_tok   Token
+    peek_tok  Token
+    peek2_tok Token
+    errors    []string
 }
 
 impl Parser {
@@ -15,8 +16,10 @@ impl Parser {
             l,
             cur_tok: Token { kind: TokenType.Illegal, lexeme: "", value: "", base: 0, suffix: "", parts: nil, pos: Position.new("", 0, 0, 0), end: Position.new("", 0, 0, 0) },
             peek_tok: Token { kind: TokenType.Illegal, lexeme: "", value: "", base: 0, suffix: "", parts: nil, pos: Position.new("", 0, 0, 0), end: Position.new("", 0, 0, 0) },
+            peek2_tok: Token { kind: TokenType.Illegal, lexeme: "", value: "", base: 0, suffix: "", parts: nil, pos: Position.new("", 0, 0, 0), end: Position.new("", 0, 0, 0) },
             errors: []string{}
         }
+        p.next_token()
         p.next_token()
         p.next_token()
         return p
@@ -24,11 +27,13 @@ impl Parser {
 
     pub fn next_token(mut self) {
         self.cur_tok = self.peek_tok
-        self.peek_tok = self.l.next_token()
+        self.peek_tok = self.peek2_tok
+        self.peek2_tok = self.l.next_token()
         // Skip newlines transparently for now, or handle them based on statement rules
         for "{self.cur_tok.kind}" == "{TokenType.Newline}" {
             self.cur_tok = self.peek_tok
-            self.peek_tok = self.l.next_token()
+            self.peek_tok = self.peek2_tok
+            self.peek2_tok = self.l.next_token()
         }
     }
 
@@ -38,6 +43,20 @@ impl Parser {
 
     pub fn peek_token_is(self, t TokenType) -> bool {
         return "{self.peek_tok.kind}" == "{t}"
+    }
+
+    pub fn peek2_token_is(self, t TokenType) -> bool {
+        return "{self.peek2_tok.kind}" == "{t}"
+    }
+
+    // True when t is the next token, or when one newline sits between cur
+    // and t. Newlines are invisible to the parser, so block openers and
+    // else-clauses must be tolerant of them.
+    pub fn peek_after_newline_is(self, t TokenType) -> bool {
+        if self.peek_token_is(t) {
+            return true
+        }
+        return self.peek_token_is(TokenType.Newline) and self.peek2_token_is(t)
     }
 
     pub fn expect_peek(mut self, t TokenType) -> bool {
@@ -50,7 +69,7 @@ impl Parser {
     }
 
     pub fn peek_error(mut self, t TokenType) {
-        msg = "expected next token to be {t}, got {self.peek_tok.kind} instead"
+        msg = "unexpected token, expected a different token instead"
         self.errors.push(msg)
     }
 
@@ -73,7 +92,35 @@ impl Parser {
         if self.cur_token_is(TokenType.Struct) {
             return self.parse_struct_decl()
         }
-        
+        if self.cur_token_is(TokenType.Enum) {
+            return self.parse_enum_decl()
+        }
+        if self.cur_token_is(TokenType.Trait) {
+            return self.parse_trait_decl()
+        }
+        if self.cur_token_is(TokenType.Impl) {
+            return self.parse_impl_decl()
+        }
+        if self.cur_token_is(TokenType.Pub) {
+            self.next_token()
+            return self.parse_decl()
+        }
+        if self.cur_token_is(TokenType.Ident) or self.cur_token_is(TokenType.Const) or self.cur_token_is(TokenType.Mut) {
+            return self.parse_toplevel_stmt()
+        }
+        return None
+    }
+
+    // Top-level statements (let / const / assignments) are parsed and then
+    // dropped: ast.dot has no VarDecl, so there is nothing to return here.
+    // Parse errors (like x = ;) are still pushed to self.errors. Wrapping
+    // the statement into a synthetic Decl.Fn was considered, but the
+    // checker crashes on Fn decls at runtime: the C codegen corrupts the
+    // 5-field Decl.Fn match bindings in checker.check_decl (pre-existing
+    // Go codegen bug, reproduced in isolation). Until that is fixed, top
+    // level statements stay unchecked.
+    fn parse_toplevel_stmt(mut self) -> Option[Decl] {
+        self.parse_stmt()
         return None
     }
 
@@ -84,38 +131,61 @@ impl Parser {
         }
         name = self.cur_tok.lexeme
 
+        // generic type params fn f[T](...) are skipped
+        if self.peek_token_is(TokenType.LBracket) {
+            for not self.peek_token_is(TokenType.RBracket) and not self.peek_token_is(TokenType.EOF) {
+                self.next_token()
+            }
+            self.next_token() // cur = RBracket
+        }
+
         if not self.expect_peek(TokenType.LParen) {
             return None
         }
 
         params = self.parse_params()
 
-        ret_ty = None
         if self.peek_token_is(TokenType.Arrow) {
             self.next_token()
             self.next_token()
             ret_ty = Some(self.parse_type())
+            return self.parse_fn_body(name, params, ret_ty, start)
         }
+        return self.parse_fn_body(name, params, None, start)
+    }
 
-        if not self.expect_peek(TokenType.LBrace) {
-            return None
+    // The body may be missing entirely (trait method signatures). Missing
+    // bodies are accepted silently, no error is reported.
+    fn parse_fn_body(mut self, name string, params []Param, ret_ty Option[TypeNode], start Position) -> Option[Decl] {
+        if self.peek_after_newline_is(TokenType.LBrace) {
+            self.next_token() // cur = LBrace
+            body = self.parse_block_stmt()
+            end = self.cur_tok.end
+            return Some(Decl.Fn(name, params, ret_ty, body, Span.new(start, end)))
         }
-
-        body = self.parse_block_stmt()
         end = self.cur_tok.end
-
-        return Some(Decl.Fn(name, params, ret_ty, body, Span.new(start, end)))
+        return Some(Decl.Fn(name, params, ret_ty, []Stmt{}, Span.new(start, end)))
     }
 
     fn parse_struct_decl(mut self) -> Option[Decl] {
         start = self.cur_tok.pos
         if not self.expect_peek(TokenType.Ident) { return None }
         name = self.cur_tok.lexeme
-        if not self.expect_peek(TokenType.LBrace) { return None }
+        if self.peek_token_is(TokenType.LBracket) {
+            for not self.peek_token_is(TokenType.RBracket) and not self.peek_token_is(TokenType.EOF) {
+                self.next_token()
+            }
+            self.next_token() // cur = RBracket
+        }
+        if not self.peek_after_newline_is(TokenType.LBrace) {
+            self.peek_error(TokenType.LBrace)
+            return None
+        }
+        self.next_token() // cur = LBrace
 
         fields = []FieldDef{}
         self.next_token()
-        
+
         for not self.cur_token_is(TokenType.RBrace) and not self.cur_token_is(TokenType.EOF) {
             if self.cur_token_is(TokenType.Ident) {
                 fname = self.cur_tok.lexeme
@@ -123,11 +193,149 @@ impl Parser {
                 fty = self.parse_type()
                 fields.push(FieldDef { name: fname, ty: fty })
             }
-            self.next_token() 
+            self.next_token()
         }
-        
+
         end = self.cur_tok.end
         return Some(Decl.Struct(name, fields, Span.new(start, end)))
+    }
+
+    // enum Name { Variant, Variant(x int, ...) } — variant payloads are
+    // skipped, VariantDef has no payload field in ast.dot.
+    fn parse_enum_decl(mut self) -> Option[Decl] {
+        start = self.cur_tok.pos
+        if not self.expect_peek(TokenType.Ident) { return None }
+        name = self.cur_tok.lexeme
+        if self.peek_token_is(TokenType.LBracket) {
+            for not self.peek_token_is(TokenType.RBracket) and not self.peek_token_is(TokenType.EOF) {
+                self.next_token()
+            }
+            self.next_token()
+        }
+        if not self.peek_after_newline_is(TokenType.LBrace) {
+            self.peek_error(TokenType.LBrace)
+            return None
+        }
+        self.next_token() // cur = LBrace
+
+        variants = []VariantDef{}
+        self.next_token()
+
+        for not self.cur_token_is(TokenType.RBrace) and not self.cur_token_is(TokenType.EOF) {
+            if self.cur_token_is(TokenType.Ident) {
+                v = VariantDef { name: self.cur_tok.lexeme }
+                variants.push(v)
+                if self.peek_token_is(TokenType.LParen) {
+                    for not self.peek_token_is(TokenType.RParen) and not self.peek_token_is(TokenType.EOF) {
+                        self.next_token()
+                    }
+                }
+            }
+            self.next_token()
+        }
+
+        end = self.cur_tok.end
+        return Some(Decl.Enum(name, variants, Span.new(start, end)))
+    }
+
+    // trait Name { fn sig ... fn with_default ... }
+    fn parse_trait_decl(mut self) -> Option[Decl] {
+        start = self.cur_tok.pos
+        if not self.expect_peek(TokenType.Ident) { return None }
+        name = self.cur_tok.lexeme
+        if self.peek_token_is(TokenType.LBracket) {
+            for not self.peek_token_is(TokenType.RBracket) and not self.peek_token_is(TokenType.EOF) {
+                self.next_token()
+            }
+            self.next_token()
+        }
+        if not self.peek_after_newline_is(TokenType.LBrace) {
+            self.peek_error(TokenType.LBrace)
+            return None
+        }
+        self.next_token() // cur = LBrace
+
+        methods = []Decl{}
+        self.next_token()
+
+        for not self.cur_token_is(TokenType.RBrace) and not self.cur_token_is(TokenType.EOF) {
+            if self.cur_token_is(TokenType.Fn) {
+                m = self.parse_fn_decl()
+                if m.is_some() {
+                    methods.push(m.unwrap())
+                }
+            }
+            self.next_token()
+        }
+
+        end = self.cur_tok.end
+        return Some(Decl.Trait(name, methods, Span.new(start, end)))
+    }
+
+    // impl Type { ... } / impl Trait for Type { ... } / impl[T] Type[T] { ... }
+    fn parse_impl_decl(mut self) -> Option[Decl] {
+        start = self.cur_tok.pos
+        self.next_token() // cur = first token after impl
+
+        if self.cur_token_is(TokenType.LBracket) {
+            for not self.peek_token_is(TokenType.RBracket) and not self.peek_token_is(TokenType.EOF) {
+                self.next_token()
+            }
+            self.next_token() // cur = RBracket
+            self.next_token() // cur = type name
+        }
+
+        if not self.cur_token_is(TokenType.Ident) {
+            self.errors.push("expected type name after impl")
+            return None
+        }
+        first = self.cur_tok.lexeme
+
+        // type arguments on the target, impl Stack[T]
+        if self.peek_token_is(TokenType.LBracket) {
+            for not self.peek_token_is(TokenType.RBracket) and not self.peek_token_is(TokenType.EOF) {
+                self.next_token()
+            }
+            self.next_token() // cur = RBracket
+        }
+
+        if self.peek_token_is(TokenType.For) {
+            self.next_token() // cur = For
+            self.next_token() // cur = target type name
+            if self.peek_token_is(TokenType.LBracket) {
+                for not self.peek_token_is(TokenType.RBracket) and not self.peek_token_is(TokenType.EOF) {
+                    self.next_token()
+                }
+                self.next_token()
+            }
+            return self.parse_impl_rest(Some(first), self.cur_tok.lexeme, start)
+        }
+        return self.parse_impl_rest(None, first, start)
+    }
+
+    fn parse_impl_rest(mut self, trait_name Option[string], target_name string, start Position) -> Option[Decl] {
+        if not self.peek_after_newline_is(TokenType.LBrace) {
+            self.peek_error(TokenType.LBrace)
+            return None
+        }
+        self.next_token() // cur = LBrace
+
+        methods = []Decl{}
+        self.next_token()
+
+        for not self.cur_token_is(TokenType.RBrace) and not self.cur_token_is(TokenType.EOF) {
+            if self.cur_token_is(TokenType.Fn) {
+                m = self.parse_fn_decl()
+                if m.is_some() {
+                    methods.push(m.unwrap())
+                }
+            }
+            self.next_token()
+        }
+
+        end = self.cur_tok.end
+        target = TypeNode.Named(target_name, Span.new(start, start))
+        return Some(Decl.Impl(trait_name, target, methods, Span.new(start, end)))
     }
 
     fn parse_params(mut self) -> []Param {
@@ -136,12 +344,13 @@ impl Parser {
             self.next_token()
             return params
         }
-        
+
         self.next_token()
         pname = self.cur_tok.lexeme
         self.next_token()
         pty = self.parse_type()
         params.push(Param { name: pname, ty: pty })
+        self.skip_default_value()
 
         for self.peek_token_is(TokenType.Comma) {
             self.next_token()
@@ -150,6 +359,7 @@ impl Parser {
             self.next_token()
             pty_next = self.parse_type()
             params.push(Param { name: pname_next, ty: pty_next })
+            self.skip_default_value()
         }
 
         if not self.expect_peek(TokenType.RParen) {
@@ -159,10 +369,19 @@ impl Parser {
         return params
     }
 
+    // Default parameter values (name type = value) are parsed and discarded.
+    fn skip_default_value(mut self) {
+        if self.peek_token_is(TokenType.Assign) {
+            for not self.peek_token_is(TokenType.Comma) and not self.peek_token_is(TokenType.RParen) and not self.peek_token_is(TokenType.EOF) {
+                self.next_token()
+            }
+        }
+    }
+
     pub fn parse_block_stmt(mut self) -> []Stmt {
         stmts = []Stmt{}
         self.next_token()
-        
+
         for not self.cur_token_is(TokenType.RBrace) and not self.cur_token_is(TokenType.EOF) {
             stmt = self.parse_stmt()
             if stmt.is_some() {
@@ -177,21 +396,215 @@ impl Parser {
         if self.cur_token_is(TokenType.Return) {
             return self.parse_return_stmt()
         }
-        
+        if self.cur_token_is(TokenType.Break) {
+            return self.parse_break_stmt()
+        }
+        if self.cur_token_is(TokenType.Continue) {
+            return self.parse_continue_stmt()
+        }
+        if self.cur_token_is(TokenType.Defer) {
+            return self.parse_defer_stmt()
+        }
+        if self.cur_token_is(TokenType.Const) {
+            return self.parse_const_stmt()
+        }
+        if self.cur_token_is(TokenType.For) {
+            return self.parse_for_stmt()
+        }
+        if self.cur_token_is(TokenType.At) {
+            self.next_token() // cur = label name
+            self.next_token() // cur = For (expected)
+            if not self.cur_token_is(TokenType.For) {
+                self.errors.push("expected for after loop label")
+                return None
+            }
+            return self.parse_for_stmt()
+        }
+        if self.cur_token_is(TokenType.Ident) and self.peek_token_is(TokenType.Colon) {
+            self.next_token() // cur = Colon
+            self.next_token() // cur = For (expected)
+            if not self.cur_token_is(TokenType.For) {
+                self.errors.push("expected for after loop label")
+                return None
+            }
+            return self.parse_for_stmt()
+        }
+        // while is not a lexer keyword, it is detected by lexeme here
+        if self.cur_token_is(TokenType.Ident) and self.cur_tok.lexeme == "while" {
+            return self.parse_while_stmt()
+        }
+        if self.cur_token_is(TokenType.Ident) {
+            return self.parse_let_or_expr_stmt()
+        }
+        if self.cur_token_is(TokenType.Mut) {
+            self.next_token()
+            return self.parse_let_or_expr_stmt()
+        }
+        if self.cur_token_is(TokenType.LBrace) {
+            return self.parse_standalone_block()
+        }
         return self.parse_expr_stmt()
     }
 
     fn parse_return_stmt(mut self) -> Option[Stmt] {
         start = self.cur_tok.pos
         self.next_token()
-        
-        val = None
-        if not self.cur_token_is(TokenType.Newline) and not self.cur_token_is(TokenType.RBrace) {
-            val = self.parse_expr(0) // PREC_LOWEST
+
+        if self.cur_token_is(TokenType.RBrace) or self.cur_token_is(TokenType.EOF) {
+            end = self.cur_tok.end
+            return Some(Stmt.Return(None, Span.new(start, end)))
         }
-        
+        val = self.parse_expr(0) // PREC_LOWEST
         end = self.cur_tok.end
-        return Some(Stmt.Return(val, Span.new(start, end)))
+        if val.is_some() {
+            return Some(Stmt.Return(Some(val.unwrap()), Span.new(start, end)))
+        }
+        return Some(Stmt.Return(None, Span.new(start, end)))
+    }
+
+    // Only the @label form is supported: a bare label after break cannot be
+    // told apart from the first statement of the next line (newlines are
+    // invisible to this parser).
+    fn parse_break_stmt(mut self) -> Option[Stmt] {
+        start = self.cur_tok.pos
+        if self.peek_token_is(TokenType.At) {
+            self.next_token() // cur = At
+            self.next_token() // cur = label
+            end = self.cur_tok.end
+            return Some(Stmt.Break(Some(self.cur_tok.lexeme), Span.new(start, end)))
+        }
+        end = self.cur_tok.end
+        return Some(Stmt.Break(None, Span.new(start, end)))
+    }
+
+    fn parse_continue_stmt(mut self) -> Option[Stmt] {
+        start = self.cur_tok.pos
+        if self.peek_token_is(TokenType.At) {
+            self.next_token() // cur = At
+            self.next_token() // cur = label
+            end = self.cur_tok.end
+            return Some(Stmt.Continue(Some(self.cur_tok.lexeme), Span.new(start, end)))
+        }
+        end = self.cur_tok.end
+        return Some(Stmt.Continue(None, Span.new(start, end)))
+    }
+
+    // defer expr: ast.dot has no Defer stmt variant, the expression is kept
+    // as a plain ExprStmt and the defer flag is dropped.
+    fn parse_defer_stmt(mut self) -> Option[Stmt] {
+        self.next_token() // cur = deferred expression
+        return self.parse_expr_stmt()
+    }
+
+    fn parse_const_stmt(mut self) -> Option[Stmt] {
+        start = self.cur_tok.pos
+        self.next_token() // cur = name
+        if not self.cur_token_is(TokenType.Ident) {
+            self.errors.push("expected name after const")
+            return None
+        }
+        name = self.cur_tok.lexeme
+        return self.parse_let_rest(name, start, false)
+    }
+
+    fn parse_for_stmt(mut self) -> Option[Stmt] {
+        start = self.cur_tok.pos
+
+        // infinite loop: for { ... }
+        if self.peek_after_newline_is(TokenType.LBrace) {
+            self.next_token() // cur = LBrace
+            body = self.parse_block_stmt()
+            end = self.cur_tok.end
+            iterable = Expr.BoolLit(true, Span.new(start, start))
+            return Some(Stmt.For(Pattern.CatchAll, iterable, body, Span.new(start, end)))
+        }
+
+        self.next_token() // cur = first header token
+
+        // for pattern in iterable { ... }
+        if self.cur_token_is(TokenType.Ident) and self.peek_token_is(TokenType.In) {
+            pat = Pattern.Ident(self.cur_tok.lexeme)
+            self.next_token() // cur = In
+            self.next_token() // cur = iterable start
+            iterable = self.parse_expr(PREC_LOWEST)
+            if iterable.is_none() {
+                self.errors.push("expected iterable expression after in")
+                return None
+            }
+            if not self.peek_after_newline_is(TokenType.LBrace) {
+                self.errors.push("expected block after for header")
+                return None
+            }
+            self.next_token() // cur = LBrace
+            body = self.parse_block_stmt()
+            end = self.cur_tok.end
+            return Some(Stmt.For(pat, iterable.unwrap(), body, Span.new(start, end)))
+        }
+
+        // for k, v in map { ... } — ast.dot has a single pattern slot,
+        // extra bindings are parsed and dropped
+        if self.cur_token_is(TokenType.Ident) and self.peek_token_is(TokenType.Comma) {
+            pat = Pattern.Ident(self.cur_tok.lexeme)
+            for not self.peek_token_is(TokenType.In) and not self.peek_token_is(TokenType.EOF) {
+                self.next_token()
+            }
+            self.next_token() // cur = In
+            self.next_token() // cur = iterable start
+            iterable = self.parse_expr(PREC_LOWEST)
+            if iterable.is_none() {
+                self.errors.push("expected iterable expression after in")
+                return None
+            }
+            if not self.peek_after_newline_is(TokenType.LBrace) {
+                self.errors.push("expected block after for header")
+                return None
+            }
+            self.next_token() // cur = LBrace
+            body = self.parse_block_stmt()
+            end = self.cur_tok.end
+            return Some(Stmt.For(pat, iterable.unwrap(), body, Span.new(start, end)))
+        }
+
+        // conditional loop: for cond { ... } -> Stmt.While (ast.dot has no
+        // condition slot in Stmt.For)
+        cond = self.parse_expr(PREC_LOWEST)
+        if cond.is_none() {
+            self.errors.push("expected in or condition after for")
+            return None
+        }
+        if not self.peek_after_newline_is(TokenType.LBrace) {
+            self.errors.push("expected block after for header")
+            return None
+        }
+        self.next_token() // cur = LBrace
+        body = self.parse_block_stmt()
+        end = self.cur_tok.end
+        return Some(Stmt.While(cond.unwrap(), body, Span.new(start, end)))
+    }
+
+    fn parse_while_stmt(mut self) -> Option[Stmt] {
+        start = self.cur_tok.pos
+        self.next_token() // cur = condition start
+        cond = self.parse_expr(PREC_LOWEST)
+        if cond.is_none() {
+            self.errors.push("expected condition after while")
+            return None
+        }
+        if not self.peek_after_newline_is(TokenType.LBrace) {
+            self.errors.push("expected block after while")
+            return None
+        }
+        self.next_token() // cur = LBrace
+        body = self.parse_block_stmt()
+        end = self.cur_tok.end
+        return Some(Stmt.While(cond.unwrap(), body, Span.new(start, end)))
+    }
+
+    fn parse_standalone_block(mut self) -> Option[Stmt] {
+        start = self.cur_tok.pos
+        stmts = self.parse_block_stmt()
+        end = self.cur_tok.end
+        return Some(Stmt.Block(stmts, Span.new(start, end)))
     }
 
     fn parse_expr_stmt(mut self) -> Option[Stmt] {
@@ -204,6 +617,108 @@ impl Parser {
         return Some(Stmt.ExprStmt(expr.unwrap(), Span.new(start, end)))
     }
 
+    // Statement starting with an identifier: either a variable declaration
+    // (x = 1, x int = 1, a, b = 1, 2) or a plain expression statement.
+    fn parse_let_or_expr_stmt(mut self) -> Option[Stmt] {
+        start = self.cur_tok.pos
+        name = self.cur_tok.lexeme
+        return self.parse_let_rest(name, start, true)
+    }
+
+    fn parse_let_rest(mut self, name string, start Position, is_mut bool) -> Option[Stmt] {
+        if self.peek_token_is(TokenType.Comma) {
+            return self.parse_multi_let(name, start, is_mut)
+        }
+        if self.starts_type(self.peek_tok.kind) {
+            return self.parse_typed_let(name, start, is_mut)
+        }
+        if self.peek_token_is(TokenType.Assign) {
+            return self.parse_inferred_let(name, start, is_mut)
+        }
+        return self.parse_expr_stmt()
+    }
+
+    // Can this token start a type annotation? Fixed arrays [N]T are excluded:
+    // they are ambiguous with index assignments a[0] = 1 at statement start.
+    fn starts_type(self, t TokenType) -> bool {
+        if "{t}" == "{TokenType.Ident}" { return true }
+        if "{t}" == "{TokenType.Star}" { return true }
+        if "{t}" == "{TokenType.SelfType}" { return true }
+        if "{t}" == "{TokenType.Dyn}" { return true }
+        if "{t}" == "{TokenType.Fn}" { return true }
+        if "{t}" == "{TokenType.LBracket}" {
+            if "{self.peek2_tok.kind}" == "{TokenType.RBracket}" {
+                return true
+            }
+        }
+        return false
+    }
+
+    fn parse_inferred_let(mut self, name string, start Position, is_mut bool) -> Option[Stmt] {
+        self.next_token() // cur = Assign
+        self.next_token() // cur = value start
+        value = self.parse_expr(PREC_LOWEST)
+        if value.is_none() {
+            self.errors.push("expected expression after assignment")
+            return None
+        }
+        end = self.cur_tok.end
+        return Some(Stmt.Let(name, None, value.unwrap(), is_mut, Span.new(start, end)))
+    }
+
+    fn parse_typed_let(mut self, name string, start Position, is_mut bool) -> Option[Stmt] {
+        self.next_token() // cur = type start
+        ty = self.parse_type()
+        if not self.peek_token_is(TokenType.Assign) {
+            self.errors.push("expected = after type annotation")
+            return None
+        }
+        self.next_token() // cur = Assign
+        self.next_token() // cur = value start
+        value = self.parse_expr(PREC_LOWEST)
+        if value.is_none() {
+            self.errors.push("expected expression in variable declaration")
+            return None
+        }
+        end = self.cur_tok.end
+        return Some(Stmt.Let(name, Some(ty), value.unwrap(), is_mut, Span.new(start, end)))
+    }
+
+    // a, b = 1, 2: only the first name survives into Stmt.Let, the value
+    // list is folded into a TupleLit. ast.dot has one name slot.
+    fn parse_multi_let(mut self, name string, start Position, is_mut bool) -> Option[Stmt] {
+        for self.peek_token_is(TokenType.Comma) {
+            self.next_token() // cur = Comma
+            self.next_token() // cur = next name
+        }
+        if not self.peek_token_is(TokenType.Assign) {
+            self.errors.push("expected = in multiple assignment")
+            return None
+        }
+        self.next_token() // cur = Assign
+        self.next_token() // cur = first value
+        first = self.parse_expr(PREC_LOWEST)
+        if first.is_none() {
+            self.errors.push("expected expression after assignment")
+            return None
+        }
+        elements = []Expr{first.unwrap()}
+        for self.peek_token_is(TokenType.Comma) {
+            self.next_token() // cur = Comma
+            self.next_token() // cur = value
+            el = self.parse_expr(PREC_LOWEST)
+            if el.is_some() {
+                elements.push(el.unwrap())
+            }
+        }
+        if elements.len == 1 {
+            end = self.cur_tok.end
+            return Some(Stmt.Let(name, None, elements[0], is_mut, Span.new(start, end)))
+        }
+        end = self.cur_tok.end
+        return Some(Stmt.Let(name, None, Expr.TupleLit(elements, Span.new(start, end)), is_mut, Span.new(start, end)))
+    }
+
     pub fn parse_type(mut self) -> TypeNode {
         start = self.cur_tok.pos
         if self.cur_token_is(TokenType.LBracket) {
@@ -213,6 +728,19 @@ impl Parser {
                 elem = self.parse_type()
                 return TypeNode.Slice([elem], Span.new(start, self.cur_tok.end))
             }
+            if self.cur_token_is(TokenType.Int) {
+                self.next_token()
+                if self.cur_token_is(TokenType.RBracket) {
+                    self.next_token()
+                    elem = self.parse_type()
+                    return TypeNode.Array([elem], Span.new(start, self.cur_tok.end))
+                }
+            }
+        }
+        if self.cur_token_is(TokenType.Star) {
+            self.next_token()
+            elem = self.parse_type()
+            return TypeNode.Pointer([elem], Span.new(start, self.cur_tok.end))
         }
         name = self.cur_tok.lexeme
         end = self.cur_tok.end
