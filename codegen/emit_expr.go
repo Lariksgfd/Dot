@@ -350,8 +350,9 @@ func emitMethodCall(g *generator, call *ast.CallExpr, info *types.CallInfo) stri
 			}
 			if isStructOrEnum(t) {
 				// Box the value: structs are copied into the box, enums are
-				// copied from the object their pointer designates.
-				arg = emitBoxValue(g, emitDeepRetain(g, arg, t), t)
+				// copied from the object their pointer designates. emitBoxValue
+				// deep-retains the boxed copy itself.
+				arg = emitBoxValue(g, arg, t)
 			} else {
 				arg = emitRetain(g, arg, t)
 			}

@@ -111,16 +111,19 @@ impl Parser {
         return None
     }
 
-    // Top-level statements (let / const / assignments) are parsed and then
-    // dropped: ast.dot has no VarDecl, so there is nothing to return here.
-    // Parse errors (like x = ;) are still pushed to self.errors. Wrapping
-    // the statement into a synthetic Decl.Fn was considered, but the
-    // checker crashes on Fn decls at runtime: the C codegen corrupts the
-    // 5-field Decl.Fn match bindings in checker.check_decl (pre-existing
-    // Go codegen bug, reproduced in isolation). Until that is fixed, top
-    // level statements stay unchecked.
+    // Top-level statements (let / const / assignments) are wrapped into a
+    // synthetic Decl.Fn so the checker type-checks them (e.g. `x int = "x"`
+    // produces a type error). The wrapping previously crashed at runtime
+    // because the C codegen corrupted the 5-field Decl.Fn match bindings in
+    // checker.check_decl; that codegen bug is fixed, so statements are
+    // checked again.
     fn parse_toplevel_stmt(mut self) -> Option[Decl] {
-        self.parse_stmt()
+        start = self.cur_tok.pos
+        stmt = self.parse_stmt()
+        end = self.cur_tok.end
+        if stmt.is_some() {
+            return Some(Decl.Fn("<stmt>", []Param{}, None, []Stmt{stmt.unwrap()}, Span.new(start, end)))
+        }
         return None
     }
 

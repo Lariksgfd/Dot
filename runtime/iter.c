@@ -69,8 +69,8 @@ bool dot_iter_next(DotIter* it, DotAny* key, DotAny* val) {
     if (it->kind == 0) {
         if (it->idx >= it->end) return false;
         SlicePriv* sp = (SlicePriv*)it->collection;
-        *key = (DotAny)(intptr_t)it->idx;
-        *val = sp->data[it->idx];
+        if (key) *key = (DotAny)(intptr_t)it->idx;
+        if (val) *val = sp->data[it->idx];
         it->idx++;
         return true;
     }
@@ -78,11 +78,10 @@ bool dot_iter_next(DotIter* it, DotAny* key, DotAny* val) {
     if (it->map_idx >= it->map_len) return false;
     MapPriv* mp = (MapPriv*)it->collection;
     DotAny k = it->map_keys[it->map_idx];
-    *key = k;
-    *val = NULL;
+    if (key) *key = k;
     for (int64_t i = 0; i < mp->cap; i++) {
         if (mp->entries[i].key == k) {
-            *val = mp->entries[i].value;
+            if (val) *val = mp->entries[i].value;
             break;
         }
     }

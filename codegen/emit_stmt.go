@@ -382,13 +382,16 @@ func (g *generator) emitMatchStmt(x *ast.MatchExpr) {
 			if tag, ok := enumVariantTag(g, subjType, arm.Pattern); ok {
 				// Each case gets its own braces so arm-local declarations
 				// (pattern bindings and body locals) do not leak into
-				// sibling cases.
+				// sibling cases, and a break so the arm cannot fall through
+				// into the next case (which would read another variant's
+				// union members as garbage).
 				g.line(fmt.Sprintf("case %d: {", tag))
 				g.indent++
 				if bindings := patternBindings(g, tmp, arm.Pattern, subjType); bindings != "" {
 					g.line(bindings)
 				}
 				g.emitMatchArmBody(arm)
+				g.line("break;")
 				g.indent--
 				g.line("}")
 			} else {

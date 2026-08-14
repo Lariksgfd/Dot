@@ -136,17 +136,21 @@ func emitRelease(g *generator, expr string, t types.Type) string {
 // values are copied from a temporary's address so the box holds a plain
 // struct value; enum values are pointers, so the box stores the pointer
 // itself (the box content is the enum reference, not the object).
+//
+// The box must own its heap members: the boxed copy is deep-retained (struct
+// members are retained, enum pointers are dot_retain'd) so that releasing the
+// source expression later cannot leave the box with dangling pointers.
 func emitBoxValue(g *generator, expr string, t types.Type) string {
 	if isEnumType(t) {
 		tmp := fmt.Sprintf("_dot_box_%d", g.unusedIdx)
 		g.unusedIdx++
-		return fmt.Sprintf("({ %s* %s = %s; dot_box_struct(sizeof(%s*), &%s); })",
-			cType(g, t), tmp, expr, cType(g, t), tmp)
+		return fmt.Sprintf("({ %s* %s = %s; dot_retain((DotRefcnt*)(%s)); dot_box_struct(sizeof(%s*), &%s); })",
+			cType(g, t), tmp, expr, tmp, cType(g, t), tmp)
 	}
 	tmp := fmt.Sprintf("_dot_box_%d", g.unusedIdx)
 	g.unusedIdx++
 	return fmt.Sprintf("({ %s %s = %s; dot_box_struct(sizeof(%s), &%s); })",
-		cType(g, t), tmp, expr, cType(g, t), tmp)
+		cType(g, t), tmp, emitDeepRetain(g, expr, t), cType(g, t), tmp)
 }
 
 // emitScopeCleanup emits a release call for every heap-allocated local in scopeVars.

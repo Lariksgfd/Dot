@@ -57,11 +57,16 @@ func (g *generator) emitEnumDef(name string, en *types.Enum) {
 				if len(v.Fields) == 0 {
 					continue
 				}
-				g.line(fmt.Sprintf("        /* %s */", v.Name))
+				// Each variant's fields live in their own anonymous struct
+				// inside the union: a flat union would overlap every payload
+				// field of the variant, so only the last-assigned field
+				// survived and multi-field bindings read garbage.
+				g.line(fmt.Sprintf("        struct { /* %s */", v.Name))
 				for _, p := range v.Fields {
 					pt := cFieldType(g, p.Type)
-					g.line(fmt.Sprintf("        %s %s;", pt, variantFieldName(v.Name, p.Name)))
+					g.line(fmt.Sprintf("            %s %s;", pt, variantFieldName(v.Name, p.Name)))
 				}
+				g.line("        };")
 			}
 			g.line("    };")
 		}
