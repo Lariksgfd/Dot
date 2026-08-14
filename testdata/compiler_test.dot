@@ -1,0 +1,27 @@
+import "../stdlib/compiler.dot"
+
+pub fn main() {
+    c = Compiler.new()
+    ast = c.compile("x = 42")
+    if c.errors.len == 0 {
+        print("OK: happy path")
+    } else {
+        print("ERR: " + c.errors[0])
+    }
+
+    c2 = Compiler.new()
+    c2.compile("x int = \"hello\"")
+    if c2.errors.len > 0 {
+        print("OK: caught type error")
+    } else {
+        print("ERR: missed type error")
+    }
+
+    c3 = Compiler.new()
+    c3.compile("x = ;")
+    if c3.errors.len > 0 {
+        print("OK: caught syntax error")
+    } else {
+        print("ERR: missed syntax error")
+    }
+}

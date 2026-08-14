@@ -199,7 +199,11 @@ func typeContainsParam(t Type, param *TypeParam) bool {
 // generic instantiation: base + "__" + each arg's mangled name joined by "_".
 func instanceKey(base string, args []Type) string {
 	var b strings.Builder
-	b.WriteString(base)
+	if strings.HasPrefix(base, "Dot") {
+		b.WriteString(base)
+	} else {
+		b.WriteString("Dot" + base)
+	}
 	b.WriteString("__")
 	for i, a := range args {
 		if i > 0 {
@@ -255,6 +259,11 @@ func mangleType(t Type) string {
 		return x.Name
 	case *TypeParam:
 		return x.Name
+	case *TypeVar:
+		if x.Bound != nil {
+			return mangleType(x.Bound)
+		}
+		return fmt.Sprintf("TV%d", x.ID)
 	case *Trait:
 		return x.Name
 	case *Dyn:

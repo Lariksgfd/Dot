@@ -1,0 +1,29 @@
+struct Inner {
+    s string
+}
+
+struct Outer {
+    val Inner
+    name string
+}
+
+fn create_nested() -> Outer {
+    s1 = "allocated string inside func"
+    i1 = Inner { s: s1 }
+    o1 = Outer { val: i1, name: "outer string" }
+    return o1
+}
+
+fn main() {
+    o = create_nested()
+    
+    // reassignment
+    s = "temp str"
+    s = "new str"
+    
+    // nested assignment
+    o.name = "new outer name"
+    o.val.s = "new inner string"
+    
+    print("ALL OK")
+}

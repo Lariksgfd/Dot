@@ -245,7 +245,13 @@ func emitStructLit(g *generator, x *ast.StructLit) string {
 	cname := cType(g, t)
 	var fields []string
 	for _, f := range x.Fields {
-		fields = append(fields, fmt.Sprintf(". %s = %s", cFieldName(f.Name), g.emitExpr(f.Value)))
+		val := g.emitExpr(f.Value)
+		valType := g.info.TypeOf(f.Value)
+		if isLValue(f.Value) {
+			fields = append(fields, fmt.Sprintf(". %s = %s", cFieldName(f.Name), emitDeepRetain(g, val, valType)))
+		} else {
+			fields = append(fields, fmt.Sprintf(". %s = %s", cFieldName(f.Name), val))
+		}
 	}
 	return fmt.Sprintf("((%s){%s })", cname, strings.Join(fields, ", "))
 }

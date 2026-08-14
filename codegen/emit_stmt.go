@@ -69,11 +69,28 @@ func (g *generator) emitVarDecl(x *ast.VarDecl) {
 		// A name the checker treated as a reassignment (D53) has no Defs
 		// entry: emit a plain assignment, not a C declaration.
 		if id, isIdent := name.(*ast.Ident); isIdent && g.info.Defs[id] == nil && val != "" {
+			var doRetain bool
+			if i < len(x.Values) {
+				doRetain = isLValue(x.Values[i])
+			}
+			
 			if types.IsHeap(declType) {
-				g.line(fmt.Sprintf("dot_release((DotRefcnt*)(%s));", vn))
-				g.line(fmt.Sprintf("%s = %s;", vn, emitRetain(g, val, declType)))
+				g.line(fmt.Sprintf("if ((void*)(%s) != (void*)(%s)) {", vn, val))
+				g.indent++
+				g.line(fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); }", vn, vn))
+				if doRetain {
+					g.line(fmt.Sprintf("%s = %s;", vn, emitRetain(g, val, declType)))
+				} else {
+					g.line(fmt.Sprintf("%s = %s;", vn, val))
+				}
+				g.indent--
+				g.line("}")
 			} else {
-				g.line(fmt.Sprintf("%s = %s;", vn, val))
+				if doRetain {
+					g.line(fmt.Sprintf("%s = %s;", vn, emitDeepRetain(g, val, declType)))
+				} else {
+					g.line(fmt.Sprintf("%s = %s;", vn, val))
+				}
 			}
 			continue
 		}
@@ -85,23 +102,43 @@ func (g *generator) emitVarDecl(x *ast.VarDecl) {
 		}
 		if val == "" {
 			g.line(fmt.Sprintf("%s %s;", ct, vn))
+			g.scopeVars = append(g.scopeVars, scopeVar{name: vn, typ: declType})
 			continue
 		}
 		if i < len(x.Values) {
 			if esc := g.info.Escapes[x.Values[i]]; esc == types.Heap {
 				g.line(fmt.Sprintf("%s %s = dot_alloc(sizeof(%s));", ct, vn, cType(g, declType)))
 				g.line(fmt.Sprintf("*%s = %s;", vn, val))
+				g.scopeVars = append(g.scopeVars, scopeVar{name: vn, typ: declType})
 				continue
 			}
 		}
+		var doRetain bool
+		if i < len(x.Values) {
+			doRetain = isLValue(x.Values[i])
+		}
+
 		if isEnum {
-			g.line(fmt.Sprintf("%s %s = %s;", ct, vn, val))
+			if doRetain {
+				g.line(fmt.Sprintf("%s %s = %s;", ct, vn, emitDeepRetain(g, val, declType)))
+			} else {
+				g.line(fmt.Sprintf("%s %s = %s;", ct, vn, val))
+			}
 			g.scopeVars = append(g.scopeVars, scopeVar{name: vn, typ: declType})
 		} else if types.IsHeap(declType) {
-			g.line(fmt.Sprintf("%s %s = %s;", ct, vn, emitRetain(g, val, declType)))
+			if doRetain {
+				g.line(fmt.Sprintf("%s %s = %s;", ct, vn, emitRetain(g, val, declType)))
+			} else {
+				g.line(fmt.Sprintf("%s %s = %s;", ct, vn, val))
+			}
 			g.scopeVars = append(g.scopeVars, scopeVar{name: vn, typ: declType})
 		} else {
-			g.line(fmt.Sprintf("%s %s = %s;", ct, vn, val))
+			if doRetain {
+				g.line(fmt.Sprintf("%s %s = %s;", ct, vn, emitDeepRetain(g, val, declType)))
+			} else {
+				g.line(fmt.Sprintf("%s %s = %s;", ct, vn, val))
+			}
+			g.scopeVars = append(g.scopeVars, scopeVar{name: vn, typ: declType})
 		}
 	}
 }
@@ -134,10 +171,14 @@ func (g *generator) emitMultiAssign(x *ast.VarDecl) {
 		declType := g.info.TypeOf(name)
 		if types.IsHeap(declType) {
 			// Transfer the temporary's reference to the target.
-			g.line(fmt.Sprintf("dot_release((DotRefcnt*)(%s));", vn))
+			g.line(fmt.Sprintf("if ((void*)(%s) != (void*)(%s)) {", vn, temps[i]))
+			g.indent++
+			g.line(fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); }", vn, vn))
 			g.line(fmt.Sprintf("%s = %s;", vn, temps[i]))
+			g.indent--
+			g.line("}")
 		} else {
-			g.line(fmt.Sprintf("%s = %s;", vn, temps[i]))
+			g.line(fmt.Sprintf("%s = %s;", vn, emitDeepRetain(g, temps[i], declType)))
 		}
 	}
 }
@@ -166,15 +207,21 @@ func (g *generator) emitTupleDecl(x *ast.VarDecl) {
 		// Reassigned name (D53): plain assignment from the tuple field.
 		if id, isIdent := name.(*ast.Ident); isIdent && g.info.Defs[id] == nil {
 			if types.IsHeap(declType) {
-				g.line(fmt.Sprintf("dot_release((DotRefcnt*)(%s));", vn))
-				g.line(fmt.Sprintf("%s = %s;", vn, emitRetain(g, fmt.Sprintf("%s._%d", tmp, i), declType)))
+				valT := fmt.Sprintf("%s._%d", tmp, i)
+				g.line(fmt.Sprintf("if ((void*)(%s) != (void*)(%s)) {", vn, valT))
+				g.indent++
+				g.line(fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); }", vn, vn))
+				g.line(fmt.Sprintf("%s = %s;", vn, emitRetain(g, valT, declType)))
+				g.indent--
+				g.line("}")
 			} else {
-				g.line(fmt.Sprintf("%s = %s._%d;", vn, tmp, i))
+				g.line(fmt.Sprintf("%s = %s;", vn, emitDeepRetain(g, fmt.Sprintf("%s._%d", tmp, i), declType)))
 			}
 			continue
 		}
 		ct := cType(g, declType)
-		g.line(fmt.Sprintf("%s %s = %s._%d;", ct, vn, tmp, i))
+		g.line(fmt.Sprintf("%s %s = %s;", ct, vn, emitDeepRetain(g, fmt.Sprintf("%s._%d", tmp, i), declType)))
+		g.scopeVars = append(g.scopeVars, scopeVar{name: vn, typ: declType})
 	}
 }
 
@@ -225,16 +272,37 @@ func (g *generator) emitAssignStmt(x *ast.AssignExpr) {
 				}
 			}
 
+			doRetain := isLValue(x.Values[i])
 			if isEnum := isEnumType(tgtType); isEnum {
-				g.line(fmt.Sprintf("memcpy(%s, %s, sizeof(%s));", tname, val, cType(g, tgtType)))
+				// We don't have deep copy logic for enum assignment, so just evaluate it. 
+				// Wait! We should emitDeepRetain the value!
+				// `memcpy` doesn't retain. 
+				// Actually, `val` is evaluated. We should just retain its fields.
+				if doRetain {
+					g.line(fmt.Sprintf("{ %s _dot_tmp = %s; memcpy(%s, &_dot_tmp, sizeof(%s)); }", cType(g, tgtType), emitDeepRetain(g, val, valType), tname, cType(g, tgtType)))
+				} else {
+					g.line(fmt.Sprintf("{ %s _dot_tmp = %s; memcpy(%s, &_dot_tmp, sizeof(%s)); }", cType(g, tgtType), val, tname, cType(g, tgtType)))
+				}
 				continue
 			}
 
 			if types.IsHeap(tgtType) {
-				g.line(fmt.Sprintf("dot_release((DotRefcnt*)(%s));", tname))
-				g.line(fmt.Sprintf("%s = %s;", tname, emitRetain(g, val, valType)))
+				g.line(fmt.Sprintf("if ((void*)(%s) != (void*)(%s)) {", tname, val))
+				g.indent++
+				g.line(fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); }", tname, tname))
+				if doRetain {
+					g.line(fmt.Sprintf("%s = %s;", tname, emitRetain(g, val, valType)))
+				} else {
+					g.line(fmt.Sprintf("%s = %s;", tname, val))
+				}
+				g.indent--
+				g.line("}")
 			} else {
-				g.line(fmt.Sprintf("%s = %s;", tname, val))
+				if doRetain {
+					g.line(fmt.Sprintf("%s = %s;", tname, emitDeepRetain(g, val, valType)))
+				} else {
+					g.line(fmt.Sprintf("%s = %s;", tname, val))
+				}
 			}
 		}
 	}

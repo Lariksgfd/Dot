@@ -1,0 +1,27 @@
+enum Status {
+    Ok,
+    Err,
+}
+
+struct Inner {
+    val: int;
+}
+
+struct Outer {
+    in: Inner;
+    stat: Status;
+}
+
+func (o *Outer) getInnerVal() int {
+    return o.in.val;
+}
+
+func (o *Outer) getStatus() Status {
+    return o.stat;
+}
+
+func main() {
+    let o = Outer{in: Inner{val: 42}, stat: Status.Ok};
+    let v = o.getInnerVal();
+    let s = o.getStatus();
+}

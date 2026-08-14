@@ -308,6 +308,10 @@ func Comparable(t Type) bool {
 		return true
 	case *Pointer, *Dyn:
 		return true
+	case *Enum:
+		return true
+	case *Named:
+		return Comparable(Underlying(t))
 	}
 	return false
 }

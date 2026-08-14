@@ -1,0 +1,90 @@
+import lexer
+
+pub struct Span {
+    start Position
+    end   Position
+}
+
+impl Span {
+    pub fn new(start Position, end Position) -> Span {
+        return Span { start, end }
+    }
+}
+
+pub enum Expr {
+    Ident(name string, span Span)
+    IntLit(value int, span Span)
+    FloatLit(value float, span Span)
+    StringLit(value string, span Span)
+    BoolLit(value bool, span Span)
+    NilLit(span Span)
+
+    // Using single-element slices as a stable way to represent recursive heap structures
+    // in early versions of the compiler just in case direct recursion is tricky.
+    Unary(op TokenType, right []Expr, span Span) 
+    Binary(left []Expr, op TokenType, right []Expr, span Span)
+    Call(callee []Expr, args []Expr, span Span)
+    Index(left []Expr, index []Expr, span Span)
+    Field(left []Expr, name string, span Span)
+    
+    ArrayLit(elements []Expr, span Span)
+    TupleLit(elements []Expr, span Span)
+    
+    If(condition []Expr, then_branch []Stmt, else_branch []Expr, span Span)
+    Match(value []Expr, arms []MatchArm, span Span)
+    
+    Assign(left []Expr, op TokenType, right []Expr, span Span)
+}
+
+pub struct MatchArm {
+    pattern Pattern
+    guard   Option[Expr]
+    body    Expr
+}
+
+pub enum Pattern {
+    Ident(name string)
+    IntLit(value int)
+    CatchAll
+}
+
+pub enum Stmt {
+    ExprStmt(expr Expr, span Span)
+    Let(name string, ty Option[TypeNode], value Expr, is_mut bool, span Span)
+    Return(value Option[Expr], span Span)
+    Break(label Option[string], span Span)
+    Continue(label Option[string], span Span)
+    For(pattern Pattern, iterable Expr, body []Stmt, span Span)
+    While(condition Expr, body []Stmt, span Span)
+    Block(stmts []Stmt, span Span)
+}
+
+pub enum Decl {
+    Fn(name string, params []Param, ret_ty Option[TypeNode], body []Stmt, span Span)
+    Struct(name string, fields []FieldDef, span Span)
+    Enum(name string, variants []VariantDef, span Span)
+    Trait(name string, methods []Decl, span Span)
+    Impl(trait_name Option[string], target TypeNode, methods []Decl, span Span)
+}
+
+pub struct Param {
+    name string
+    ty   TypeNode
+}
+
+pub struct FieldDef {
+    name string
+    ty   TypeNode
+}
+
+pub struct VariantDef {
+    name string
+}
+
+pub enum TypeNode {
+    Named(name string, span Span)
+    Array(elem_ty []TypeNode, span Span)
+    Slice(elem_ty []TypeNode, span Span)
+    Pointer(elem_ty []TypeNode, span Span)
+    Func(params []TypeNode, ret_ty Option[TypeNode], span Span)
+}

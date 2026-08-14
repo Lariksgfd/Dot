@@ -1,1 +1,221 @@
-// TODO: Implement Parser in Dot (Self-Hosting)
+import lexer
+import ast
+import parser_pratt
+
+pub struct Parser {
+    l        Lexer
+    cur_tok  Token
+    peek_tok Token
+    errors   []string
+}
+
+impl Parser {
+    pub fn new(l Lexer) -> Parser {
+        p = Parser {
+            l,
+            cur_tok: Token { kind: TokenType.Illegal, lexeme: "", value: "", base: 0, suffix: "", parts: nil, pos: Position.new("", 0, 0, 0), end: Position.new("", 0, 0, 0) },
+            peek_tok: Token { kind: TokenType.Illegal, lexeme: "", value: "", base: 0, suffix: "", parts: nil, pos: Position.new("", 0, 0, 0), end: Position.new("", 0, 0, 0) },
+            errors: []string{}
+        }
+        p.next_token()
+        p.next_token()
+        return p
+    }
+
+    pub fn next_token(mut self) {
+        self.cur_tok = self.peek_tok
+        self.peek_tok = self.l.next_token()
+        // Skip newlines transparently for now, or handle them based on statement rules
+        for "{self.cur_tok.kind}" == "{TokenType.Newline}" {
+            self.cur_tok = self.peek_tok
+            self.peek_tok = self.l.next_token()
+        }
+    }
+
+    pub fn cur_token_is(self, t TokenType) -> bool {
+        return "{self.cur_tok.kind}" == "{t}"
+    }
+
+    pub fn peek_token_is(self, t TokenType) -> bool {
+        return "{self.peek_tok.kind}" == "{t}"
+    }
+
+    pub fn expect_peek(mut self, t TokenType) -> bool {
+        if self.peek_token_is(t) {
+            self.next_token()
+            return true
+        }
+        self.peek_error(t)
+        return false
+    }
+
+    pub fn peek_error(mut self, t TokenType) {
+        msg = "expected next token to be {t}, got {self.peek_tok.kind} instead"
+        self.errors.push(msg)
+    }
+
+    pub fn parse_program(mut self) -> []Decl {
+        decls = []Decl{}
+        for not self.cur_token_is(TokenType.EOF) {
+            decl = self.parse_decl()
+            if decl.is_some() {
+                decls.push(decl.unwrap())
+            }
+            self.next_token()
+        }
+        return decls
+    }
+
+    pub fn parse_decl(mut self) -> Option[Decl] {
+        if self.cur_token_is(TokenType.Fn) {
+            return self.parse_fn_decl()
+        }
+        if self.cur_token_is(TokenType.Struct) {
+            return self.parse_struct_decl()
+        }
+        
+        return None
+    }
+
+    fn parse_fn_decl(mut self) -> Option[Decl] {
+        start = self.cur_tok.pos
+        if not self.expect_peek(TokenType.Ident) {
+            return None
+        }
+        name = self.cur_tok.lexeme
+
+        if not self.expect_peek(TokenType.LParen) {
+            return None
+        }
+
+        params = self.parse_params()
+
+        ret_ty = None
+        if self.peek_token_is(TokenType.Arrow) {
+            self.next_token()
+            self.next_token()
+            ret_ty = Some(self.parse_type())
+        }
+
+        if not self.expect_peek(TokenType.LBrace) {
+            return None
+        }
+
+        body = self.parse_block_stmt()
+        end = self.cur_tok.end
+
+        return Some(Decl.Fn(name, params, ret_ty, body, Span.new(start, end)))
+    }
+
+    fn parse_struct_decl(mut self) -> Option[Decl] {
+        start = self.cur_tok.pos
+        if not self.expect_peek(TokenType.Ident) { return None }
+        name = self.cur_tok.lexeme
+        if not self.expect_peek(TokenType.LBrace) { return None }
+
+        fields = []FieldDef{}
+        self.next_token()
+        
+        for not self.cur_token_is(TokenType.RBrace) and not self.cur_token_is(TokenType.EOF) {
+            if self.cur_token_is(TokenType.Ident) {
+                fname = self.cur_tok.lexeme
+                self.next_token()
+                fty = self.parse_type()
+                fields.push(FieldDef { name: fname, ty: fty })
+            }
+            self.next_token() 
+        }
+        
+        end = self.cur_tok.end
+        return Some(Decl.Struct(name, fields, Span.new(start, end)))
+    }
+
+    fn parse_params(mut self) -> []Param {
+        params = []Param{}
+        if self.peek_token_is(TokenType.RParen) {
+            self.next_token()
+            return params
+        }
+        
+        self.next_token()
+        pname = self.cur_tok.lexeme
+        self.next_token()
+        pty = self.parse_type()
+        params.push(Param { name: pname, ty: pty })
+
+        for self.peek_token_is(TokenType.Comma) {
+            self.next_token()
+            self.next_token()
+            pname_next = self.cur_tok.lexeme
+            self.next_token()
+            pty_next = self.parse_type()
+            params.push(Param { name: pname_next, ty: pty_next })
+        }
+
+        if not self.expect_peek(TokenType.RParen) {
+            return []Param{}
+        }
+
+        return params
+    }
+
+    pub fn parse_block_stmt(mut self) -> []Stmt {
+        stmts = []Stmt{}
+        self.next_token()
+        
+        for not self.cur_token_is(TokenType.RBrace) and not self.cur_token_is(TokenType.EOF) {
+            stmt = self.parse_stmt()
+            if stmt.is_some() {
+                stmts.push(stmt.unwrap())
+            }
+            self.next_token()
+        }
+        return stmts
+    }
+
+    pub fn parse_stmt(mut self) -> Option[Stmt] {
+        if self.cur_token_is(TokenType.Return) {
+            return self.parse_return_stmt()
+        }
+        
+        return self.parse_expr_stmt()
+    }
+
+    fn parse_return_stmt(mut self) -> Option[Stmt] {
+        start = self.cur_tok.pos
+        self.next_token()
+        
+        val = None
+        if not self.cur_token_is(TokenType.Newline) and not self.cur_token_is(TokenType.RBrace) {
+            val = self.parse_expr(0) // PREC_LOWEST
+        }
+        
+        end = self.cur_tok.end
+        return Some(Stmt.Return(val, Span.new(start, end)))
+    }
+
+    fn parse_expr_stmt(mut self) -> Option[Stmt] {
+        start = self.cur_tok.pos
+        expr = self.parse_expr(0) // PREC_LOWEST
+        if expr.is_none() {
+            return None
+        }
+        end = self.cur_tok.end
+        return Some(Stmt.ExprStmt(expr.unwrap(), Span.new(start, end)))
+    }
+
+    pub fn parse_type(mut self) -> TypeNode {
+        start = self.cur_tok.pos
+        if self.cur_token_is(TokenType.LBracket) {
+            self.next_token()
+            if self.cur_token_is(TokenType.RBracket) {
+                self.next_token()
+                elem = self.parse_type()
+                return TypeNode.Slice([elem], Span.new(start, self.cur_tok.end))
+            }
+        }
+        name = self.cur_tok.lexeme
+        end = self.cur_tok.end
+        return TypeNode.Named(name, Span.new(start, end))
+    }
+}

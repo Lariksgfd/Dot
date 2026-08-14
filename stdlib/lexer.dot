@@ -127,7 +127,7 @@ impl Position {
 }
 
 pub struct Token {
-    type TokenType
+    kind TokenType
     lexeme string
     value string
     base int
@@ -148,7 +148,7 @@ pub struct Lexer {
 
 impl Lexer {
     pub fn new(src string, file string) -> Lexer {
-        mut l = Lexer {
+        l = Lexer {
             src,
             file,
             offset: 0,
@@ -161,7 +161,7 @@ impl Lexer {
     }
 
     fn advance(mut self) {
-        if self.offset >= self.src.len() {
+        if self.offset >= self.src.len {
             self.ch = -1
             return
         }
@@ -248,7 +248,7 @@ impl Lexer {
 
         if ch == -1 {
             return Token {
-                type: TokenType.EOF,
+                kind: TokenType.EOF,
                 lexeme: "",
                 value: "",
                 base: 0,
@@ -259,21 +259,21 @@ impl Lexer {
             }
         }
 
-        mut type = TokenType.Illegal
-        mut lexeme = ""
+        kind = TokenType.Illegal
+        lexeme = ""
 
         if self.is_letter(ch) {
             start = self.offset - 1
             for self.is_letter(self.ch) or self.is_digit(self.ch) {
                 self.advance()
             }
-            ident = self.src.slice(start, self.offset - 1)
-            type = Lexer.lookup_keyword(ident)
+            ident = self.src[start..self.offset - 1]
+            kind = Lexer.lookup_keyword(ident)
             end_pos = Position.new(self.file, self.line, self.col, self.offset)
-            return Token { type, lexeme: ident, value: ident, base: 0, suffix: "", parts: nil, pos, end: end_pos }
+            return Token { kind, lexeme: ident, value: ident, base: 0, suffix: "", parts: nil, pos, end: end_pos }
         } else if self.is_digit(ch) {
             start = self.offset - 1
-            mut is_float = false
+            is_float = false
             for self.is_digit(self.ch) {
                 self.advance()
             }
@@ -284,49 +284,64 @@ impl Lexer {
                     self.advance()
                 }
             }
-            num_str = self.src.slice(start, self.offset - 1)
-            type = if is_float { TokenType.Float } else { TokenType.Int }
+            num_str = self.src[start..self.offset - 1]
+            kind = if is_float { TokenType.Float } else { TokenType.Int }
             end_pos = Position.new(self.file, self.line, self.col, self.offset)
-            return Token { type, lexeme: num_str, value: num_str, base: 10, suffix: "", parts: nil, pos, end: end_pos }
+            return Token { kind, lexeme: num_str, value: num_str, base: 10, suffix: "", parts: nil, pos, end: end_pos }
         } else if ch == 34 { // "
             self.advance()
             start = self.offset - 1
             for self.ch != 34 and self.ch != -1 {
                 self.advance()
             }
-            val = self.src.slice(start, self.offset - 1)
+            val = self.src[start..self.offset - 1]
             if self.ch == 34 { self.advance() }
             end_pos = Position.new(self.file, self.line, self.col, self.offset)
-            return Token { type: TokenType.String, lexeme: val, value: val, base: 0, suffix: "", parts: nil, pos, end: end_pos }
+            return Token { kind: TokenType.String, lexeme: val, value: val, base: 0, suffix: "", parts: nil, pos, end: end_pos }
         } else if ch == 96 { // `
             self.advance()
             start = self.offset - 1
             for self.ch != 96 and self.ch != -1 {
                 self.advance()
             }
-            val = self.src.slice(start, self.offset - 1)
+            val = self.src[start..self.offset - 1]
             if self.ch == 96 { self.advance() }
             end_pos = Position.new(self.file, self.line, self.col, self.offset)
-            return Token { type: TokenType.RawString, lexeme: val, value: val, base: 0, suffix: "", parts: nil, pos, end: end_pos }
+            return Token { kind: TokenType.RawString, lexeme: val, value: val, base: 0, suffix: "", parts: nil, pos, end: end_pos }
         }
 
         self.advance()
 
         // Match operators
-        type = match ch {
+        kind = match ch {
             10 => TokenType.Newline // \n
             43 => { // +
-                if self.ch == 61 { self.advance(); TokenType.PlusAssign }
+                if self.ch == 61 { 
+                    self.advance()
+                    TokenType.PlusAssign 
+                }
                 else { TokenType.Plus }
             }
             45 => { // -
-                if self.ch == 61 { self.advance(); TokenType.MinusAssign }
-                else if self.ch == 62 { self.advance(); TokenType.Arrow }
+                if self.ch == 61 { 
+                    self.advance()
+                    TokenType.MinusAssign 
+                }
+                else if self.ch == 62 { 
+                    self.advance()
+                    TokenType.Arrow 
+                }
                 else { TokenType.Minus }
             }
             42 => { // *
-                if self.ch == 61 { self.advance(); TokenType.StarAssign }
-                else if self.ch == 42 { self.advance(); TokenType.StarStar }
+                if self.ch == 61 { 
+                    self.advance()
+                    TokenType.StarAssign 
+                }
+                else if self.ch == 42 { 
+                    self.advance()
+                    TokenType.StarStar 
+                }
                 else { TokenType.Star }
             }
             47 => { // /
@@ -334,60 +349,111 @@ impl Lexer {
                     for self.ch != 10 and self.ch != -1 { self.advance() }
                     TokenType.Comment
                 }
-                else if self.ch == 61 { self.advance(); TokenType.SlashAssign }
+                else if self.ch == 61 { 
+                    self.advance()
+                    TokenType.SlashAssign 
+                }
                 else { TokenType.Slash }
             }
             37 => { // %
-                if self.ch == 61 { self.advance(); TokenType.PercentAssign }
+                if self.ch == 61 { 
+                    self.advance()
+                    TokenType.PercentAssign 
+                }
                 else { TokenType.Percent }
             }
             61 => { // =
-                if self.ch == 61 { self.advance(); TokenType.EqEq }
-                else if self.ch == 62 { self.advance(); TokenType.FatArrow }
+                if self.ch == 61 { 
+                    self.advance()
+                    TokenType.EqEq 
+                }
+                else if self.ch == 62 { 
+                    self.advance()
+                    TokenType.FatArrow 
+                }
                 else { TokenType.Assign }
             }
             33 => { // !
-                if self.ch == 61 { self.advance(); TokenType.BangEq }
+                if self.ch == 61 { 
+                    self.advance()
+                    TokenType.BangEq 
+                }
                 else { TokenType.Not } // or illegal
             }
             60 => { // <
-                if self.ch == 61 { self.advance(); TokenType.LtEq }
+                if self.ch == 61 { 
+                    self.advance()
+                    TokenType.LtEq 
+                }
                 else if self.ch == 60 { 
                     self.advance()
-                    if self.ch == 61 { self.advance(); TokenType.ShlAssign }
+                    if self.ch == 61 { 
+                        self.advance()
+                        TokenType.ShlAssign 
+                    }
                     else { TokenType.Shl }
                 }
                 else { TokenType.Lt }
             }
             62 => { // >
-                if self.ch == 61 { self.advance(); TokenType.GtEq }
+                if self.ch == 61 { 
+                    self.advance()
+                    TokenType.GtEq 
+                }
                 else if self.ch == 62 {
                     self.advance()
-                    if self.ch == 61 { self.advance(); TokenType.ShrAssign }
+                    if self.ch == 61 { 
+                        self.advance()
+                        TokenType.ShrAssign 
+                    }
                     else { TokenType.Shr }
                 }
                 else { TokenType.Gt }
             }
             38 => { // &
-                if self.ch == 38 { self.advance(); TokenType.And }
-                else if self.ch == 61 { self.advance(); TokenType.AmpAssign }
+                if self.ch == 38 { 
+                    self.advance()
+                    TokenType.And 
+                }
+                else if self.ch == 61 { 
+                    self.advance()
+                    TokenType.AmpAssign 
+                }
                 else { TokenType.Amp }
             }
             124 => { // |
-                if self.ch == 124 { self.advance(); TokenType.Or }
-                else if self.ch == 61 { self.advance(); TokenType.PipeAssign }
-                else if self.ch == 62 { self.advance(); TokenType.PipeArrow }
+                if self.ch == 124 { 
+                    self.advance()
+                    TokenType.Or 
+                }
+                else if self.ch == 61 { 
+                    self.advance()
+                    TokenType.PipeAssign 
+                }
+                else if self.ch == 62 { 
+                    self.advance()
+                    TokenType.PipeArrow 
+                }
                 else { TokenType.Pipe }
             }
             94 => { // ^
-                if self.ch == 61 { self.advance(); TokenType.CaretAssign }
+                if self.ch == 61 { 
+                    self.advance()
+                    TokenType.CaretAssign 
+                }
                 else { TokenType.Caret }
             }
             46 => { // .
                 if self.ch == 46 { 
                     self.advance()
-                    if self.ch == 46 { self.advance(); TokenType.Ellipsis }
-                    else if self.ch == 61 { self.advance(); TokenType.DotDotEq }
+                    if self.ch == 46 { 
+                        self.advance()
+                        TokenType.Ellipsis 
+                    }
+                    else if self.ch == 61 { 
+                        self.advance()
+                        TokenType.DotDotEq 
+                    }
                     else { TokenType.DotDot }
                 }
                 else { TokenType.Dot }
@@ -409,7 +475,7 @@ impl Lexer {
         end_pos = Position.new(self.file, self.line, self.col, self.offset)
 
         return Token {
-            type,
+            kind,
             lexeme: "", // could slice if needed
             value: "",
             base: 0,

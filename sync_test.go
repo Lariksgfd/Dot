@@ -80,7 +80,7 @@ fn main() {
 			os.WriteFile(tmpFile, []byte(tt.dotCode), 0644)
 			defer os.Remove(tmpFile)
 
-			out, err := buildAndRun(t, tmpFile)
+			out, err := buildAndRun(t, tmpFile, false)
 			if err != nil {
 				t.Fatalf("build+run failed: %v\noutput: %s", err, out)
 			}

@@ -1,0 +1,15 @@
+import "../stdlib/parser.dot"
+import "../stdlib/lexer.dot"
+import "../stdlib/fmt.dot"
+
+pub fn main() {
+    l = lexer.Lexer.new("x = 42")
+    p = parser.Parser.new(l)
+    prog = p.parse_program()
+    
+    if p.errors.len == 0 {
+        fmt.println("OK: parser happy path")
+    } else {
+        fmt.println("ERR: parser errors")
+    }
+}

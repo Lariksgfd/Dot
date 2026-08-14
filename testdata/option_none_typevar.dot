@@ -1,0 +1,7 @@
+fn get_something() -> Option[string] {
+    return None
+}
+
+fn main() {
+    val = get_something()
+}

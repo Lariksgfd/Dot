@@ -1,0 +1,237 @@
+import lexer
+import ast
+import parser
+
+pub const PREC_LOWEST int = 0
+pub const PREC_ASSIGNMENT int = 1
+pub const PREC_PIPE int = 2
+pub const PREC_LOGICAL_OR int = 3
+pub const PREC_LOGICAL_AND int = 4
+pub const PREC_EQUALITY int = 5
+pub const PREC_COMPARISON int = 6
+pub const PREC_BIT_OR int = 7
+pub const PREC_BIT_XOR int = 8
+pub const PREC_BIT_AND int = 9
+pub const PREC_SHIFT int = 10
+pub const PREC_RANGE int = 11
+pub const PREC_SUM int = 12
+pub const PREC_PRODUCT int = 13
+pub const PREC_POWER int = 14
+pub const PREC_PREFIX int = 15
+pub const PREC_CALL int = 16
+pub const PREC_INDEX int = 17
+
+impl Expr {
+    pub fn span(self) -> Span {
+        return match self {
+            Ident(_, span) => span
+            IntLit(_, span) => span
+            FloatLit(_, span) => span
+            StringLit(_, span) => span
+            BoolLit(_, span) => span
+            NilLit(span) => span
+            Unary(_, _, span) => span
+            Binary(_, _, _, span) => span
+            Call(_, _, span) => span
+            Index(_, _, span) => span
+            Field(_, _, span) => span
+            ArrayLit(_, span) => span
+            TupleLit(_, span) => span
+            If(_, _, _, span) => span
+            Match(_, _, span) => span
+            Assign(_, _, _, span) => span
+        }
+    }
+}
+
+impl Parser {
+    pub fn peek_precedence(self) -> int {
+        return token_precedence(self.peek_tok.kind)
+    }
+
+    pub fn cur_precedence(self) -> int {
+        return token_precedence(self.cur_tok.kind)
+    }
+
+    pub fn parse_expr(mut self, precedence int) -> Option[Expr] {
+        left = self.parse_prefix()
+        if left.is_none() {
+            return None
+        }
+        
+        left_expr = left.unwrap()
+
+        for not self.peek_token_is(TokenType.EOF) and precedence < self.peek_precedence() {
+            if not self.has_infix_parse_fn(self.peek_tok.kind) {
+                return Some(left_expr)
+            }
+
+            self.next_token()
+            left_expr = self.parse_infix(left_expr)
+        }
+
+        return Some(left_expr)
+    }
+
+    fn parse_prefix(mut self) -> Option[Expr] {
+        match self.cur_tok.kind {
+            TokenType.Ident => {
+                return Some(Expr.Ident(self.cur_tok.lexeme, Span.new(self.cur_tok.pos, self.cur_tok.end)))
+            }
+            TokenType.Int => {
+                val = 0 // stdlib string -> int not implemented yet, just 0
+                return Some(Expr.IntLit(val, Span.new(self.cur_tok.pos, self.cur_tok.end)))
+            }
+            TokenType.TrueKw => {
+                return Some(Expr.BoolLit(true, Span.new(self.cur_tok.pos, self.cur_tok.end)))
+            }
+            TokenType.FalseKw => {
+                return Some(Expr.BoolLit(false, Span.new(self.cur_tok.pos, self.cur_tok.end)))
+            }
+            TokenType.NilKw => {
+                return Some(Expr.NilLit(Span.new(self.cur_tok.pos, self.cur_tok.end)))
+            }
+            TokenType.Minus | TokenType.Not | TokenType.Tilde => {
+                start = self.cur_tok.pos
+                op = self.cur_tok.kind
+                self.next_token()
+                right = self.parse_expr(PREC_PREFIX)
+                if right.is_none() {
+                    return None
+                }
+                end = self.cur_tok.end
+                return Some(Expr.Unary(op, [right.unwrap()], Span.new(start, end)))
+            }
+            TokenType.LParen => {
+                self.next_token()
+                expr = self.parse_expr(PREC_LOWEST)
+                if not self.expect_peek(TokenType.RParen) {
+                    return None
+                }
+                return expr
+            }
+            _ => {
+                self.errors.push("no prefix parse function for {self.cur_tok.kind} found")
+                return None
+            }
+        }
+        return None
+    }
+
+    fn has_infix_parse_fn(self, t TokenType) -> bool {
+        match t {
+            TokenType.Plus | TokenType.Minus | TokenType.Star | TokenType.Slash | TokenType.Percent |
+            TokenType.EqEq | TokenType.BangEq | TokenType.Lt | TokenType.Gt | TokenType.LtEq | TokenType.GtEq |
+            TokenType.And | TokenType.Or | TokenType.Amp | TokenType.Pipe | TokenType.Caret |
+            TokenType.Shl | TokenType.Shr | TokenType.DotDot | TokenType.StarStar | TokenType.Assign => {
+                return true
+            }
+            TokenType.LParen | TokenType.LBracket | TokenType.Dot => {
+                return true
+            }
+            _ => { return false }
+        }
+        return false
+    }
+
+    fn parse_infix(mut self, left Expr) -> Expr {
+        start = left.span().start
+        op = self.cur_tok.kind
+        precedence = self.cur_precedence()
+
+        match op {
+            TokenType.LParen => {
+                // Call
+                args = self.parse_expr_list(TokenType.RParen)
+                end = self.cur_tok.end
+                return Expr.Call([left], args, Span.new(start, end))
+            }
+            TokenType.LBracket => {
+                // Index
+                self.next_token()
+                index = self.parse_expr(PREC_LOWEST).unwrap()
+                if not self.expect_peek(TokenType.RBracket) {
+                    return left
+                }
+                end = self.cur_tok.end
+                return Expr.Index([left], [index], Span.new(start, end))
+            }
+            TokenType.Dot => {
+                // Field
+                if not self.expect_peek(TokenType.Ident) {
+                    return left
+                }
+                name = self.cur_tok.lexeme
+                end = self.cur_tok.end
+                return Expr.Field([left], name, Span.new(start, end))
+            }
+            TokenType.Assign => {
+                self.next_token()
+                right = self.parse_expr(PREC_LOWEST).unwrap()
+                end = self.cur_tok.end
+                return Expr.Assign([left], op, [right], Span.new(start, end))
+            }
+            _ => {
+                // Binary
+                self.next_token()
+                // Power operator is right-associative
+                is_starstar = match op { TokenType.StarStar => true, _ => false }
+                next_prec = if is_starstar { 
+                    precedence - 1 
+                } else { 
+                    precedence 
+                }
+                
+                right = self.parse_expr(next_prec).unwrap()
+                end = self.cur_tok.end
+                return Expr.Binary([left], op, [right], Span.new(start, end))
+            }
+        }
+        return left
+    }
+
+    fn parse_expr_list(mut self, end_type TokenType) -> []Expr {
+        list = []Expr{}
+
+        if self.peek_token_is(end_type) {
+            self.next_token()
+            return list
+        }
+
+        self.next_token()
+        list.push(self.parse_expr(PREC_LOWEST).unwrap())
+
+        for self.peek_token_is(TokenType.Comma) {
+            self.next_token()
+            self.next_token()
+            list.push(self.parse_expr(PREC_LOWEST).unwrap())
+        }
+
+        if not self.expect_peek(end_type) {
+            return []Expr{}
+        }
+
+        return list
+    }
+}
+
+pub fn token_precedence(t TokenType) -> int {
+    return match t {
+        TokenType.Assign => PREC_ASSIGNMENT
+        TokenType.PipeArrow => PREC_PIPE
+        TokenType.Or => PREC_LOGICAL_OR
+        TokenType.And => PREC_LOGICAL_AND
+        TokenType.EqEq | TokenType.BangEq => PREC_EQUALITY
+        TokenType.Lt | TokenType.Gt | TokenType.LtEq | TokenType.GtEq => PREC_COMPARISON
+        TokenType.Pipe => PREC_BIT_OR
+        TokenType.Caret => PREC_BIT_XOR
+        TokenType.Amp => PREC_BIT_AND
+        TokenType.Shl | TokenType.Shr => PREC_SHIFT
+        TokenType.DotDot | TokenType.DotDotEq => PREC_RANGE
+        TokenType.Plus | TokenType.Minus => PREC_SUM
+        TokenType.Star | TokenType.Slash | TokenType.Percent => PREC_PRODUCT
+        TokenType.StarStar => PREC_POWER
+        TokenType.LParen | TokenType.Dot | TokenType.LBracket => PREC_CALL
+        _ => PREC_LOWEST
+    }
+}

@@ -445,8 +445,8 @@ func TestMangleType_Extra(t *testing.T) {
 		{"tuple", &Tuple{Elems: []Type{Int, String_}}, "Tup_int_string"},
 		{"fn", &Fn{Params: []Param{{Type: Int}}, Result: Bool}, "Fn_int_bool"},
 		{"named_plain", stack, "Stack"},
-		{"named_args_no_origin", &Named{Name: "Stack", TypeArgs: []Type{Int}}, "Stack__int"},
-		{"named_origin", &Named{Name: "Stack", Origin: stack, TypeArgs: []Type{Int}}, "Stack__int"},
+		{"named_args_no_origin", &Named{Name: "Stack", TypeArgs: []Type{Int}}, "DotStack__int"},
+		{"named_origin", &Named{Name: "Stack", Origin: stack, TypeArgs: []Type{Int}}, "DotStack__int"},
 		{"type_param", &TypeParam{Name: "T"}, "T"},
 		{"trait", &Trait{Name: "Printable"}, "Printable"},
 		{"dyn", &Dyn{Trait: &Trait{Name: "Printable"}}, "dyn_Printable"},
@@ -469,9 +469,9 @@ func TestInstanceKey_Extra(t *testing.T) {
 		args []Type
 		want string
 	}{
-		{"no_args", "F", nil, "F__"},
-		{"two_args", "F", []Type{Int, String_}, "F__int_string"},
-		{"named_arg", "F", []Type{&Named{Name: "User"}}, "F__User"},
+		{"no_args", "F", nil, "DotF__"},
+		{"two_args", "F", []Type{Int, String_}, "DotF__int_string"},
+		{"named_arg", "F", []Type{&Named{Name: "User"}}, "DotF__User"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

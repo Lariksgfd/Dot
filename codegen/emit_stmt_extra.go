@@ -106,6 +106,36 @@ func (g *generator) emitForIterator(x *ast.ForStmt) {
 // the value is retained if it is a heap type.
 func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 	g.emitDefers()
+	
+	// Collect returned variables to implement move-semantics (ownership transfer)
+	returnedVars := make(map[string]bool)
+	for _, v := range x.Values {
+		if id, ok := v.(*ast.Ident); ok {
+			returnedVars[varName(g, id)] = true
+		}
+	}
+	
+	// Emit scope cleanup for all locals EXCEPT the ones being returned (move semantics)
+	var toCleanup []scopeVar
+	for _, sv := range g.scopeVars {
+		if !returnedVars[sv.name] {
+			toCleanup = append(toCleanup, sv)
+		} else {
+			// If it's a struct or enum, we should still clean up its fields EXCEPT the parts being returned?
+			// Wait, if it's a struct, returning it returns a copy of the struct value, so the caller gets those references.
+			// The caller assumes ownership of the references inside the struct.
+			// So if we don't clean it up, the caller takes them. This is correct!
+		}
+	}
+	if len(toCleanup) > 0 {
+		cleanup := emitScopeCleanup(g, toCleanup)
+		for _, cl := range strings.Split(strings.TrimRight(cleanup, "\n"), "\n") {
+			if cl != "" {
+				g.line(cl)
+			}
+		}
+	}
+
 	if len(x.Values) == 0 {
 		g.line("return;")
 		return
@@ -128,7 +158,12 @@ func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 				g.line(fmt.Sprintf("return %s;", val))
 				return
 			}
-			g.line(fmt.Sprintf("return %s;", emitRetain(g, val, t)))
+			if id, ok := x.Values[0].(*ast.Ident); ok && returnedVars[varName(g, id)] {
+				// moved, do not retain
+				g.line(fmt.Sprintf("return %s;", val))
+			} else {
+				g.line(fmt.Sprintf("return %s;", emitRetain(g, val, t)))
+			}
 			return
 		}
 	}
@@ -138,7 +173,12 @@ func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 	for i, v := range values {
 		vt := g.info.TypeOf(v)
 		elems[i] = vt
-		fields[i] = fmt.Sprintf(". _%d = %s", i, emitRetain(g, g.emitExpr(v), vt))
+		exprVal := g.emitExpr(v)
+		if id, ok := v.(*ast.Ident); ok && returnedVars[varName(g, id)] {
+			fields[i] = fmt.Sprintf(". _%d = %s", i, exprVal)
+		} else {
+			fields[i] = fmt.Sprintf(". _%d = %s", i, emitRetain(g, exprVal, vt))
+		}
 	}
 	tupName := cTupleName(g, &types.Tuple{Elems: elems})
 	g.line(fmt.Sprintf("return (%s){%s };", tupName, strings.Join(fields, ", ")))
@@ -208,7 +248,15 @@ func (g *generator) emitBlockStmt(x *ast.BlockStmt) {
 	for _, s := range x.Stmts {
 		g.emitStmt(s)
 	}
-	if len(g.scopeVars) > 0 {
+	
+	needsCleanup := true
+	if len(x.Stmts) > 0 {
+		if _, isReturn := x.Stmts[len(x.Stmts)-1].(*ast.ReturnStmt); isReturn {
+			needsCleanup = false
+		}
+	}
+	
+	if needsCleanup && len(g.scopeVars) > 0 {
 		cleanup := emitScopeCleanup(g, g.scopeVars)
 		for _, cl := range strings.Split(strings.TrimRight(cleanup, "\n"), "\n") {
 			if cl != "" {

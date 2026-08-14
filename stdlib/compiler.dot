@@ -1,0 +1,43 @@
+import lexer
+import parser
+import checker
+import ast
+
+pub struct Compiler {
+    errors []string
+}
+
+impl Compiler {
+    pub fn new() -> Compiler {
+        return Compiler {
+            errors: []string{}
+        }
+    }
+
+    pub fn compile(self, source string) -> []Decl {
+        l = Lexer.new(source, "<input>")
+        p = Parser.new(l)
+        
+        program = p.parse_program()
+        
+        if p.errors.len > 0 {
+            for err in p.errors {
+                self.errors.push(err)
+            }
+            return program
+        }
+        
+        c = Checker.new()
+        for decl in program {
+            c.check_decl(decl)
+        }
+        
+        if c.errors.len > 0 {
+            for err in c.errors {
+                self.errors.push(err)
+            }
+        }
+        
+        return program
+    }
+}

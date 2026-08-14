@@ -1,0 +1,31 @@
+# Build artifacts and junk
+*.exe
+*.o
+*.obj
+*.a
+
+# Debug/junk files from agent sessions
+err.txt
+out.txt
+*.c.txt
+dot.test.exe
+test_gc.exe
+
+# Python scripts used for one-off fixes
+fix*.py
+gen_fmt.py
+update.py
+
+# Junk test files
+testdata/tmp_sync_test_HappyPath.dot
+testdata/debug.txt
+testdata/out.txt
+testdata/regex_out.txt
+testdata/structs_out.txt
+
+# Junk in root
+c.dot
+lib.dot
+main.dot
+JOURNAL_test.md
+--help/

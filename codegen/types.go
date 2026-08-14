@@ -172,14 +172,22 @@ func cNamed(g *generator, n *types.Named) string {
 	if len(n.TypeArgs) == 0 {
 		return name
 	}
+	targetArgs := mangleArgs(n.TypeArgs)
 	if g != nil && g.info != nil {
 		for _, inst := range g.info.InstanceList {
-			if inst.Result == n && inst.Mangled != "" {
-				return inst.Mangled
+			if instNamed, ok := inst.Result.(*types.Named); ok {
+				if instNamed.Name == n.Name && mangleArgs(instNamed.TypeArgs) == targetArgs {
+					if inst.Mangled != "" {
+						return inst.Mangled
+					}
+				}
 			}
 		}
 	}
-	return name + "_" + mangleArgs(n.TypeArgs)
+	if n.Origin != nil {
+		name = "Dot" + n.Origin.Name
+	}
+	return name + "__" + targetArgs
 }
 
 // mangleArgs concatenates mangled type arguments separated by underscores.

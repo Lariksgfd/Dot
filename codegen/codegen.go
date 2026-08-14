@@ -52,8 +52,11 @@ func Generate(info *types.Info, prog *ast.Program) (string, error) {
 func (g *generator) emitAll() error {
 	phases := []func() error{
 		g.emitHeader,
+		g.emitMonomorphisedTypeDecls,
 		g.emitTypeDefs,
+		g.emitMonomorphisedDecls,
 		g.emitFuncDecls,
+		g.emitMonomorphised,
 		g.emitFuncDefs,
 		g.emitMain,
 	}

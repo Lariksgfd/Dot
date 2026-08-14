@@ -243,6 +243,32 @@ func check(prog *ast.Program, filename string, stdlibDir string) (*Info, error) 
 		}
 		c.collectDecls(prog)
 		c.checkBodies(prog)
+
+		// Finalize InstanceList: update Mangled names using resolved bounds
+		// so that codegen deduplicates correctly.
+		finalInstances := make([]*Instance, 0, len(c.info.InstanceList))
+		seen := make(map[string]bool)
+		for _, inst := range c.info.InstanceList {
+			if inst.Generic == nil || inst.Result == nil {
+				continue
+			}
+			// Re-mangle using fully resolved type args
+			var newMangled string
+			if named, ok := inst.Result.(*Named); ok {
+				newMangled = instanceKey(named.Name, named.TypeArgs)
+			} else if inst.Generic.Kind == SymFunc {
+				newMangled = instanceKey(inst.Generic.Name, inst.TypeArgs)
+			} else {
+				newMangled = inst.Mangled // Fallback
+			}
+			inst.Mangled = newMangled
+
+			if !seen[newMangled] {
+				seen[newMangled] = true
+				finalInstances = append(finalInstances, inst)
+			}
+		}
+		c.info.InstanceList = finalInstances
 	}
 	return c.info, c.info.Diagnostics.Err()
 }

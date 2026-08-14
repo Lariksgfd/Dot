@@ -1,0 +1,82 @@
+pub enum Type {
+    Unknown
+    Error
+    Void
+    Int
+    Float
+    Bool
+    String
+    Nil
+    Func(params []Type, ret_ty []Type)
+    Array(elem []Type)
+    Slice(elem []Type)
+    Struct(name string)
+}
+
+impl Type {
+    pub fn equals(self, other Type) -> bool {
+        // Very basic equality check for v0.1
+        match self {
+            Type.Int => match other { Type.Int => true, _ => false }
+            Type.Float => match other { Type.Float => true, _ => false }
+            Type.Bool => match other { Type.Bool => true, _ => false }
+            Type.String => match other { Type.String => true, _ => false }
+            Type.Void => match other { Type.Void => true, _ => false }
+            Type.Nil => match other { Type.Nil => true, _ => false }
+            Type.Error => true // Error type matches anything to suppress cascading errors
+            Type.Unknown => true
+            _ => false // Struct, Func, Array, Slice need deeper comparison
+        }
+    }
+}
+
+pub enum SymbolKind {
+    Variable
+    Function
+    Struct
+}
+
+pub struct Symbol {
+    name   string
+    kind   SymbolKind
+    ty     Type
+    is_mut bool
+}
+
+pub struct Scope {
+    // We use a slice of size 0 or 1 to emulate an Option[Scope] / heap reference
+    // since Dot v0.1 might not have full GC/pointer support for recursive structs.
+    parent  []Scope
+    symbols []Symbol // Emulating a map/dict for simple v0.1
+}
+
+impl Scope {
+    pub fn new(parent []Scope) -> Scope {
+        return Scope {
+            parent: parent,
+            symbols: []Symbol{},
+        }
+    }
+
+    pub fn define(mut self, sym Symbol) {
+        self.symbols.push(sym)
+    }
+
+    pub fn lookup(self, name string) -> Option[Symbol] {
+        // Search in current scope (reverse order to get latest shadowed var if applicable, though shadowing in same scope is error)
+        i = self.symbols.len - 1
+        for i >= 0 {
+            if self.symbols[i].name == name {
+                return Some(self.symbols[i])
+            }
+            i -= 1
+        }
+
+        // Search in parent
+        if self.parent.len > 0 {
+            return self.parent[0].lookup(name)
+        }
+
+        return None
+    }
+}

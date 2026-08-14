@@ -104,9 +104,28 @@ func (g *generator) emitFuncDef(fn *ast.FnDecl, recv *types.Named) {
 
 	g.line(fmt.Sprintf("%s %s(%s) {", result, funcName, params))
 	if fn.Body != nil {
+		saved := g.scopeVars
+		g.scopeVars = nil
 		for _, s := range fn.Body.Stmts {
 			g.emitStmt(s)
 		}
+		
+		needsCleanup := true
+		if len(fn.Body.Stmts) > 0 {
+			if _, isReturn := fn.Body.Stmts[len(fn.Body.Stmts)-1].(*ast.ReturnStmt); isReturn {
+				needsCleanup = false
+			}
+		}
+
+		if needsCleanup && len(g.scopeVars) > 0 {
+			cleanup := emitScopeCleanup(g, g.scopeVars)
+			for _, cl := range strings.Split(strings.TrimRight(cleanup, "\n"), "\n") {
+				if cl != "" {
+					g.line(cl)
+				}
+			}
+		}
+		g.scopeVars = saved
 	} else if fn.ExprBody != nil {
 		expr := g.emitExpr(fn.ExprBody)
 		g.line(fmt.Sprintf("    return %s;", expr))
@@ -310,15 +329,29 @@ func (g *generator) emitFuncDecls() error {
 			}
 		}
 	}
-	g.emitMonomorphisedDecls()
 	g.line("")
+	return nil
+}
+
+// emitMonomorphisedTypeDecls emits forward declarations for generic types.
+func (g *generator) emitMonomorphisedTypeDecls() error {
+	for _, inst := range g.info.InstanceList {
+		if inst == nil || inst.Generic == nil || inst.Generic.Kind != types.SymType {
+			continue
+		}
+		mangled := inst.Mangled
+		if !strings.HasPrefix(mangled, "Dot") {
+			mangled = "Dot" + mangled
+		}
+		g.line(fmt.Sprintf("typedef struct %s %s;", mangled, mangled))
+	}
 	return nil
 }
 
 // emitMonomorphisedDecls emits forward declarations for every monomorphised
 // generic function so that call sites appearing before the definitions still
 // see a complete prototype.
-func (g *generator) emitMonomorphisedDecls() {
+func (g *generator) emitMonomorphisedDecls() error {
 	for _, inst := range g.info.InstanceList {
 		if inst == nil || inst.Generic == nil || inst.Generic.Kind != types.SymFunc {
 			continue
@@ -342,8 +375,13 @@ func (g *generator) emitMonomorphisedDecls() {
 		if len(params) == 0 {
 			params = append(params, "void")
 		}
-		g.line(fmt.Sprintf("%s %s(%s);", result, inst.Mangled, strings.Join(params, ", ")))
+		mangled := inst.Mangled
+		if !strings.HasPrefix(mangled, "Dot") {
+			mangled = "Dot" + mangled
+		}
+		g.line(fmt.Sprintf("%s %s(%s);", result, mangled, strings.Join(params, ", ")))
 	}
+	return nil
 }
 
 // emitFuncDefs emits all function definitions (user + monomorphised).
@@ -370,7 +408,6 @@ func (g *generator) emitFuncDefs() error {
 			}
 		}
 	}
-	g.emitMonomorphised()
 	return nil
 }
 
@@ -399,7 +436,7 @@ func (g *generator) implRecvType(d *ast.ImplDecl) *types.Named {
 }
 
 // emitMonomorphised emits monomorphised generic functions/types from InstanceList.
-func (g *generator) emitMonomorphised() {
+func (g *generator) emitMonomorphised() error {
 	seen := make(map[string]bool)
 	for _, inst := range g.info.InstanceList {
 		if inst == nil || seen[inst.Mangled] {
@@ -416,6 +453,7 @@ func (g *generator) emitMonomorphised() {
 			g.emitMonomorphisedType(inst)
 		}
 	}
+	return nil
 }
 
 // emitMonomorphisedFunc emits a monomorphised generic function: the mangled
@@ -438,13 +476,37 @@ func (g *generator) emitMonomorphisedFunc(inst *types.Instance) {
 		}
 		params = append(params, fmt.Sprintf("%s %s", ct, p.Name))
 	}
-	g.line(fmt.Sprintf("%s %s(%s) {", result, inst.Mangled, strings.Join(params, ", ")))
+	mangled := inst.Mangled
+	if !strings.HasPrefix(mangled, "Dot") {
+		g.line(fmt.Sprintf("%s %s(%s) {", result, "Dot"+inst.Mangled, strings.Join(params, ", ")))
+	} else {
+		g.line(fmt.Sprintf("%s %s(%s) {", result, inst.Mangled, strings.Join(params, ", ")))
+	}
 	g.line(fmt.Sprintf("    /* monomorphised: %s */", inst.Generic.Name))
 	if decl, ok := inst.Generic.Decl.(*ast.FnDecl); ok && decl != nil {
 		if decl.Body != nil {
+			saved := g.scopeVars
+			g.scopeVars = nil
 			for _, s := range decl.Body.Stmts {
 				g.emitStmt(s)
 			}
+			
+			needsCleanup := true
+			if len(decl.Body.Stmts) > 0 {
+				if _, isReturn := decl.Body.Stmts[len(decl.Body.Stmts)-1].(*ast.ReturnStmt); isReturn {
+					needsCleanup = false
+				}
+			}
+			
+			if needsCleanup && len(g.scopeVars) > 0 {
+				cleanup := emitScopeCleanup(g, g.scopeVars)
+				for _, cl := range strings.Split(strings.TrimRight(cleanup, "\n"), "\n") {
+					if cl != "" {
+						g.line(cl)
+					}
+				}
+			}
+			g.scopeVars = saved
 		} else if decl.ExprBody != nil {
 			expr := g.emitExpr(decl.ExprBody)
 			g.line(fmt.Sprintf("    return %s;", expr))
@@ -460,10 +522,14 @@ func (g *generator) emitMonomorphisedType(inst *types.Instance) {
 	if !ok {
 		return
 	}
+	mangled := inst.Mangled
+	if strings.HasPrefix(mangled, "Dot") {
+		mangled = mangled[3:]
+	}
 	switch u := named.Underlying.(type) {
 	case *types.Struct:
-		g.emitStructDef(inst.Mangled, u)
+		g.emitStructDef(mangled, u)
 	case *types.Enum:
-		g.emitEnumDef(inst.Mangled, u)
+		g.emitEnumDef(mangled, u)
 	}
 }

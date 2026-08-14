@@ -96,6 +96,11 @@ func emitIdent(g *generator, x *ast.Ident) string {
 		if sym.Kind == types.SymFunc {
 			return "Dot_" + sym.Name
 		}
+		if sym.Kind == types.SymVariant && sym.Variant != nil {
+			typ := g.info.TypeOf(x)
+			cname := cType(g, typ)
+			return fmt.Sprintf("((%s*)dot_box_struct(sizeof(%s), (&((%s){ .tag = %d }))))", cname, cname, cname, sym.Variant.Tag)
+		}
 		return sym.Name
 	}
 	return x.Name
@@ -286,7 +291,12 @@ func emitMethodCall(g *generator, call *ast.CallExpr, info *types.CallInfo) stri
 				t = g.info.TypeOf(call.Args[i].Value)
 			}
 			if isStructOrEnum(t) {
-				arg = fmt.Sprintf("dot_box_struct(sizeof(%s), &(%s))", cType(g, t), arg)
+				// We don't retain before boxing because dot_box_struct doesn't retain internally?
+				// Wait! Is boxing copying the structure? Yes!
+				// But we just emitDeepRetain it before boxing.
+				arg = fmt.Sprintf("dot_box_struct(sizeof(%s), &(%s))", cType(g, t), emitDeepRetain(g, arg, t))
+			} else {
+				arg = emitRetain(g, arg, t)
 			}
 			args = append(args, fmt.Sprintf("(DotAny)(intptr_t)(%s)", arg))
 		}
@@ -320,12 +330,15 @@ func emitCallArgs(g *generator, call *ast.CallExpr, info *types.CallInfo) []stri
 		if pi < len(info.ArgOrder) {
 			ai := info.ArgOrder[pi]
 			if ai >= 0 && ai < len(call.Args) {
-				args = append(args, g.emitExpr(call.Args[ai].Value))
+				t := g.info.TypeOf(call.Args[ai].Value)
+				argExpr := g.emitExpr(call.Args[ai].Value)
+				args = append(args, emitDeepRetain(g, argExpr, t))
 				continue
 			}
 		}
 		if pi < len(info.Sig.Params) && info.Sig.Params[pi].HasDflt {
-			args = append(args, g.emitExpr(info.Sig.Params[pi].Default))
+			t := info.Sig.Params[pi].Type
+			args = append(args, emitDeepRetain(g, g.emitExpr(info.Sig.Params[pi].Default), t))
 		} else if pi < len(info.Sig.Params) {
 			args = append(args, zeroValue(info.Sig.Params[pi].Type))
 		}
@@ -468,8 +481,9 @@ func emitBuiltinProp(g *generator, x *ast.FieldExpr, sel *types.Selection) strin
 
 // emitVariantCtor emits an enum variant constructor as a heap-allocated pointer.
 func emitVariantCtor(g *generator, x *ast.FieldExpr, sel *types.Selection) string {
-	if sel.Variant != nil && sel.Owner != nil {
-		cname := cType(g, sel.Owner)
+	if sel.Variant != nil {
+		typ := g.info.TypeOf(x)
+		cname := cType(g, typ)
 		return fmt.Sprintf("((%s*)dot_box_struct(sizeof(%s), (&((%s){ .tag = %d }))))", cname, cname, cname, sel.Variant.Tag)
 	}
 	return fmt.Sprintf("/* variant %s */", x.Name)

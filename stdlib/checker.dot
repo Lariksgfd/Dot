@@ -1,1 +1,234 @@
-// TODO: Implement Type Checker in Dot (Self-Hosting)
+import ast
+import types
+import lexer
+
+pub struct Checker {
+    current_scope []Scope
+    errors        []string
+}
+
+impl Checker {
+    pub fn new() -> Checker {
+        global_scope = Scope.new([]Scope{})
+        
+        // Define some builtins
+        global_scope.define(Symbol {
+            name: "print",
+            kind: SymbolKind.Function,
+            ty: Type.Func(params: []Type{Type.String}, ret_ty: []Type{Type.Void}),
+            is_mut: false,
+        })
+
+        return Checker {
+            current_scope: []Scope{global_scope},
+            errors: []string{},
+        }
+    }
+
+    pub fn error(mut self, span Span, msg string) {
+        // In a real compiler we'd format the span properly
+        self.errors.push("Type Error: {msg}")
+    }
+
+    pub fn push_scope(mut self) {
+        new_scope = Scope.new(self.current_scope)
+        self.current_scope = []Scope{new_scope}
+    }
+
+    pub fn pop_scope(mut self) {
+        if self.current_scope.len > 0 {
+            if self.current_scope[0].parent.len > 0 {
+                self.current_scope = self.current_scope[0].parent
+            }
+        }
+    }
+
+    pub fn check_decl(mut self, decl Decl) {
+        match decl {
+            Decl.Fn(name, params, ret_ty, body, span) => self.check_fn_decl(name, params, ret_ty, body, span)
+            Decl.Struct(name, fields, span) => {}
+            Decl.Enum(name, variants, span) => {}
+            Decl.Trait(name, methods, span) => {}
+            Decl.Impl(trait_name, target, methods, span) => {}
+        }
+    }
+
+    fn check_fn_decl(mut self, name string, params []Param, ret_ty Option[TypeNode], body []Stmt, span Span) {
+        // 1. Resolve return type
+        resolved_ret_ty = Type.Void
+        if ty_node = ret_ty {
+            resolved_ret_ty = self.resolve_type(ty_node)
+        }
+
+        // 2. Resolve param types
+        param_types = []Type{}
+        for p in params {
+            param_types.push(self.resolve_type(p.ty))
+        }
+
+        // 3. Register function in current scope
+        fn_ty = Type.Func(params: param_types, ret_ty: []Type{resolved_ret_ty})
+        self.current_scope[0].define(Symbol {
+            name: name,
+            kind: SymbolKind.Function,
+            ty: fn_ty,
+            is_mut: false,
+        })
+
+        // 4. Enter function scope
+        self.push_scope()
+        
+        // Define params in the function's scope
+        i = 0
+        for p in params {
+            self.current_scope[0].define(Symbol {
+                name: p.name,
+                kind: SymbolKind.Variable,
+                ty: param_types[i],
+                is_mut: false, // params are immutable by default
+            })
+            i += 1
+        }
+
+        // 5. Check body
+        for stmt in body {
+            self.check_stmt(stmt)
+        }
+
+        // 6. Leave scope
+        self.pop_scope()
+    }
+
+    pub fn check_stmt(mut self, stmt Stmt) {
+        match stmt {
+            Stmt.ExprStmt(expr, span) => {
+                self.check_expr(expr)
+            }
+            Stmt.Let(name, ty_opt, value, is_mut, span) => {
+                val_ty = self.check_expr(value)
+                
+                if ty_node = ty_opt {
+                    decl_ty = self.resolve_type(ty_node)
+                    if not decl_ty.equals(val_ty) {
+                        self.error(span, "Type mismatch in let binding")
+                    }
+                }
+                
+                self.current_scope[0].define(Symbol {
+                    name: name,
+                    kind: SymbolKind.Variable,
+                    ty: val_ty,
+                    is_mut: is_mut,
+                })
+            }
+            Stmt.Return(value_opt, span) => {
+                if val_expr = value_opt {
+                    self.check_expr(val_expr)
+                    // TODO: verify against function return type
+                }
+            }
+            Stmt.Block(stmts, span) => {
+                self.push_scope()
+                for s in stmts {
+                    self.check_stmt(s)
+                }
+                self.pop_scope()
+            }
+            _ => {}
+        }
+    }
+
+    pub fn check_expr(mut self, expr Expr) -> Type {
+        match expr {
+            Expr.IntLit(value, span) => { return Type.Int }
+            Expr.FloatLit(value, span) => { return Type.Float }
+            Expr.StringLit(value, span) => { return Type.String }
+            Expr.BoolLit(value, span) => { return Type.Bool }
+            Expr.NilLit(span) => { return Type.Nil }
+            Expr.Ident(name, span) => {
+                if sym = self.current_scope[0].lookup(name) {
+                    return sym.ty
+                }
+                self.error(span, "Undefined variable: {name}")
+                return Type.Error
+            }
+            Expr.Binary(left, op, right, span) => {
+                if left.len > 0 and right.len > 0 {
+                    l_ty = self.check_expr(left[0])
+                    r_ty = self.check_expr(right[0])
+                    if not l_ty.equals(r_ty) {
+                        self.error(span, "Type mismatch in binary expression")
+                    }
+                    // Relational ops return bool, math returns the same type
+                    is_rel = match op { 
+                        TokenType.EqEq => true, 
+                        TokenType.BangEq => true,
+                        TokenType.Lt => true,
+                        TokenType.Gt => true,
+                        TokenType.LtEq => true,
+                        TokenType.GtEq => true,
+                        _ => false 
+                    }
+                    if is_rel {
+                        return Type.Bool
+                    }
+                    return l_ty
+                }
+                return Type.Error
+            }
+            Expr.Call(callee, args, span) => {
+                if callee.len > 0 {
+                    callee_ty = self.check_expr(callee[0])
+                    for arg in args {
+                        self.check_expr(arg)
+                    }
+                    
+                    match callee_ty {
+                        Type.Func(params, ret_ty) => {
+                            if args.len != params.len {
+                                self.error(span, "Argument count mismatch")
+                            }
+                            if ret_ty.len > 0 {
+                                return ret_ty[0]
+                            }
+                            return Type.Void
+                        }
+                        Type.Error => { return Type.Error }
+                        _ => {
+                            self.error(span, "Cannot call non-function")
+                            return Type.Error
+                        }
+                    }
+                }
+                return Type.Error
+            }
+            _ => { return Type.Unknown }
+        }
+        return Type.Unknown
+    }
+
+    fn resolve_type(mut self, node TypeNode) -> Type {
+        match node {
+            TypeNode.Named(name, span) => {
+                if name == "int" { return Type.Int }
+                if name == "float" { return Type.Float }
+                if name == "bool" { return Type.Bool }
+                if name == "string" { return Type.String }
+                // fallback
+                return Type.Struct(name: name)
+            }
+            TypeNode.Array(elem_ty, span) => {
+                if elem_ty.len > 0 {
+                    return Type.Array(elem: []Type{self.resolve_type(elem_ty[0])})
+                }
+            }
+            TypeNode.Slice(elem_ty, span) => {
+                if elem_ty.len > 0 {
+                    return Type.Slice(elem: []Type{self.resolve_type(elem_ty[0])})
+                }
+            }
+            _ => {}
+        }
+        return Type.Unknown
+    }
+}

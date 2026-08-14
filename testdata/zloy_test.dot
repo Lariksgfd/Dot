@@ -1,0 +1,13 @@
+fn map<T, U, V>(arr: []T, f: fn(T) -> U, g: fn(U) -> V) -> []V {
+    let res: []V = []
+    for x in arr {
+        res.push(g(f(x)))
+    }
+    return res
+}
+
+fn main() {
+    // Злой кейс: анонимные функции, вложенные дженерики, и попытка сломать тайпчекер через Option/Result если они есть
+    let data = [1, 2, 3]
+    let out = map<int, fn(int)->int, int>(data, fn(x: int) -> fn(int)->int { return fn(y: int) -> int { return x + y } }, fn(f: fn(int)->int) -> int { return f(10) })
+}
