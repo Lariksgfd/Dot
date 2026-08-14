@@ -20,9 +20,23 @@ type generator struct {
 	closures   []string
 	defers     []string
 	scopeVars  []scopeVar
+	// scopeStack holds the scopeVars lists of enclosing scopes while a block
+	// (or function) body is emitted, deepest level at the top. A return
+	// statement walks the stack to release every live scope, and block exits
+	// pop their level so each variable is cleaned exactly where declared.
+	scopeStack [][]scopeVar
 	unusedIdx  int
 	tupleDefs  map[string]*tupleInfo
 	tupleList  []*tupleInfo
+	// closureDecls holds prototypes (and env typedefs) of closure functions
+	// and spawn fibers, discovered while emitting function bodies. They are
+	// printed before the bodies that reference them.
+	closureDecls []string
+	// genericTypes maps the C name of a generic Named type instantiation
+	// that has no Info.InstanceList entry to its instantiated *Named, in
+	// deterministic order (genericTypeList).
+	genericTypes    map[string]*types.Named
+	genericTypeList []string
 }
 
 // Generate translates a typed Dot program into a complete C source string.
@@ -55,15 +69,46 @@ func (g *generator) emitAll() error {
 		g.emitMonomorphisedTypeDecls,
 		g.emitTypeDefs,
 		g.emitMonomorphisedDecls,
+		g.emitTopLevelConsts,
 		g.emitFuncDecls,
-		g.emitMonomorphised,
-		g.emitFuncDefs,
+		g.emitFunctionBodies,
 		g.emitMain,
 	}
 	for _, phase := range phases {
 		if err := phase(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// emitFunctionBodies emits the monomorphised and user function bodies. While
+// bodies are emitted, closures and spawn fibers are discovered; their
+// prototypes and env typedefs are printed first, then the bodies, then the
+// helper definitions, so that every reference has a prior declaration.
+func (g *generator) emitFunctionBodies() error {
+	var bodies strings.Builder
+	saved := g.buf
+	g.buf = &bodies
+	errMono := g.emitMonomorphised()
+	errDefs := g.emitFuncDefs()
+	g.buf = saved
+	if errMono != nil {
+		return errMono
+	}
+	if errDefs != nil {
+		return errDefs
+	}
+	for _, d := range g.closureDecls {
+		g.line(d)
+	}
+	if len(g.closureDecls) > 0 {
+		g.line("")
+	}
+	g.buf.WriteString(bodies.String())
+	for _, src := range g.closures {
+		g.buf.WriteString(src)
+		g.buf.WriteByte('\n')
 	}
 	return nil
 }

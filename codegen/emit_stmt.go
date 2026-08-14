@@ -73,15 +73,22 @@ func (g *generator) emitVarDecl(x *ast.VarDecl) {
 			if i < len(x.Values) {
 				doRetain = isLValue(x.Values[i])
 			}
-			
+
 			if types.IsHeap(declType) {
-				g.line(fmt.Sprintf("if ((void*)(%s) != (void*)(%s)) {", vn, val))
+				// Evaluate the new value exactly once into a temporary: the
+				// old code re-emitted the RHS inside the comparison, inside
+				// the release and again in the assignment, so a value built
+				// from a call was freed (and recomputed) between its uses.
+				tmp := fmt.Sprintf("_dot_new_%d", g.unusedIdx)
+				g.unusedIdx++
+				g.line(fmt.Sprintf("%s %s = %s;", cType(g, declType), tmp, val))
+				g.line(fmt.Sprintf("if ((void*)(%s) != (void*)(%s)) {", vn, tmp))
 				g.indent++
 				g.line(fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); }", vn, vn))
 				if doRetain {
-					g.line(fmt.Sprintf("%s = %s;", vn, emitRetain(g, val, declType)))
+					g.line(fmt.Sprintf("%s = %s;", vn, emitRetain(g, tmp, declType)))
 				} else {
-					g.line(fmt.Sprintf("%s = %s;", vn, val))
+					g.line(fmt.Sprintf("%s = %s;", vn, tmp))
 				}
 				g.indent--
 				g.line("}")
@@ -207,11 +214,13 @@ func (g *generator) emitTupleDecl(x *ast.VarDecl) {
 		// Reassigned name (D53): plain assignment from the tuple field.
 		if id, isIdent := name.(*ast.Ident); isIdent && g.info.Defs[id] == nil {
 			if types.IsHeap(declType) {
-				valT := fmt.Sprintf("%s._%d", tmp, i)
-				g.line(fmt.Sprintf("if ((void*)(%s) != (void*)(%s)) {", vn, valT))
+				newTmp := fmt.Sprintf("_dot_new_%d", g.unusedIdx)
+				g.unusedIdx++
+				g.line(fmt.Sprintf("%s %s = %s._%d;", cType(g, declType), newTmp, tmp, i))
+				g.line(fmt.Sprintf("if ((void*)(%s) != (void*)(%s)) {", vn, newTmp))
 				g.indent++
 				g.line(fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); }", vn, vn))
-				g.line(fmt.Sprintf("%s = %s;", vn, emitRetain(g, valT, declType)))
+				g.line(fmt.Sprintf("%s = %s;", vn, emitRetain(g, newTmp, declType)))
 				g.indent--
 				g.line("}")
 			} else {
@@ -263,7 +272,7 @@ func (g *generator) emitAssignStmt(x *ast.AssignExpr) {
 				if t := g.info.TypeOf(idxExpr.X); t != nil {
 					if _, isSlice := t.(*types.Slice); isSlice {
 						if isStructOrEnum(valType) {
-							val = fmt.Sprintf("dot_box_struct(sizeof(%s), &(%s))", cType(g, valType), val)
+							val = emitBoxValue(g, val, valType)
 						}
 						g.line(fmt.Sprintf("dot_slice_set(%s, %s, (DotAny)(intptr_t)(%s));",
 							g.emitExpr(idxExpr.X), g.emitExpr(idxExpr.Indices[0]), val))
@@ -273,27 +282,25 @@ func (g *generator) emitAssignStmt(x *ast.AssignExpr) {
 			}
 
 			doRetain := isLValue(x.Values[i])
-			if isEnum := isEnumType(tgtType); isEnum {
-				// We don't have deep copy logic for enum assignment, so just evaluate it. 
-				// Wait! We should emitDeepRetain the value!
-				// `memcpy` doesn't retain. 
-				// Actually, `val` is evaluated. We should just retain its fields.
-				if doRetain {
-					g.line(fmt.Sprintf("{ %s _dot_tmp = %s; memcpy(%s, &_dot_tmp, sizeof(%s)); }", cType(g, tgtType), emitDeepRetain(g, val, valType), tname, cType(g, tgtType)))
-				} else {
-					g.line(fmt.Sprintf("{ %s _dot_tmp = %s; memcpy(%s, &_dot_tmp, sizeof(%s)); }", cType(g, tgtType), val, tname, cType(g, tgtType)))
-				}
-				continue
-			}
+			// Enums are always pointers in C (locals, params and fields), so
+			// an enum assignment is a plain pointer assignment: heap enums
+			// take the release/retain path below, unit enums the simple one.
+			// (The old memcpy variant treated the target as a value struct,
+			// which produced invalid initializers and corrupted payloads.)
 
 			if types.IsHeap(tgtType) {
-				g.line(fmt.Sprintf("if ((void*)(%s) != (void*)(%s)) {", tname, val))
+				// Evaluate the RHS once into a temporary so the comparison
+				// and the assignment see the same value.
+				tmp := fmt.Sprintf("_dot_new_%d", g.unusedIdx)
+				g.unusedIdx++
+				g.line(fmt.Sprintf("%s %s = %s;", cType(g, tgtType), tmp, val))
+				g.line(fmt.Sprintf("if ((void*)(%s) != (void*)(%s)) {", tname, tmp))
 				g.indent++
 				g.line(fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); }", tname, tname))
 				if doRetain {
-					g.line(fmt.Sprintf("%s = %s;", tname, emitRetain(g, val, valType)))
+					g.line(fmt.Sprintf("%s = %s;", tname, emitRetain(g, tmp, valType)))
 				} else {
-					g.line(fmt.Sprintf("%s = %s;", tname, val))
+					g.line(fmt.Sprintf("%s = %s;", tname, tmp))
 				}
 				g.indent--
 				g.line("}")
@@ -310,10 +317,13 @@ func (g *generator) emitAssignStmt(x *ast.AssignExpr) {
 
 // emitIfStmt emits an if-else chain from an IfExpr used in statement position.
 func (g *generator) emitIfStmt(x *ast.IfExpr) {
-	cond := g.emitExpr(x.Cond)
+	cond, bindings := g.emitIfCond(x)
 	g.line(fmt.Sprintf("if (%s) {", cond))
 	g.indent++
-	g.emitBlockStmts(x.Then)
+	if bindings != "" {
+		g.line(bindings)
+	}
+	g.emitScopedBlockStmts(x.Then)
 	g.indent--
 	g.emitIfTail(x)
 }
@@ -321,9 +331,13 @@ func (g *generator) emitIfStmt(x *ast.IfExpr) {
 // emitIfTail emits the closing brace and any else / else-if tail.
 func (g *generator) emitIfTail(x *ast.IfExpr) {
 	if x.ElseIf != nil {
-		g.line(fmt.Sprintf("} else if (%s) {", g.emitExpr(x.ElseIf.Cond)))
+		cond, bindings := g.emitIfCond(x.ElseIf)
+		g.line(fmt.Sprintf("} else if (%s) {", cond))
 		g.indent++
-		g.emitBlockStmts(x.ElseIf.Then)
+		if bindings != "" {
+			g.line(bindings)
+		}
+		g.emitScopedBlockStmts(x.ElseIf.Then)
 		g.indent--
 		g.emitIfTail(x.ElseIf)
 		return
@@ -331,10 +345,21 @@ func (g *generator) emitIfTail(x *ast.IfExpr) {
 	if x.Else != nil {
 		g.line("} else {")
 		g.indent++
-		g.emitBlockStmts(x.Else)
+		g.emitScopedBlockStmts(x.Else)
 		g.indent--
 	}
 	g.line("}")
+}
+
+// emitIfCond returns the C condition and the pattern-binding declarations
+// for an if header. Plain conditions emit the boolean expression; the if-let
+// form (`if p = opt {`) emits a success-tag check plus payload bindings.
+func (g *generator) emitIfCond(x *ast.IfExpr) (cond string, bindings string) {
+	if x.Bind == nil {
+		return g.emitExpr(x.Cond), ""
+	}
+	subj := g.emitExpr(x.Cond)
+	return emitIfLet(g, x.Bind, subj, g.info.TypeOf(x.Cond))
 }
 
 // emitMatchStmt emits a match expression in statement position. Enum matches
@@ -342,13 +367,19 @@ func (g *generator) emitIfTail(x *ast.IfExpr) {
 func (g *generator) emitMatchStmt(x *ast.MatchExpr) {
 	subj := g.emitExpr(x.Subject)
 	subjType := g.info.TypeOf(x.Subject)
-	if subjType != nil && subjType.Kind() == types.KindEnum {
+	if subjType != nil && isEnumType(subjType) {
 		g.line(fmt.Sprintf("switch ((%s)->tag) {", subj))
 		for i, arm := range x.Arms {
-			g.line(fmt.Sprintf("case %d:", i))
+			// Each case gets its own braces so arm-local declarations (pattern
+			// bindings and body locals) do not leak into sibling cases.
+			g.line(fmt.Sprintf("case %d: {", i))
 			g.indent++
+			if bindings := patternBindings(g, subj, arm.Pattern, subjType); bindings != "" {
+				g.line(bindings)
+			}
 			g.emitMatchArmBody(arm)
 			g.indent--
+			g.line("}")
 		}
 		g.line("}")
 		return
@@ -362,6 +393,9 @@ func (g *generator) emitMatchStmt(x *ast.MatchExpr) {
 			g.line(fmt.Sprintf("} else if (%s) {", pcond))
 		}
 		g.indent++
+		if bindings := patternBindings(g, subj, arm.Pattern, subjType); bindings != "" {
+			g.line(bindings)
+		}
 		g.emitMatchArmBody(arm)
 		g.indent--
 	}
@@ -370,10 +404,12 @@ func (g *generator) emitMatchStmt(x *ast.MatchExpr) {
 	}
 }
 
-// emitMatchArmBody emits the body of a match arm in statement position.
+// emitMatchArmBody emits the body of a match arm in statement position. Arm
+// bodies are their own scope level: locals declared in an arm are released
+// before the arm's closing brace.
 func (g *generator) emitMatchArmBody(arm *ast.MatchArm) {
 	if be, ok := arm.Body.(*ast.BlockExpr); ok {
-		g.emitBlockStmts(be.Block)
+		g.emitScopedBlockStmts(be.Block)
 		return
 	}
 	g.line(fmt.Sprintf("%s;", g.emitExpr(arm.Body)))

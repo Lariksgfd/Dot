@@ -24,14 +24,14 @@ func (g *generator) emitForStmt(x *ast.ForStmt) {
 	case ast.ForInfinite:
 		g.line("for (;;) {")
 		g.indent++
-		g.emitBlockStmts(x.Body)
+		g.emitScopedBlockStmts(x.Body)
 		g.indent--
 		g.line("}")
 	case ast.ForCond:
 		cond := g.emitExpr(x.Cond)
 		g.line(fmt.Sprintf("while (%s) {", cond))
 		g.indent++
-		g.emitBlockStmts(x.Body)
+		g.emitScopedBlockStmts(x.Body)
 		g.indent--
 		g.line("}")
 	case ast.ForIn:
@@ -75,29 +75,61 @@ func (g *generator) emitForRange(x *ast.ForStmt, r *ast.RangeExpr) {
 		counter, lo, counter, op, hi, counter))
 	g.indent++
 	g.line(fmt.Sprintf("int64_t %s = %s;", vn, counter))
-	g.emitBlockStmts(x.Body)
+	g.emitScopedBlockStmts(x.Body)
 	g.indent--
 	g.line("}")
 }
 
 // emitForIterator emits `for i, item in items` as an iterator-based loop.
+// The iterator runtime writes a DotAny per element into caller-provided
+// slots, so the loop variable is copied out of that slot on every iteration:
+// struct/enum elements live in a box and are dereferenced, pointers and
+// scalars are cast directly. The whole loop is wrapped in a block so loop
+// variables do not clash across sibling loops in the same function.
 func (g *generator) emitForIterator(x *ast.ForStmt) {
 	iterable := g.emitExpr(x.Iterable)
 	vn := varName(g, x.Value)
-	kn := "_"
-	if x.Key != nil {
-		kn = varName(g, x.Key)
+	iterType := g.info.TypeOf(x.Iterable)
+	iterFn := "dot_iter_slice"
+	if types.Underlying(iterType) != nil {
+		if _, isMap := types.Underlying(iterType).(*types.Map); isMap {
+			iterFn = "dot_iter_map"
+		}
 	}
-	keyExpr := "NULL"
-	if x.Key != nil {
-		keyExpr = "&" + kn
+	elemType := g.info.TypeOf(x.Value)
+	if elemType == nil || elemType == types.Invalid {
+		if sl, ok := types.Underlying(iterType).(*types.Slice); ok {
+			elemType = sl.Elem
+		}
 	}
+
+	g.line("{")
+	g.indent++
 	itIdx := g.unusedIdx
 	g.unusedIdx++
-	g.line(fmt.Sprintf("for (DotIter _dot_it_%d = dot_iter(%s); dot_iter_next(&_dot_it_%d, &%s, %s); ) {",
-		itIdx, iterable, itIdx, vn, keyExpr))
+	g.line(fmt.Sprintf("DotIter _dot_it_%d = %s(%s);", itIdx, iterFn, iterable))
+	keyExpr := "NULL"
+	if x.Key != nil {
+		kn := varName(g, x.Key)
+		keyType := g.info.TypeOf(x.Key)
+		g.line(fmt.Sprintf("%s %s = 0;", cType(g, keyType), kn))
+		keyExpr = "&" + kn
+	}
+	ivName := fmt.Sprintf("_dot_iv_%d", itIdx)
+	g.line(fmt.Sprintf("DotAny %s = NULL;", ivName))
+	g.line(fmt.Sprintf("while (dot_iter_next(&_dot_it_%d, %s, &%s)) {", itIdx, keyExpr, ivName))
 	g.indent++
-	g.emitBlockStmts(x.Body)
+	elemCType := cFieldType(g, elemType)
+	var init string
+	if isStructOrEnum(elemType) {
+		init = fmt.Sprintf("*(%s*)%s", elemCType, ivName)
+	} else {
+		init = fmt.Sprintf("(%s)%s", elemCType, ivName)
+	}
+	g.line(fmt.Sprintf("%s %s = %s;", elemCType, vn, init))
+	g.emitScopedBlockStmts(x.Body)
+	g.indent--
+	g.line("}")
 	g.indent--
 	g.line("}")
 }
@@ -106,7 +138,7 @@ func (g *generator) emitForIterator(x *ast.ForStmt) {
 // the value is retained if it is a heap type.
 func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 	g.emitDefers()
-	
+
 	// Collect returned variables to implement move-semantics (ownership transfer)
 	returnedVars := make(map[string]bool)
 	for _, v := range x.Values {
@@ -114,27 +146,27 @@ func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 			returnedVars[varName(g, id)] = true
 		}
 	}
-	
-	// Emit scope cleanup for all locals EXCEPT the ones being returned (move semantics)
+
+	// Emit scope cleanup for every live scope (deepest first) EXCEPT the
+	// variables being returned (move semantics). Outer variables whose C name
+	// is shadowed by a deeper declaration are skipped at the shallow levels:
+	// at the return point the C name refers to the deepest variable, so
+	// releasing it here would release the wrong object. The enclosing blocks
+	// still emit their own end-cleanup for the non-return paths.
 	var toCleanup []scopeVar
-	for _, sv := range g.scopeVars {
-		if !returnedVars[sv.name] {
-			toCleanup = append(toCleanup, sv)
-		} else {
-			// If it's a struct or enum, we should still clean up its fields EXCEPT the parts being returned?
-			// Wait, if it's a struct, returning it returns a copy of the struct value, so the caller gets those references.
-			// The caller assumes ownership of the references inside the struct.
-			// So if we don't clean it up, the caller takes them. This is correct!
-		}
-	}
-	if len(toCleanup) > 0 {
-		cleanup := emitScopeCleanup(g, toCleanup)
-		for _, cl := range strings.Split(strings.TrimRight(cleanup, "\n"), "\n") {
-			if cl != "" {
-				g.line(cl)
+	shadowed := make(map[string]bool)
+	for _, level := range g.scopesDeepestFirst() {
+		for _, sv := range level {
+			if returnedVars[sv.name] || shadowed[sv.name] {
+				continue
 			}
+			toCleanup = append(toCleanup, sv)
+		}
+		for _, sv := range level {
+			shadowed[sv.name] = true
 		}
 	}
+	emitScopeCleanupStmts(g, toCleanup)
 
 	if len(x.Values) == 0 {
 		g.line("return;")
@@ -234,7 +266,7 @@ func (g *generator) emitDefers() {
 func (g *generator) emitPerfBlock(x *ast.PerfBlock) {
 	g.line(fmt.Sprintf("{ %s;", emitArenaEnter(g)))
 	g.indent++
-	g.emitBlockStmts(x.Block)
+	g.emitScopedBlockStmts(x.Block)
 	g.indent--
 	g.line(fmt.Sprintf("%s; }", emitArenaExit(g)))
 }
@@ -243,28 +275,15 @@ func (g *generator) emitPerfBlock(x *ast.PerfBlock) {
 func (g *generator) emitBlockStmt(x *ast.BlockStmt) {
 	g.line("{")
 	g.indent++
-	saved := g.scopeVars
-	g.scopeVars = nil
+	g.pushScope()
 	for _, s := range x.Stmts {
 		g.emitStmt(s)
 	}
-	
-	needsCleanup := true
-	if len(x.Stmts) > 0 {
-		if _, isReturn := x.Stmts[len(x.Stmts)-1].(*ast.ReturnStmt); isReturn {
-			needsCleanup = false
-		}
+	if !scopeBlockEndsInReturn(x.Stmts) {
+		emitScopeCleanupStmts(g, g.popScope())
+	} else {
+		g.popScope()
 	}
-	
-	if needsCleanup && len(g.scopeVars) > 0 {
-		cleanup := emitScopeCleanup(g, g.scopeVars)
-		for _, cl := range strings.Split(strings.TrimRight(cleanup, "\n"), "\n") {
-			if cl != "" {
-				g.line(cl)
-			}
-		}
-	}
-	g.scopeVars = saved
 	g.indent--
 	g.line("}")
 }
@@ -273,6 +292,23 @@ func (g *generator) emitBlockStmt(x *ast.BlockStmt) {
 func (g *generator) emitBlockStmts(b *ast.BlockStmt) {
 	for _, s := range b.Stmts {
 		g.emitStmt(s)
+	}
+}
+
+// emitScopedBlockStmts emits the statements of a block inside an existing
+// brace pair (if/else branches, match arms, loop bodies) as a fresh scope
+// level: locals declared in the branch are released before the closing brace
+// of that branch, not at the enclosing function scope. The cleanup is skipped
+// when the branch ends in a return (the return already cleaned the scopes).
+func (g *generator) emitScopedBlockStmts(b *ast.BlockStmt) {
+	g.pushScope()
+	for _, s := range b.Stmts {
+		g.emitStmt(s)
+	}
+	if !scopeBlockEndsInReturn(b.Stmts) {
+		emitScopeCleanupStmts(g, g.popScope())
+	} else {
+		g.popScope()
 	}
 }
 

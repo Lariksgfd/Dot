@@ -47,7 +47,10 @@ func emitIndex(g *generator, x *ast.IndexExpr) string {
 		res := fmt.Sprintf("dot_slice_get(%s, %s)", obj, g.emitExpr(x.Indices[0]))
 		elemType := tt.Elem
 		if isStructOrEnum(elemType) {
-			res = fmt.Sprintf("(*(%s*)%s)", cType(g, elemType), res)
+			// Struct elements are stored boxed by value; enum elements are
+			// stored boxed by pointer. cFieldType renders the storage shape
+			// (enums become pointers), so the deref yields the right kind.
+			res = fmt.Sprintf("(*(%s*)%s)", cFieldType(g, elemType), res)
 		} else if !types.IsHeap(elemType) && !isPointerLike(elemType) {
 			res = fmt.Sprintf("((%s)(intptr_t)%s)", cType(g, elemType), res)
 		}
@@ -61,7 +64,6 @@ func emitIndex(g *generator, x *ast.IndexExpr) string {
 			return fmt.Sprintf("((DotString*)%s)->data[%s]", obj, g.emitExpr(x.Indices[0]))
 		}
 	}
-	fmt.Printf("DEBUG emitIndex: type=%T, obj=%s\n", t, obj)
 	if len(x.Indices) == 1 {
 		return fmt.Sprintf("%s[%s]", obj, g.emitExpr(x.Indices[0]))
 	}
@@ -163,14 +165,15 @@ func emitFnLit(g *generator, x *ast.FnLit) string {
 	captures := g.info.Captures[x]
 	envName := fmt.Sprintf("%s_env", name)
 
-	var envStruct strings.Builder
 	if len(captures) > 0 {
+		var envStruct strings.Builder
 		envStruct.WriteString(fmt.Sprintf("typedef struct { "))
 		for i, cap := range captures {
 			envStruct.WriteString(fmt.Sprintf("%s v%d; ", cType(g, cap.Type), i))
 		}
 		envStruct.WriteString(fmt.Sprintf("} %s;", envName))
-		g.addClosure(envStruct.String())
+		// The env typedef must precede the function bodies that use it.
+		g.closureDecls = append(g.closureDecls, envStruct.String())
 	}
 
 	body := "0"
@@ -186,6 +189,8 @@ func emitFnLit(g *generator, x *ast.FnLit) string {
 	} else {
 		retType = "void*"
 	}
+	// Prototype emitted before the bodies so call sites see a declaration.
+	g.closureDecls = append(g.closureDecls, fmt.Sprintf("%s %s(%s);", retType, name, params))
 	result := cType(g, fnType)
 	var funcCode strings.Builder
 	funcCode.WriteString(fmt.Sprintf("%s %s(%s) { ", retType, name, params))
@@ -223,10 +228,19 @@ func emitTupleLit(g *generator, x *ast.TupleLit) string {
 }
 
 // emitArrayLit emits an array/slice literal as a runtime construction call.
+// Struct and enum elements are boxed so the DotAny slots hold either a struct
+// copy or a pointer (DotAny cannot hold a struct value directly).
 func emitArrayLit(g *generator, x *ast.ArrayLit) string {
 	var elems []string
 	for _, e := range x.Elems {
-		elems = append(elems, g.emitExpr(e))
+		val := g.emitExpr(e)
+		t := g.info.TypeOf(e)
+		if isStructOrEnum(t) {
+			val = fmt.Sprintf("(DotAny)(intptr_t)(%s)", emitBoxValue(g, val, t))
+		} else if t != nil && !isPointerLike(t) {
+			val = fmt.Sprintf("(DotAny)(intptr_t)(%s)", val)
+		}
+		elems = append(elems, val)
 	}
 	return fmt.Sprintf("dot_slice_from_array(%d, (DotAny[]){%s})", len(elems), strings.Join(elems, ", "))
 }
@@ -320,7 +334,15 @@ func emitSlice(g *generator, x *ast.SliceExpr) string {
 	if x.Inclusive {
 		inclusive = "true"
 	}
-	return fmt.Sprintf("dot_slice_sub(%s, %s, %s, %s)", obj, lo, hi, inclusive)
+	sub := fmt.Sprintf("dot_slice_sub(%s, %s, %s, %s)", obj, lo, hi, inclusive)
+	if isStringExpr(g, x.X) {
+		// Slicing a string yields a string: take its bytes, sub-slice them
+		// and rebuild a DotString (there is no string-specific sub helper in
+		// the runtime).
+		return fmt.Sprintf("dot_string_from_bytes(dot_slice_sub(dot_string_to_bytes(%s), %s, %s, %s))",
+			obj, lo, hi, inclusive)
+	}
+	return sub
 }
 
 // emitAwait emits an await expression as a runtime future-get call.
@@ -346,6 +368,9 @@ func emitSpawn(g *generator, x *ast.SpawnExpr) string {
 
 	src := fmt.Sprintf("void %s(void) {\n%s}", name, body)
 	g.addClosure(src)
+	// Prototype emitted before the bodies so spawn call sites see a
+	// declaration.
+	g.closureDecls = append(g.closureDecls, fmt.Sprintf("void %s(void);", name))
 
 	if x.IsThread {
 		return fmt.Sprintf("(dot_thread_spawn(%s), 0)", name)

@@ -217,10 +217,28 @@ func emitCall(g *generator, x *ast.CallExpr) string {
 		if info.IsMethod {
 			return emitMethodCall(g, x, info)
 		}
-		// Check if it's a builtin method (like push on slices)
+		// A field or identifier callee may denote a static method
+		// (Type.method, IsMethod is false because the signature has no self
+		// receiver), a builtin method (items.push) or an enum payload
+		// constructor (Some(x), Shape.Circle(r)). All three have a *types.Fn
+		// type but must NOT take the indirect-closure path below: static and
+		// builtin methods are direct calls, constructors build a boxed union.
 		if fn, ok := x.Fn.(*ast.FieldExpr); ok {
-			if sel, ok := g.info.Selections[fn]; ok && sel.Kind == types.SelectBuiltinMethod {
-				return emitMethodCall(g, x, info)
+			if sel, ok := g.info.Selections[fn]; ok {
+				switch sel.Kind {
+				case types.SelectMethod:
+					return emitMethodCall(g, x, info)
+				case types.SelectBuiltinMethod:
+					return emitMethodCall(g, x, info)
+				case types.SelectVariant:
+					return emitVariantCall(g, x, info, sel.Variant)
+				}
+			}
+		}
+		// Unqualified payload constructor: Some(x), Ok(v), Err(e).
+		if ident, ok := x.Fn.(*ast.Ident); ok {
+			if sym, ok := g.info.Uses[ident]; ok && sym.Kind == types.SymVariant && sym.Variant != nil {
+				return emitVariantCall(g, x, info, sym.Variant)
 			}
 		}
 		if inst, ok := g.info.Instances[x]; ok && inst.Mangled != "" {
@@ -257,6 +275,33 @@ func emitCall(g *generator, x *ast.CallExpr) string {
 	return fmt.Sprintf("/* TODO: call %T */", x)
 }
 
+// optionResultBuiltin returns inlined C for an Option/Result builtin method
+// call (is_some/is_none/is_ok/is_err/unwrap/unwrap_err), or "" when the
+// receiver is neither an Option nor a Result.
+func optionResultBuiltin(g *generator, recvExpr string, recvType types.Type, name string) string {
+	isOpt := isOptionType(recvType)
+	isRes := isResultType(recvType)
+	if !isOpt && !isRes {
+		return ""
+	}
+	switch name {
+	case "is_some", "is_ok":
+		return fmt.Sprintf("((%s) != NULL && (%s)->tag == 0)", recvExpr, recvExpr)
+	case "is_none", "is_err":
+		return fmt.Sprintf("((%s) == NULL || (%s)->tag == 1)", recvExpr, recvExpr)
+	case "unwrap":
+		if isOpt {
+			return fmt.Sprintf("(%s)->%s", recvExpr, variantFieldName("Some", "value"))
+		}
+		return fmt.Sprintf("(%s)->%s", recvExpr, variantFieldName("Ok", "value"))
+	case "unwrap_err":
+		if isRes {
+			return fmt.Sprintf("(%s)->%s", recvExpr, variantFieldName("Err", "error"))
+		}
+	}
+	return ""
+}
+
 func isStructOrEnum(t types.Type) bool {
 	switch x := t.(type) {
 	case *types.Struct, *types.Enum: return true
@@ -286,6 +331,11 @@ func emitMethodCall(g *generator, call *ast.CallExpr, info *types.CallInfo) stri
 	sel := g.info.Selections[call.Fn.(*ast.FieldExpr)]
 	recv := g.emitExpr(call.Fn.(*ast.FieldExpr).X)
 	name := methodName(sel)
+	// Option/Result methods are inlined: the runtime has no helpers for them
+	// and the tagged-union layout is known here.
+	if inline := optionResultBuiltin(g, recv, sel.Recv, call.Fn.(*ast.FieldExpr).Name); inline != "" {
+		return inline
+	}
 	// Handle builtin methods (push, pop, etc.)
 	if sel.Kind == types.SelectBuiltinMethod {
 		name = builtinMethodName(sel, call.Fn.(*ast.FieldExpr).Name)
@@ -299,10 +349,9 @@ func emitMethodCall(g *generator, call *ast.CallExpr, info *types.CallInfo) stri
 				t = g.info.TypeOf(call.Args[i].Value)
 			}
 			if isStructOrEnum(t) {
-				// We don't retain before boxing because dot_box_struct doesn't retain internally?
-				// Wait! Is boxing copying the structure? Yes!
-				// But we just emitDeepRetain it before boxing.
-				arg = fmt.Sprintf("dot_box_struct(sizeof(%s), &(%s))", cType(g, t), emitDeepRetain(g, arg, t))
+				// Box the value: structs are copied into the box, enums are
+				// copied from the object their pointer designates.
+				arg = emitBoxValue(g, emitDeepRetain(g, arg, t), t)
 			} else {
 				arg = emitRetain(g, arg, t)
 			}
@@ -312,9 +361,10 @@ func emitMethodCall(g *generator, call *ast.CallExpr, info *types.CallInfo) stri
 	}
 	var args []string
 	if sel.Method != nil && !sel.Method.Static {
+		recvExpr := call.Fn.(*ast.FieldExpr).X
 		recvType := sel.Recv
 		if isPointerLike(recvType) {
-			if !isPointerType(g.info.TypeOf(call.Fn.(*ast.FieldExpr).X)) {
+			if !isPointerType(g.info.TypeOf(recvExpr)) && !isSelfParam(g, recvExpr) {
 				recv = "&" + recv
 			}
 		}
@@ -322,6 +372,45 @@ func emitMethodCall(g *generator, call *ast.CallExpr, info *types.CallInfo) stri
 	}
 	args = append(args, emitCallArgs(g, call, info)...)
 	return fmt.Sprintf("%s(%s)", name, strings.Join(args, ", "))
+}
+
+// emitVariantCall emits an enum payload constructor call such as Some(x) or
+// Shape.Circle(r): a heap-allocated tagged union whose tag is the variant's
+// and whose union members receive the payload arguments in field order.
+func emitVariantCall(g *generator, call *ast.CallExpr, info *types.CallInfo, variant *types.Variant) string {
+	enumType := info.Result
+	if enumType == nil || enumType == types.Invalid {
+		enumType = g.info.TypeOf(call)
+	}
+	cname := cType(g, enumType)
+	args := emitCallArgs(g, call, info)
+	fields := []string{fmt.Sprintf(". tag = %d", variant.Tag)}
+	for i, f := range variant.Fields {
+		var arg string
+		if i < len(args) {
+			arg = args[i]
+		} else {
+			arg = zeroValue(f.Type)
+		}
+		fields = append(fields, fmt.Sprintf(". %s = %s", variantFieldName(variant.Name, f.Name), arg))
+	}
+	return fmt.Sprintf("((%s*)dot_box_struct(sizeof(%s), (&((%s){ %s }))))",
+		cname, cname, cname, strings.Join(fields, ", "))
+}
+
+// isSelfParam reports whether e refers to the method receiver `self`. In C
+// `self` is always a pointer (methods are declared with `DotX* self`), even
+// though its Dot type is the plain struct, so a receiver address must not be
+// taken again.
+func isSelfParam(g *generator, e ast.Expr) bool {
+	switch id := e.(type) {
+	case *ast.SelfExpr:
+		return true
+	case *ast.Ident:
+		sym, ok := g.info.Uses[id]
+		return ok && sym != nil && sym.Kind == types.SymParam && sym.Name == "self"
+	}
+	return false
 }
 
 // emitMangledCall emits a regular function call using its C name.
@@ -470,7 +559,6 @@ func emitBuiltinProp(g *generator, x *ast.FieldExpr, sel *types.Selection) strin
 	obj := g.emitExpr(x.X)
 	// Handle string properties
 	if st, ok := sel.Recv.(*types.Basic); ok {
-		fmt.Printf("DEBUG emitBuiltinProp: name=%s, kind=%v\n", x.Name, st.Kind())
 		if st.Kind() == types.KindString {
 			switch x.Name {
 			case "len":
@@ -497,9 +585,71 @@ func emitVariantCtor(g *generator, x *ast.FieldExpr, sel *types.Selection) strin
 	return fmt.Sprintf("/* variant %s */", x.Name)
 }
 
-// emitIfExpr emits an if-else expression using the ternary operator when both
-// branches are simple, or a GCC statement expression for complex branches.
+// emitIfExpr emits an if-else expression. When the result type is a value,
+// a GCC statement expression binds the chosen branch into a result temporary
+// (`({ T _tmp; if (c) { _tmp = <then>; } else { _tmp = <else>; } _tmp; })`):
+// a bare `({ if (c) ...; else ...; })` has no value and GCC rejects it as a
+// void expression. Void-typed if-expressions keep the value-less form.
 func emitIfExpr(g *generator, x *ast.IfExpr) string {
+	resType := g.info.TypeOf(x)
+	if resType == nil || resType == types.Invalid || resType.Kind() == types.KindVoid {
+		return emitIfExprVoid(g, x)
+	}
+	tmp := fmt.Sprintf("_dot_if_%d", g.unusedIdx)
+	g.unusedIdx++
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("({ %s %s; ", cFieldType(g, resType), tmp))
+	var writeIf func(cond string, ifx *ast.IfExpr)
+	writeIf = func(cond string, ifx *ast.IfExpr) {
+		b.WriteString(fmt.Sprintf("if (%s) { ", cond))
+		writeIfBranch(&b, g, ifx.Then, tmp)
+		b.WriteString(" }")
+		if ifx.ElseIf != nil {
+			b.WriteString(" else ")
+			writeIf(g.emitExpr(ifx.ElseIf.Cond), ifx.ElseIf)
+		} else if ifx.Else != nil {
+			b.WriteString(" else { ")
+			writeIfBranch(&b, g, ifx.Else, tmp)
+			b.WriteString(" }")
+		}
+	}
+	writeIf(g.emitExpr(x.Cond), x)
+	b.WriteString(fmt.Sprintf(" %s; })", tmp))
+	return b.String()
+}
+
+// writeIfBranch renders one if-expr branch inside a statement expression:
+// every statement is emitted as a statement, and the branch's trailing
+// expression is assigned to the result temporary.
+func writeIfBranch(b *strings.Builder, g *generator, blk *ast.BlockStmt, tmp string) {
+	for i, s := range blk.Stmts {
+		last := i == len(blk.Stmts)-1
+		switch st := s.(type) {
+		case *ast.ExprStmt:
+			if last {
+				b.WriteString(fmt.Sprintf("%s = %s; ", tmp, g.emitExpr(st.X)))
+			} else {
+				b.WriteString(g.emitExpr(st.X))
+				b.WriteString("; ")
+			}
+		case *ast.ReturnStmt:
+			b.WriteString("return ")
+			for i, v := range st.Values {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString(g.emitExpr(v))
+			}
+			b.WriteString("; ")
+		default:
+			b.WriteString(fmt.Sprintf("/* stmt %T */ ", st))
+		}
+	}
+}
+
+// emitIfExprVoid emits a value-less if-else statement expression for
+// void-typed if-expressions.
+func emitIfExprVoid(g *generator, x *ast.IfExpr) string {
 	cond := g.emitExpr(x.Cond)
 	then := g.emitExpr(&ast.BlockExpr{Block: x.Then})
 	if x.ElseIf != nil {
@@ -514,41 +664,58 @@ func emitIfExpr(g *generator, x *ast.IfExpr) string {
 }
 
 // emitMatch emits a match expression as a GCC statement expression containing
-// a switch (for enums) or an if/else chain (for literals).
+// a switch (for enums) or an if/else chain (for literals). The result
+// temporary is typed from the match's result type, not the subject's: arms
+// may produce a different type than the scrutinee (e.g. matching a string to
+// produce a TokenType).
 func emitMatch(g *generator, x *ast.MatchExpr) string {
 	subj := g.emitExpr(x.Subject)
+	resType := g.info.TypeOf(x)
 	subjType := g.info.TypeOf(x.Subject)
-	if subjType != nil && subjType.Kind() == types.KindEnum {
-		return emitEnumMatch(g, subj, subjType, x)
+	if subjType != nil && isEnumType(subjType) {
+		return emitEnumMatch(g, subj, subjType, resType, x)
 	}
-	return emitLiteralMatch(g, subj, x)
+	return emitLiteralMatch(g, subj, resType, x)
+}
+
+// matchResultType renders the C type of the temporary holding a match result.
+// The match's own result type wins; the subject's type is the fallback for
+// the rare case where the checker did not record a result.
+func matchResultType(g *generator, subj string, resType types.Type) string {
+	if resType == nil || resType == types.Invalid {
+		return fmt.Sprintf("__typeof__(%s)", subj)
+	}
+	return cFieldType(g, resType)
 }
 
 // emitEnumMatch emits a switch on the enum tag for each arm.
-func emitEnumMatch(g *generator, subj string, t types.Type, x *ast.MatchExpr) string {
+func emitEnumMatch(g *generator, subj string, subjType types.Type, resType types.Type, x *ast.MatchExpr) string {
 	var b strings.Builder
-	b.WriteString("({ __typeof__(")
-	b.WriteString(subj)
-	b.WriteString(") _match_res; switch (")
+	b.WriteString("({ ")
+	b.WriteString(matchResultType(g, subj, resType))
+	b.WriteString(" _match_res; switch (")
 	b.WriteString(subj)
 	b.WriteString("->tag) { ")
 	for i, arm := range x.Arms {
 		b.WriteString("case ")
 		b.WriteString(strconv.Itoa(i))
-		b.WriteString(": _match_res = ")
+		b.WriteString(": { ")
+		b.WriteString(patternBindings(g, subj, arm.Pattern, subjType))
+		b.WriteString("_match_res = ")
 		b.WriteString(g.emitExpr(arm.Body))
-		b.WriteString("; break; ")
+		b.WriteString("; break; } ")
 	}
 	b.WriteString("} _match_res; })")
 	return b.String()
 }
 
 // emitLiteralMatch emits an if/else chain comparing the subject to each arm.
-func emitLiteralMatch(g *generator, subj string, x *ast.MatchExpr) string {
+func emitLiteralMatch(g *generator, subj string, resType types.Type, x *ast.MatchExpr) string {
+	subjType := g.info.TypeOf(x.Subject)
 	var b strings.Builder
-	b.WriteString("({ __typeof__(")
-	b.WriteString(subj)
-	b.WriteString(") _match_res; ")
+	b.WriteString("({ ")
+	b.WriteString(matchResultType(g, subj, resType))
+	b.WriteString(" _match_res; ")
 	for i, arm := range x.Arms {
 		if i > 0 {
 			b.WriteString(" else ")
@@ -556,9 +723,11 @@ func emitLiteralMatch(g *generator, subj string, x *ast.MatchExpr) string {
 		pat := patternCond(g, subj, arm.Pattern)
 		b.WriteString("if (")
 		b.WriteString(pat)
-		b.WriteString(") _match_res = ")
+		b.WriteString(") { ")
+		b.WriteString(patternBindings(g, subj, arm.Pattern, subjType))
+		b.WriteString("_match_res = ")
 		b.WriteString(g.emitExpr(arm.Body))
-		b.WriteString(";")
+		b.WriteString("; }")
 	}
 	b.WriteString(" _match_res; })")
 	return b.String()
@@ -579,6 +748,65 @@ func patternCond(g *generator, subj string, pat ast.Pattern) string {
 		return "true"
 	}
 	return "true"
+}
+
+// patternBindings emits the C declarations for the variables bound by a
+// match arm pattern, so the arm body can reference them. Enum patterns bind
+// each sub-pattern to the matching variant field; a bare identifier binds
+// the whole subject. Bindings borrow the subject's values (no retain).
+func patternBindings(g *generator, subj string, pat ast.Pattern, subjType types.Type) string {
+	var b strings.Builder
+	writePatternBindings(&b, g, subj, pat, subjType)
+	return b.String()
+}
+
+// writePatternBindings appends binding declarations to b.
+func writePatternBindings(b *strings.Builder, g *generator, subj string, pat ast.Pattern, subjType types.Type) {
+	switch p := pat.(type) {
+	case *ast.IdentPattern:
+		b.WriteString(fmt.Sprintf("%s %s = %s; ", cFieldType(g, subjType), p.Name, subj))
+	case *ast.EnumPattern:
+		en := enumUnderlying(subjType)
+		var v *types.Variant
+		if en != nil {
+			v, _ = en.Variant(p.Variant)
+		}
+		if v == nil || len(p.Args) == 0 {
+			return
+		}
+		for i, arg := range p.Args {
+			if i >= len(v.Fields) {
+				break
+			}
+			f := v.Fields[i]
+			fExpr := fmt.Sprintf("(%s)->%s", subj, variantFieldName(v.Name, f.Name))
+			writeArgBinding(b, g, arg, fExpr, f.Type)
+		}
+	}
+}
+
+// writeArgBinding emits the binding for one variant-field sub-pattern.
+func writeArgBinding(b *strings.Builder, g *generator, arg ast.Pattern, fExpr string, fType types.Type) {
+	switch a := arg.(type) {
+	case *ast.IdentPattern:
+		b.WriteString(fmt.Sprintf("%s %s = %s; ", cFieldType(g, fType), a.Name, fExpr))
+	case *ast.WildcardPattern:
+		// nothing to bind
+	case *ast.EnumPattern:
+		writePatternBindings(b, g, fExpr, a, fType)
+	}
+}
+
+// enumUnderlying returns the *types.Enum behind t (through Named wrappers),
+// or nil when t is not an enum.
+func enumUnderlying(t types.Type) *types.Enum {
+	switch x := t.(type) {
+	case *types.Enum:
+		return x
+	case *types.Named:
+		return enumUnderlying(x.Underlying)
+	}
+	return nil
 }
 
 // ensure emit_expr_extra.go helpers are referenced.

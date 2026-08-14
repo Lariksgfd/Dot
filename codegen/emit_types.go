@@ -11,6 +11,7 @@ package codegen
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/dotlang/dot/ast"
@@ -108,7 +109,15 @@ func (g *generator) emitSortedTypeDefs() error {
 		})
 	}
 
-	// Phase C: tuple typedefs. cTupleName may register new tuple shapes while
+	// Phase C: generic Named types discovered in field/signature/expression
+	// types but absent from InstanceList (e.g. Option[string] in a struct
+	// field). Their forward typedefs are emitted by
+	// emitMonomorphisedTypeDecls; here only the definitions join the graph.
+	for _, cName := range g.genericTypeList {
+		registerGenericDef(byName, addDef, g, cName)
+	}
+
+	// Phase D: tuple typedefs. cTupleName may register new tuple shapes while
 	// dependencies are collected above, so the list is drained index-wise.
 	for i := 0; i < len(g.tupleList); i++ {
 		t := g.tupleList[i]
@@ -119,6 +128,21 @@ func (g *generator) emitSortedTypeDefs() error {
 		addDef(t.Name, deps, func() {
 			g.emitTupleDef(t)
 		})
+	}
+
+	// Phase E: any generic Named types whose dependencies (collected in
+	// Phase C) introduced new tuple shapes. Runs to a fixpoint; normally
+	// only one or two extra iterations.
+	for {
+		added := false
+		for _, cName := range g.genericTypeList {
+			if registerGenericDef(byName, addDef, g, cName) {
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
 	}
 
 	// Emit every definition in dependency order (depth-first, cycle-safe).
@@ -270,6 +294,182 @@ func dotTypeName(name string) string {
 		return name
 	}
 	return "Dot" + name
+}
+
+// registerGenericDef adds the definition of one scanned generic Named type to
+// the topo-sort graph. It reports whether a new definition was registered.
+func registerGenericDef(byName map[string]*cTypeDef, addDef func(string, []string, func()), g *generator, cName string) bool {
+	if _, dup := byName[cName]; dup {
+		return false
+	}
+	named := g.genericTypes[cName]
+	if named == nil {
+		return false
+	}
+	var deps []string
+	switch u := named.Underlying.(type) {
+	case *types.Struct:
+		deps = structDeps(g, u)
+	case *types.Enum:
+		deps = enumDeps(g, u)
+	default:
+		return false
+	}
+	n := named
+	addDef(cName, deps, func() {
+		g.emitNamedTypeDef(cName, n)
+	})
+	return true
+}
+
+// emitNamedTypeDef emits the struct or enum definition for a generic Named
+// type whose instantiation was never recorded in Info.InstanceList.
+func (g *generator) emitNamedTypeDef(cName string, named *types.Named) {
+	short := strings.TrimPrefix(cName, "Dot")
+	switch u := named.Underlying.(type) {
+	case *types.Struct:
+		g.emitStructDef(short, u)
+	case *types.Enum:
+		g.emitEnumDef(short, u)
+	}
+}
+
+// collectGenericTypes scans every type the program mentions (expression
+// types, signatures, declared-type fields and instance results) and
+// registers generic Named types that have no entry in Info.InstanceList.
+// Definitions for these types are emitted by emitSortedTypeDefs and their
+// forward typedefs by emitMonomorphisedTypeDecls.
+func (g *generator) collectGenericTypes() {
+	if g.genericTypes != nil {
+		return
+	}
+	g.genericTypes = make(map[string]*types.Named)
+	seen := make(map[types.Type]bool)
+
+	scan := func(t types.Type) { g.scanTypeForGenerics(t, seen) }
+
+	for _, decl := range g.prog.Decls {
+		switch d := decl.(type) {
+		case *ast.StructDecl, *ast.EnumDecl, *ast.TraitDecl:
+			if named := g.declNamedType(d); named != nil {
+				scan(named)
+			}
+		case *ast.FnDecl:
+			if len(d.TypeParams) > 0 || isExtern(d) {
+				continue
+			}
+			if ft := g.fnType(d); ft != nil {
+				scan(ft)
+			}
+		case *ast.ImplDecl:
+			recv := g.implRecvType(d)
+			if recv == nil {
+				continue
+			}
+			for _, m := range d.Methods {
+				ft := g.fnType(m)
+				if ft == nil {
+					ft = g.methodType(m, recv)
+				}
+				if ft != nil {
+					scan(ft)
+				}
+			}
+		}
+	}
+	for _, inst := range g.info.InstanceList {
+		if inst == nil || inst.Generic == nil {
+			continue
+		}
+		switch inst.Generic.Kind {
+		case types.SymFunc:
+			if inst.Generic.Fn != nil {
+				scan(inst.Generic.Fn)
+			}
+			if f, ok := inst.Result.(*types.Fn); ok {
+				scan(f)
+			}
+		case types.SymType:
+			scan(inst.Result)
+		}
+	}
+	for _, t := range g.info.Types {
+		scan(t)
+	}
+	for _, t := range g.info.Implicits {
+		scan(t)
+	}
+
+	// Deterministic emission order: identical input always yields the same
+	// generic type section even though info.Types is a map.
+	sort.Strings(g.genericTypeList)
+}
+
+// scanTypeForGenerics walks t structurally, registering every generic Named
+// type it meets and descending into underlying types to catch nested generic
+// instantiations (e.g. Option[Box[int]]).
+func (g *generator) scanTypeForGenerics(t types.Type, seen map[types.Type]bool) {
+	if t == nil {
+		return
+	}
+	if seen[t] {
+		return
+	}
+	seen[t] = true
+	switch x := t.(type) {
+	case *types.Named:
+		if len(x.TypeArgs) > 0 {
+			cName := cNamed(g, x)
+			if _, ok := g.genericTypes[cName]; !ok {
+				g.genericTypes[cName] = x
+				g.genericTypeList = append(g.genericTypeList, cName)
+			}
+		}
+		g.scanTypeForGenerics(x.Underlying, seen)
+	case *types.Slice:
+		g.scanTypeForGenerics(x.Elem, seen)
+	case *types.Array:
+		g.scanTypeForGenerics(x.Elem, seen)
+	case *types.Map:
+		g.scanTypeForGenerics(x.Key, seen)
+		g.scanTypeForGenerics(x.Value, seen)
+	case *types.Tuple:
+		for _, e := range x.Elems {
+			g.scanTypeForGenerics(e, seen)
+		}
+	case *types.Pointer:
+		g.scanTypeForGenerics(x.Elem, seen)
+	case *types.Weak:
+		g.scanTypeForGenerics(x.Elem, seen)
+	case *types.Chan:
+		g.scanTypeForGenerics(x.Elem, seen)
+	case *types.Future:
+		g.scanTypeForGenerics(x.Result, seen)
+	case *types.Fn:
+		for _, p := range x.Params {
+			g.scanTypeForGenerics(p.Type, seen)
+		}
+		g.scanTypeForGenerics(x.Result, seen)
+		g.scanTypeForGenerics(x.Recv, seen)
+	case *types.Struct:
+		for _, f := range x.Fields {
+			g.scanTypeForGenerics(f.Type, seen)
+		}
+	case *types.Enum:
+		for _, v := range x.Variants {
+			for _, p := range v.Fields {
+				g.scanTypeForGenerics(p.Type, seen)
+			}
+		}
+	case *types.Trait:
+		for i := range x.Methods {
+			g.scanTypeForGenerics(x.Methods[i].Sig, seen)
+		}
+	case *types.TypeVar:
+		if x.Bound != nil {
+			g.scanTypeForGenerics(x.Bound, seen)
+		}
+	}
 }
 
 // emitTupleDef emits one positional tuple typedef.

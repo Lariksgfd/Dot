@@ -115,28 +115,15 @@ func (g *generator) emitFuncDef(fn *ast.FnDecl, recv *types.Named) {
 
 	g.line(fmt.Sprintf("%s %s(%s) {", result, funcName, params))
 	if fn.Body != nil {
-		saved := g.scopeVars
-		g.scopeVars = nil
+		g.pushScope()
 		for _, s := range fn.Body.Stmts {
 			g.emitStmt(s)
 		}
-
-		needsCleanup := true
-		if len(fn.Body.Stmts) > 0 {
-			if _, isReturn := fn.Body.Stmts[len(fn.Body.Stmts)-1].(*ast.ReturnStmt); isReturn {
-				needsCleanup = false
-			}
+		if !scopeBlockEndsInReturn(fn.Body.Stmts) {
+			emitScopeCleanupStmts(g, g.popScope())
+		} else {
+			g.popScope()
 		}
-
-		if needsCleanup && len(g.scopeVars) > 0 {
-			cleanup := emitScopeCleanup(g, g.scopeVars)
-			for _, cl := range strings.Split(strings.TrimRight(cleanup, "\n"), "\n") {
-				if cl != "" {
-					g.line(cl)
-				}
-			}
-		}
-		g.scopeVars = saved
 	} else if fn.ExprBody != nil {
 		expr := g.emitExpr(fn.ExprBody)
 		g.line(fmt.Sprintf("    return %s;", expr))
@@ -270,26 +257,37 @@ func (g *generator) emitFuncDecls() error {
 				continue
 			}
 			for _, m := range d.Methods {
-				if isExtern(m) {
-					fnType := g.fnType(m)
-					if fnType == nil {
-						continue
+				// Impl method FnDecls are not in info.Defs; their signature
+				// lives on the receiver's Methods table.
+				fnType := g.fnType(m)
+				if fnType == nil {
+					fnType = g.methodType(m, recv)
+				}
+				if fnType == nil {
+					continue
+				}
+				result := cType(g, fnType.Result)
+				if isEnumType(fnType.Result) {
+					result += "*"
+				}
+				paramTypes := g.emitForwardParams(fnType)
+				if m.Sig != nil && m.Sig.Recv != nil {
+					self := fmt.Sprintf("Dot%s*", recv.Name)
+					if paramTypes == "void" {
+						paramTypes = self
+					} else {
+						paramTypes = self + ", " + paramTypes
 					}
-					result := cType(g, fnType.Result)
-					paramTypes := g.emitForwardParams(fnType)
-					g.line(fmt.Sprintf("extern %s %s(%s);", result, g.funcName(m, recv), paramTypes))
+				}
+				name := g.funcName(m, recv)
+				if isExtern(m) {
+					g.line(fmt.Sprintf("extern %s %s(%s);", result, name, paramTypes))
 					continue
 				}
 				if m.Body == nil && m.ExprBody == nil {
 					continue
 				}
-				fnType := g.fnType(m)
-				if fnType == nil {
-					continue
-				}
-				result := cType(g, fnType.Result)
-				paramTypes := g.emitForwardParams(fnType)
-				g.line(fmt.Sprintf("%s %s(%s);", result, g.funcName(m, recv), paramTypes))
+				g.line(fmt.Sprintf("%s %s(%s);", result, name, paramTypes))
 			}
 		}
 	}
@@ -297,17 +295,87 @@ func (g *generator) emitFuncDecls() error {
 	return nil
 }
 
-// emitMonomorphisedTypeDecls emits forward declarations for generic types.
+// emitTopLevelConsts emits `static const` declarations for module-level
+// constants (pub const / const at file scope). These declarations were
+// previously dropped entirely: the decl walks in emitFuncDecls and
+// emitFuncDefs only handle FnDecl and ImplDecl, so stdlib constants like
+// PREC_LOWEST never reached the C output.
+//
+// Imported declarations are not present in info.Types (the checker only
+// records nodes of the main file), so the const type is derived from the
+// initialiser literal when possible and from __typeof__ otherwise.
+func (g *generator) emitTopLevelConsts() error {
+	emitted := make(map[string]bool)
+	for _, decl := range g.prog.Decls {
+		vd, ok := decl.(*ast.VarDecl)
+		if !ok || !vd.Const {
+			continue
+		}
+		for i, name := range vd.Names {
+			if _, ok := name.(*ast.Ident); !ok {
+				continue
+			}
+			if i >= len(vd.Values) {
+				continue
+			}
+			vn := varName(g, name)
+			if emitted[vn] {
+				continue
+			}
+			emitted[vn] = true
+			val := g.emitExpr(vd.Values[i])
+			ct := topLevelConstType(g, vd.Values[i], val)
+			g.line(fmt.Sprintf("static const %s %s = %s;", ct, vn, val))
+		}
+	}
+	return nil
+}
+
+// topLevelConstType picks the C type of a module-level constant whose Dot
+// type is not available through info. Literal initialisers map to their C
+// type directly (int64_t for int literals); everything else falls back to
+// GNU __typeof__ on the emitted initialiser expression.
+func topLevelConstType(g *generator, e ast.Expr, val string) string {
+	switch e.(type) {
+	case *ast.IntLit:
+		return "int64_t"
+	case *ast.FloatLit:
+		return "double"
+	case *ast.BoolLit:
+		return "bool"
+	case *ast.StringLit, *ast.RawStringLit:
+		return "DotString*"
+	}
+	return fmt.Sprintf("__typeof__(%s)", val)
+}
+
+// emitMonomorphisedTypeDecls emits forward typedefs for every instantiated
+// generic type: those recorded in Info.InstanceList and those discovered by
+// the generic type scan (e.g. Option[string] mentioned only in a field type).
 func (g *generator) emitMonomorphisedTypeDecls() error {
+	g.collectGenericTypes()
+	emitted := make(map[string]bool)
+	emitFwd := func(mangled string) {
+		if mangled == "" {
+			return
+		}
+		if !strings.HasPrefix(mangled, "Dot") {
+			mangled = "Dot" + mangled
+		}
+		if emitted[mangled] {
+			return
+		}
+		emitted[mangled] = true
+		g.line(fmt.Sprintf("typedef struct %s %s;", mangled, mangled))
+	}
 	for _, inst := range g.info.InstanceList {
 		if inst == nil || inst.Generic == nil || inst.Generic.Kind != types.SymType {
 			continue
 		}
-		mangled := inst.Mangled
-		if !strings.HasPrefix(mangled, "Dot") {
-			mangled = "Dot" + mangled
-		}
-		g.line(fmt.Sprintf("typedef struct %s %s;", mangled, mangled))
+		emitFwd(inst.Mangled)
+	}
+	for _, name := range g.genericTypeList {
+		emitFwd(name)
 	}
 	return nil
 }
@@ -320,7 +388,7 @@ func (g *generator) emitMonomorphisedDecls() error {
 		if inst == nil || inst.Generic == nil || inst.Generic.Kind != types.SymFunc {
 			continue
 		}
-		fn := inst.Generic.Fn
+		fn := monomorphisedSig(inst)
 		if fn == nil || inst.Mangled == "" {
 			continue
 		}
@@ -344,6 +412,20 @@ func (g *generator) emitMonomorphisedDecls() error {
 			mangled = "Dot" + mangled
 		}
 		g.line(fmt.Sprintf("%s %s(%s);", result, mangled, strings.Join(params, ", ")))
+	}
+	return nil
+}
+
+// monomorphisedSig returns the instantiated signature of a generic function
+// instance. It prefers inst.Result (the substituted *Fn the checker used for
+// the call); inst.Generic.Fn still carries unresolved TypeVars and would make
+// the prototype disagree with the definition.
+func monomorphisedSig(inst *types.Instance) *types.Fn {
+	if f, ok := inst.Result.(*types.Fn); ok {
+		return f
+	}
+	if inst.Generic != nil {
+		return inst.Generic.Fn
 	}
 	return nil
 }
@@ -423,7 +505,7 @@ func (g *generator) emitMonomorphised() error {
 // name carries the type arguments and the body is emitted from the generic
 // declaration's AST.
 func (g *generator) emitMonomorphisedFunc(inst *types.Instance) {
-	fn := inst.Generic.Fn
+	fn := monomorphisedSig(inst)
 	if fn == nil {
 		return
 	}
@@ -448,28 +530,15 @@ func (g *generator) emitMonomorphisedFunc(inst *types.Instance) {
 	g.line(fmt.Sprintf("    /* monomorphised: %s */", inst.Generic.Name))
 	if decl, ok := inst.Generic.Decl.(*ast.FnDecl); ok && decl != nil {
 		if decl.Body != nil {
-			saved := g.scopeVars
-			g.scopeVars = nil
+			g.pushScope()
 			for _, s := range decl.Body.Stmts {
 				g.emitStmt(s)
 			}
-
-			needsCleanup := true
-			if len(decl.Body.Stmts) > 0 {
-				if _, isReturn := decl.Body.Stmts[len(decl.Body.Stmts)-1].(*ast.ReturnStmt); isReturn {
-					needsCleanup = false
-				}
+			if !scopeBlockEndsInReturn(decl.Body.Stmts) {
+				emitScopeCleanupStmts(g, g.popScope())
+			} else {
+				g.popScope()
 			}
-
-			if needsCleanup && len(g.scopeVars) > 0 {
-				cleanup := emitScopeCleanup(g, g.scopeVars)
-				for _, cl := range strings.Split(strings.TrimRight(cleanup, "\n"), "\n") {
-					if cl != "" {
-						g.line(cl)
-					}
-				}
-			}
-			g.scopeVars = saved
 		} else if decl.ExprBody != nil {
 			expr := g.emitExpr(decl.ExprBody)
 			g.line(fmt.Sprintf("    return %s;", expr))

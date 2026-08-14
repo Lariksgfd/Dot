@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dotlang/dot/ast"
 	"github.com/dotlang/dot/types"
 )
 
@@ -17,6 +18,96 @@ import (
 type scopeVar struct {
 	name string
 	typ  types.Type
+}
+
+// pushScope starts a new scope level for a function or block body. The
+// current scopeVars list is saved on the scope stack and reset so that
+// declarations inside the new scope are tracked separately.
+func (g *generator) pushScope() {
+	g.scopeStack = append(g.scopeStack, g.scopeVars)
+	g.scopeVars = nil
+}
+
+// popScope ends the innermost scope level, restoring the enclosing scopeVars
+// list. The popped level's own variables are returned so the caller can emit
+// their cleanup inside the scope's own C block.
+func (g *generator) popScope() []scopeVar {
+	popped := g.scopeVars
+	g.scopeVars = g.scopeStack[len(g.scopeStack)-1]
+	g.scopeStack = g.scopeStack[:len(g.scopeStack)-1]
+	return popped
+}
+
+// emitScopeCleanupStmts emits release statements for scopeVars into the
+// output buffer, one per line. It is a no-op when scopeVars is empty.
+func emitScopeCleanupStmts(g *generator, scopeVars []scopeVar) {
+	if len(scopeVars) == 0 {
+		return
+	}
+	cleanup := emitScopeCleanup(g, scopeVars)
+	for _, cl := range strings.Split(strings.TrimRight(cleanup, "\n"), "\n") {
+		if cl != "" {
+			g.line(cl)
+		}
+	}
+}
+
+// scopesDeepestFirst returns every active scope level (current + scopeStack)
+// ordered from the deepest to the shallowest, for return-statement cleanup.
+func (g *generator) scopesDeepestFirst() [][]scopeVar {
+	levels := make([][]scopeVar, 0, len(g.scopeStack)+1)
+	levels = append(levels, g.scopeVars)
+	for i := len(g.scopeStack) - 1; i >= 0; i-- {
+		levels = append(levels, g.scopeStack[i])
+	}
+	return levels
+}
+
+// scopeBlockEndsInReturn reports whether the last statement of a block is a
+// return, in which case the block's own end-cleanup is skipped because the
+// return statement already cleaned the scope.
+func scopeBlockEndsInReturn(stmts []ast.Stmt) bool {
+	if len(stmts) == 0 {
+		return false
+	}
+	_, isReturn := stmts[len(stmts)-1].(*ast.ReturnStmt)
+	return isReturn
+}
+
+// emitIfLet emits the success condition and the payload-binding declaration
+// for an if-let header (`if p = opt { ... }`). The scrutinee must be an
+// Option or Result: the condition checks the success tag (Some/Ok, tag 0)
+// and the binding extracts the payload field.
+func emitIfLet(g *generator, bind ast.Pattern, subj string, subjType types.Type) (cond string, bindings string) {
+	cond = fmt.Sprintf("((%s) != NULL && (%s)->tag == 0)", subj, subj)
+	var payloadType types.Type
+	var payloadField string
+	if isOptionType(subjType) {
+		payloadField = variantFieldName("Some", "value")
+		if n, ok := subjType.(*types.Named); ok && len(n.TypeArgs) > 0 {
+			payloadType = n.TypeArgs[0]
+		}
+	} else if isResultType(subjType) {
+		payloadField = variantFieldName("Ok", "value")
+		if n, ok := subjType.(*types.Named); ok && len(n.TypeArgs) > 0 {
+			payloadType = n.TypeArgs[0]
+		}
+	}
+	if payloadField == "" {
+		return cond, ""
+	}
+	payloadExpr := fmt.Sprintf("(%s)->%s", subj, payloadField)
+	switch p := bind.(type) {
+	case *ast.IdentPattern:
+		return cond, fmt.Sprintf("%s %s = %s;", cFieldType(g, payloadType), p.Name, payloadExpr)
+	case *ast.EnumPattern:
+		if len(p.Args) == 1 {
+			if id, ok := p.Args[0].(*ast.IdentPattern); ok {
+				return cond, fmt.Sprintf("%s %s = %s;", cFieldType(g, payloadType), id.Name, payloadExpr)
+			}
+		}
+	}
+	return cond, ""
 }
 
 // emitRetain wraps expr in a dot_retain call when t is a heap type.
@@ -38,6 +129,24 @@ func emitRelease(g *generator, expr string, t types.Type) string {
 		return fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); }", expr, expr)
 	}
 	return ""
+}
+
+// emitBoxValue boxes a struct or enum value for storage in a DotAny slot
+// (slice element). dot_box_struct memcpy's from the source address: struct
+// values are copied from a temporary's address so the box holds a plain
+// struct value; enum values are pointers, so the box stores the pointer
+// itself (the box content is the enum reference, not the object).
+func emitBoxValue(g *generator, expr string, t types.Type) string {
+	if isEnumType(t) {
+		tmp := fmt.Sprintf("_dot_box_%d", g.unusedIdx)
+		g.unusedIdx++
+		return fmt.Sprintf("({ %s* %s = %s; dot_box_struct(sizeof(%s*), &%s); })",
+			cType(g, t), tmp, expr, cType(g, t), tmp)
+	}
+	tmp := fmt.Sprintf("_dot_box_%d", g.unusedIdx)
+	g.unusedIdx++
+	return fmt.Sprintf("({ %s %s = %s; dot_box_struct(sizeof(%s), &%s); })",
+		cType(g, t), tmp, expr, cType(g, t), tmp)
 }
 
 // emitScopeCleanup emits a release call for every heap-allocated local in scopeVars.

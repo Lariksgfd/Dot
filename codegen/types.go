@@ -180,7 +180,10 @@ func cFnPtr(g *generator, f *types.Fn) string {
 }
 
 // cNamed handles a user-declared nominal type. Generic instances use
-// info.Instances to find the mangled name.
+// info.Instances to find the mangled name; the fallback uses the checker's
+// canonical mangling (types.MangleInstance) so that a type used without a
+// recorded instance (e.g. Option[string] in a struct field) gets the same
+// name it would have had as a recorded instance.
 func cNamed(g *generator, n *types.Named) string {
 	name := "Dot" + n.Name
 	if len(n.TypeArgs) == 0 {
@@ -198,10 +201,11 @@ func cNamed(g *generator, n *types.Named) string {
 			}
 		}
 	}
+	base := n.Name
 	if n.Origin != nil {
-		name = "Dot" + n.Origin.Name
+		base = n.Origin.Name
 	}
-	return name + "__" + targetArgs
+	return types.MangleInstance(base, n.TypeArgs)
 }
 
 // mangleArgs concatenates mangled type arguments separated by underscores.
@@ -385,8 +389,11 @@ func cLiteral(g *generator, lit ast.Expr, t types.Type) string {
 		}
 		return "false"
 	case *ast.StringLit:
-		s := stringify(l)
-		return fmt.Sprintf("dot_string_from_lit(%s, %d)", strconv.Quote(s), len(s))
+		if len(l.Parts) == 1 && l.Parts[0].Kind == ast.PartText {
+			s := stringify(l)
+			return fmt.Sprintf("dot_string_from_lit(%s, %d)", strconv.Quote(s), len(s))
+		}
+		return emitInterpString(g, l)
 	case *ast.RawStringLit:
 		return fmt.Sprintf("dot_string_from_lit(%s, %d)", strconv.Quote(l.Value), len(l.Value))
 	case *ast.NilLit:
@@ -405,4 +412,58 @@ func stringify(s *ast.StringLit) string {
 		return s.Parts[0].Text
 	}
 	return s.Raw
+}
+
+// emitInterpString builds the C expression for an interpolated string
+// literal: every text chunk becomes dot_string_from_lit and every
+// interpolated expression is concatenated in source order. Enum values are
+// stringified to their variant name, strings pass through unchanged.
+func emitInterpString(g *generator, l *ast.StringLit) string {
+	parts := make([]string, 0, len(l.Parts))
+	for _, p := range l.Parts {
+		switch p.Kind {
+		case ast.PartText:
+			parts = append(parts, fmt.Sprintf("dot_string_from_lit(%s, %d)", strconv.Quote(p.Text), len(p.Text)))
+		case ast.PartExpr:
+			if p.Expr == nil {
+				continue
+			}
+			t := g.info.TypeOf(p.Expr)
+			if isStringExpr(g, p.Expr) {
+				parts = append(parts, g.emitExpr(p.Expr))
+			} else if isEnumType(t) {
+				parts = append(parts, emitEnumToString(g, g.emitExpr(p.Expr), t))
+			} else {
+				parts = append(parts, `dot_string_from_lit("?", 1)`)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return `dot_string_from_lit("", 0)`
+	}
+	res := parts[0]
+	for _, p := range parts[1:] {
+		res = fmt.Sprintf("dot_string_concat(%s, %s)", res, p)
+	}
+	return res
+}
+
+// emitEnumToString returns a C statement expression stringifying an enum
+// pointer to its variant name (used by string interpolation).
+func emitEnumToString(g *generator, expr string, t types.Type) string {
+	en := enumUnderlying(t)
+	var b strings.Builder
+	b.WriteString(`({ DotString* _s = dot_string_from_lit("", 0); if (`)
+	b.WriteString(expr)
+	b.WriteString(` != NULL) { switch ((`)
+	b.WriteString(expr)
+	b.WriteString(`)->tag) { `)
+	if en != nil {
+		for _, v := range en.Variants {
+			b.WriteString(fmt.Sprintf("case %d: _s = dot_string_from_lit(%s, %d); break; ",
+				v.Tag, strconv.Quote(v.Name), len(v.Name)))
+		}
+	}
+	b.WriteString(`} } _s; })`)
+	return b.String()
 }
