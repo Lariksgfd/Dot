@@ -1,0 +1,113 @@
+// testdata/closure.dot — e2e for closures (CG-16), block expressions
+// (CG-17) and indirect calls (CG-18). One program, scenarios run in order,
+// each printing a unique marker; TestE2E_Closures compares the whole stdout.
+//
+// S1/S2: CG-16 — captures are deep-retained into the env, the env outlives
+//        the declaring scope, closure locals release their env.
+// S3: nested closures — a closure returning a closure, both called; the
+//        inner closure captures the outer parameter (CG-34).
+// S4/S4b: CG-17 — block expressions (match arm, closure body) with
+//        declarations and scope cleanup.
+// S5: CG-22 / CG-18 — closures in array literals, indexed and called;
+//        indirect call whose callee is not an lvalue. Includes a capture
+//        from the enclosing scope (S5c).
+// S6: match with block arms returning values.
+// S7: closure passed to a higher-order function.
+
+fn make_greeter() -> fn() -> string {
+    prefix = "hello"
+    return fn() -> string { prefix }
+}
+
+fn apply(f fn(int) -> int, v int) -> int {
+    return f(v)
+}
+
+fn main() {
+    // S1: closure captures a local, called multiple times.
+    base = 10
+    add = fn(x int) -> int { x + base }
+    print("S1a")
+    print(add(1))
+    print("S1b")
+    print(add(2))
+    print("S1c")
+    print(add(3))
+    print("|")
+
+    // S2: closure capturing a heap value outlives its declaring scope.
+    g = make_greeter()
+    print("S2")
+    print(g())
+    print("|")
+
+    // S3: closure returning a closure; both are called.
+    outer = fn(a int) -> fn(int) -> int {
+        inner = fn(b int) -> int { a + b }
+        return inner
+    }
+    f = outer(7)
+    print("S3")
+    print(f(6))
+    print("|")
+
+    // S4: block-expression arm with a declaration and a heap local.
+    r = match 3 {
+        3 => {
+            y = 5
+            msg = "inner"
+            print(msg)
+            y * 2
+        }
+        _ => 0
+    }
+    print("S4")
+    print(r)
+    print("|")
+
+    // S4b: closure body as a block expression with a declaration.
+    calc = fn(x int) -> int {
+        t = x + 1
+        name = "calc"
+        print(name)
+        t * 2
+    }
+    print("S4b")
+    print(calc(4))
+    print("|")
+
+    // S5: closures in array literals, indexed and called; S5c captures n.
+    n = 1
+    print("S5a")
+    print([fn(x int) -> int = x + 1, fn(x int) -> int = x * 2][0](41))
+    print("S5b")
+    print([fn(x int) -> int = x + 1, fn(x int) -> int = x * 2][1](41))
+    print("S5c")
+    print([fn(x int) -> int = x + n,][0](41))
+    print("|")
+
+    // S6: match with block arms returning values.
+    label = match 2 {
+        1 => {
+            t = 100
+            t + 1
+        }
+        2 => {
+            t = 200
+            t + 5
+        }
+        _ => {
+            t = 0
+            t
+        }
+    }
+    print("S6")
+    print(label)
+    print("|")
+
+    // S7: closure passed to a higher-order function.
+    twice = fn(x int) -> int { x * 2 }
+    print("S7")
+    print(apply(twice, 21))
+    print("|")
+}

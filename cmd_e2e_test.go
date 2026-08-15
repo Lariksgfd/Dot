@@ -156,6 +156,20 @@ func TestE2E_StrCmpMatch(t *testing.T) {
 	}
 }
 
+func TestE2E_Closures(t *testing.T) {
+	for _, useLLVM := range []bool{false, true} {
+		t.Run(fmt.Sprintf("llvm=%v", useLLVM), func(t *testing.T) {
+			out, err := buildAndRun(t, "testdata/closure.dot", useLLVM)
+			if err != nil {
+				t.Fatalf("build+run failed: %v\noutput: %s", err, out)
+			}
+			if !contains(out, "S1a11S1b12S1c13|S2hello|S313|innerS410|S4bcalc10|S5a42S5b82S5c42|S6205|S742|") {
+				t.Errorf("expected closure scenario output, got: %s", out)
+			}
+		})
+	}
+}
+
 func TestE2E_TupleReturn(t *testing.T) {
 	for _, useLLVM := range []bool{false, true} {
 		t.Run(fmt.Sprintf("llvm=%v", useLLVM), func(t *testing.T) {
@@ -165,6 +179,20 @@ func TestE2E_TupleReturn(t *testing.T) {
 			}
 			if !contains(out, "7|ok|7|ok|") {
 				t.Errorf("expected tuple return output, got: %s", out)
+			}
+		})
+	}
+}
+
+func TestE2E_MultiAssign(t *testing.T) {
+	for _, useLLVM := range []bool{false, true} {
+		t.Run(fmt.Sprintf("llvm=%v", useLLVM), func(t *testing.T) {
+			out, err := buildAndRun(t, "testdata/multi_assign.dot", useLLVM)
+			if err != nil {
+				t.Fatalf("build+run failed: %v\noutput: %s", err, out)
+			}
+			if !contains(out, "M1rightleft|M23three4|M2b4three3|M3alphabeta|M4bluered|M52011|") {
+				t.Errorf("expected multi-assign scenario output, got: %s", out)
 			}
 		})
 	}

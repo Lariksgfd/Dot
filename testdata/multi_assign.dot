@@ -1,0 +1,81 @@
+// testdata/multi_assign.dot — e2e for multi-assign (CG-03). One program,
+// scenarios run in order, each printing a unique marker;
+// TestE2E_MultiAssign compares the whole stdout.
+//
+// M1: swap of two heap strings (rc=1) — values swapped, no UAF.
+// M2: three-way multi-assign mixing heap and primitives.
+// M2b: cyclic three-way with a heap self-alias.
+// M3: self-assign of heap values — no crash, values intact.
+// M4: multi-assign of enum values.
+// M5: multi-assign of closures (heap objects with envs).
+
+enum Color {
+    Red
+    Green
+    Blue
+}
+
+fn color_name(c Color) -> string {
+    return match c {
+        Color.Red => "red"
+        Color.Green => "green"
+        Color.Blue => "blue"
+    }
+}
+
+fn main() {
+    // M1: swap heap strings (rc=1 each).
+    s1 = "left"
+    s2 = "right"
+    s1, s2 = s2, s1
+    print("M1")
+    print(s1)
+    print(s2)
+    print("|")
+
+    // M2: three targets, heap and primitives mixed.
+    x = 1
+    msg = "one"
+    y = 2
+    x, msg, y = 3, "three", 4
+    print("M2")
+    print(x)
+    print(msg)
+    print(y)
+    print("|")
+
+    // M2b: cyclic three-way with heap self-alias.
+    x, msg, y = y, msg, x
+    print("M2b")
+    print(x)
+    print(msg)
+    print(y)
+    print("|")
+
+    // M3: self-assign on heap values.
+    p = "alpha"
+    q = "beta"
+    p, q = p, q
+    print("M3")
+    print(p)
+    print(q)
+    print("|")
+
+    // M4: enum multi-assign.
+    c1 = Color.Red
+    c2 = Color.Blue
+    c1, c2 = c2, c1
+    print("M4")
+    print(color_name(c1))
+    print(color_name(c2))
+    print("|")
+
+    // M5: closure multi-assign.
+    f1 = fn(v int) -> int = v + 1
+    f2 = fn(v int) -> int = v * 2
+    f1, f2 = f2, f1
+    print("M5")
+    print(f1(10))
+    print(f2(10))
+    print("|")
+}
