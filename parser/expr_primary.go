@@ -219,7 +219,9 @@ func (p *parser) parseBracketLit() ast.Expr {
 
 // looksLikeArrayTypePrefix reports whether the `[` at the cursor introduces a
 // fixed-array type `[N]T` rather than an array literal `[a, b]`. It scans to
-// the matching `]` and requires a type to follow.
+// the matching `]` and requires a type to follow. A `[` right after the
+// matching `]` is postfix indexing on the literal (`[fn(...)][0](41)`), not
+// the element type, so indexing wins in that ambiguous position.
 func looksLikeArrayTypePrefix(p *parser) bool {
 	depth := 0
 	for i := 0; ; i++ {
@@ -230,6 +232,9 @@ func looksLikeArrayTypePrefix(p *parser) bool {
 		case lexer.TokenRBracket:
 			depth--
 			if depth == 0 {
+				if p.peek(i + 1).Type == lexer.TokenLBracket {
+					return false
+				}
 				return startsType(p.peek(i + 1).Type)
 			}
 		case lexer.TokenEOF, lexer.TokenNewline, lexer.TokenLBrace,
