@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/dotlang/dot/ast"
 	"github.com/dotlang/dot/codegen"
@@ -92,14 +93,14 @@ func compileToBinary(csrc string, outputPath string) error {
 	}
 	tmpFile.Close()
 
+	rtObjs, err := runtimeObjectFiles()
+	if err != nil {
+		return err
+	}
+
 	outPath, _ := filepath.Abs(outputPath)
 	gccArgs := []string{"-O2", "-Wno-implicit-function-declaration", "-I", findRuntimeDir(), "-o", outPath, tmpFile.Name()}
-
-	rtCFiles, err := filepath.Glob(filepath.Join(findRuntimeDir(), "*.c"))
-	if err != nil {
-		return fmt.Errorf("failed to glob runtime files: %w", err)
-	}
-	gccArgs = append(gccArgs, rtCFiles...)
+	gccArgs = append(gccArgs, rtObjs...)
 	gccArgs = append(gccArgs, "-lws2_32", "-ladvapi32", "-lbcrypt")
 
 	gccCmd := exec.Command("gcc", gccArgs...)
@@ -121,14 +122,15 @@ func compileTempExe(csrc string) (string, error) {
 		return "", fmt.Errorf("failed to write temp C file: %w", err)
 	}
 
+	rtObjs, err := runtimeObjectFiles()
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return "", err
+	}
+
 	exePath := filepath.Join(tmpDir, "program.exe")
 	gccArgs := []string{"-O2", "-Wno-implicit-function-declaration", "-I", findRuntimeDir(), "-o", exePath, cPath}
-
-	rtCFiles, err := filepath.Glob(filepath.Join(findRuntimeDir(), "*.c"))
-	if err != nil {
-		return "", fmt.Errorf("failed to glob runtime files: %w", err)
-	}
-	gccArgs = append(gccArgs, rtCFiles...)
+	gccArgs = append(gccArgs, rtObjs...)
 	gccArgs = append(gccArgs, "-lws2_32", "-ladvapi32", "-lbcrypt")
 
 	gccCmd := exec.Command("gcc", gccArgs...)
@@ -138,6 +140,48 @@ func compileTempExe(csrc string) (string, error) {
 		return "", fmt.Errorf("gcc failed: %s\n%s", gccErr, string(gccOut))
 	}
 	return exePath, nil
+}
+
+var (
+	runtimeObjOnce  sync.Once
+	runtimeObjPaths []string
+	runtimeObjErr   error
+)
+
+func runtimeObjectFiles() ([]string, error) {
+	runtimeObjOnce.Do(func() {
+		rtDir := findRuntimeDir()
+		rtCFiles, err := filepath.Glob(filepath.Join(rtDir, "*.c"))
+		if err != nil {
+			runtimeObjErr = fmt.Errorf("failed to glob runtime files: %w", err)
+			return
+		}
+		if len(rtCFiles) == 0 {
+			runtimeObjErr = fmt.Errorf("no .c files found in runtime dir %s", rtDir)
+			return
+		}
+
+		objDir, err := os.MkdirTemp("", "dot-rtobj-*")
+		if err != nil {
+			runtimeObjErr = fmt.Errorf("failed to create temp dir for runtime objects: %w", err)
+			return
+		}
+
+		objs := make([]string, 0, len(rtCFiles))
+		for _, cf := range rtCFiles {
+			objPath := filepath.Join(objDir, filepath.Base(cf)+".o")
+			cmd := exec.Command("gcc", "-c", "-O2", "-Wno-implicit-function-declaration", "-I", rtDir, cf, "-o", objPath)
+			out, cerr := cmd.CombinedOutput()
+			if cerr != nil {
+				runtimeObjErr = fmt.Errorf("gcc -c failed on %s: %s\n%s", cf, cerr, string(out))
+				os.RemoveAll(objDir)
+				return
+			}
+			objs = append(objs, objPath)
+		}
+		runtimeObjPaths = objs
+	})
+	return runtimeObjPaths, runtimeObjErr
 }
 
 func display(t lexer.Token) string {

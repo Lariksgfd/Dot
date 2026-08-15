@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func buildAndRunLLVM(t *testing.T, dotFile string) (string, error) {
@@ -19,8 +22,14 @@ func buildAndRunLLVM(t *testing.T, dotFile string) (string, error) {
 		return "", err
 	}
 
-	out, err := exec.Command(exePath).CombinedOutput()
-	return string(out), err
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, exePath).CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("running %s: %v\noutput: %s", exePath, err, string(out))
+	}
+	return string(out), nil
 }
 
 func TestE2ELLVM_Hello(t *testing.T) {

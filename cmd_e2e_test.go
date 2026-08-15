@@ -1,14 +1,22 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func buildAndRun(t *testing.T, dotFile string, useLLVM bool) (string, error) {
 	t.Helper()
+
+	if useLLVM {
+		if _, err := exec.LookPath("clang"); err != nil {
+			t.Skip("clang not found in PATH, skipping LLVM E2E test")
+		}
+	}
 
 	csrc, _, _, _, err := pipeline(dotFile, useLLVM)
 	if err != nil {
@@ -26,8 +34,14 @@ func buildAndRun(t *testing.T, dotFile string, useLLVM bool) (string, error) {
 		}
 	}
 
-	out, err := exec.Command(exePath).CombinedOutput()
-	return string(out), err
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, exePath).CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("running %s: %v\noutput: %s", exePath, err, string(out))
+	}
+	return string(out), nil
 }
 
 func TestE2E_Hello(t *testing.T) {
