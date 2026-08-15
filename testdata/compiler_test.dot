@@ -24,4 +24,100 @@ pub fn main() {
     } else {
         print("ERR: missed syntax error")
     }
+
+    c4 = Compiler.new()
+    c4.compile("fn f() -> int {{ return 1 }}")
+    if c4.errors.len == 0 {
+        print("OK: fn ret ok")
+    } else {
+        print("ERR: fn ret ok: " + c4.errors[0])
+    }
+
+    c5 = Compiler.new()
+    c5.compile("fn fib(n int) -> int {{ if n < 2 {{ return n }} return fib(n - 1) + fib(n - 2) }}")
+    if c5.errors.len == 0 {
+        print("OK: fib recursion")
+    } else {
+        print("ERR: fib recursion: " + c5.errors[0])
+    }
+
+    c6 = Compiler.new()
+    c6.compile("fn inc(a int) -> int {{ return a + 1 }}\nfn apply(f fn(int) -> int, v int) -> int {{ return f(v) }}\nfn m() -> int {{ return apply(inc, 5) }}")
+    if c6.errors.len == 0 {
+        print("OK: fn as value")
+    } else {
+        print("ERR: fn as value: " + c6.errors[0])
+    }
+
+    c7 = Compiler.new()
+    c7.compile("fn inc(a int) -> int {{ return a + 1 }}\nfn m() -> int {{ f = inc return f(41) }}")
+    if c7.errors.len == 0 {
+        print("OK: fn var")
+    } else {
+        print("ERR: fn var: " + c7.errors[0])
+    }
+
+    c8 = Compiler.new()
+    c8.compile("fn t() -> int {{ x = 1 x }}")
+    if c8.errors.len == 0 {
+        print("OK: tail expr")
+    } else {
+        print("ERR: tail expr: " + c8.errors[0])
+    }
+
+    c9 = Compiler.new()
+    c9.compile("import strings\nfn f() -> int {{ return 1 }}")
+    if c9.errors.len == 0 {
+        print("OK: import skip")
+    } else {
+        print("ERR: import skip: " + c9.errors[0])
+    }
+
+    c10 = Compiler.new()
+    c10.compile("fn g() -> int {{ x = 1 }}")
+    if c10.errors.len > 0 {
+        print("OK: missing return")
+    } else {
+        print("ERR: missing return")
+    }
+
+    c11 = Compiler.new()
+    c11.compile("fn bad() -> int {{ return \"str\" }}")
+    if c11.errors.len > 0 {
+        print("OK: ret mismatch")
+    } else {
+        print("ERR: ret mismatch")
+    }
+
+    c12 = Compiler.new()
+    c12.compile("fn t() -> int {{ x = 1 \"str\" }}")
+    if c12.errors.len > 0 {
+        print("OK: tail mismatch")
+    } else {
+        print("ERR: tail mismatch")
+    }
+
+    c13 = Compiler.new()
+    c13.compile("fn add(a int, b int) -> int {{ return a + b }}\nfn m() -> int {{ return add(1, 2, 3) }}")
+    if c13.errors.len > 0 {
+        print("OK: arity")
+    } else {
+        print("ERR: arity")
+    }
+
+    c14 = Compiler.new()
+    c14.compile("fn add(a int, b int) -> int {{ return a + b }}\nfn m() -> int {{ return add(1, \"x\") }}")
+    if c14.errors.len > 0 {
+        print("OK: arg type")
+    } else {
+        print("ERR: arg type")
+    }
+
+    c15 = Compiler.new()
+    c15.compile("fn add(a int, b int) -> int {{ return a + b }}\nfn apply(f fn(int) -> int, v int) -> int {{ return f(v) }}\nfn m() -> int {{ return apply(add, 5) }}")
+    if c15.errors.len > 0 {
+        print("OK: fn type mismatch")
+    } else {
+        print("ERR: fn type mismatch")
+    }
 }

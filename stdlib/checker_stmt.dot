@@ -140,4 +140,101 @@ impl Checker {
         self.error(span, "Cannot iterate over this value")
         return Type.Unknown
     }
+
+    // Walks a function body checking every statement exactly once and
+    // remembering the type of the last expression statement as the tail
+    // value. If/For/While branches are checked but never contribute their
+    // branch types to the tail; a nested block contributes its own tail.
+    pub fn check_fn_body_tail(mut self, stmts []Stmt, i int, acc Type) -> Type {
+        if i >= stmts.len {
+            return acc
+        }
+        match stmts[i] {
+            Stmt.ExprStmt(e, _) => {
+                t = self.check_expr(e)
+                match e {
+                    Expr.If(_, _, _, _) => {
+                        return self.check_fn_body_tail(stmts, i + 1, acc)
+                    }
+                    _ => {
+                        return self.check_fn_body_tail(stmts, i + 1, t)
+                    }
+                }
+            }
+            Stmt.Block(inner, _) => {
+                self.push_scope()
+                t = self.check_fn_body_tail(inner, 0, Type.Unknown)
+                self.pop_scope()
+                return self.check_fn_body_tail(stmts, i + 1, t)
+            }
+            _ => {
+                self.check_stmt(stmts[i])
+                return self.check_fn_body_tail(stmts, i + 1, acc)
+            }
+        }
+        return Type.Unknown
+    }
+
+    // Pure syntax scan: does any statement (including nested blocks, if
+    // branches and loop bodies) contain a return? Nothing is checked here,
+    // statements are already checked by check_fn_body_tail, so this can not
+    // produce duplicate errors.
+    pub fn check_fn_body_has_return(self, stmts []Stmt, i int) -> bool {
+        if i >= stmts.len {
+            return false
+        }
+        match stmts[i] {
+            Stmt.Return(_, _) => { return true }
+            Stmt.Block(inner, _) => {
+                if self.check_fn_body_has_return(inner, 0) {
+                    return true
+                }
+            }
+            Stmt.For(_, _, body, _) => {
+                if self.check_fn_body_has_return(body, 0) {
+                    return true
+                }
+            }
+            Stmt.While(_, body, _) => {
+                if self.check_fn_body_has_return(body, 0) {
+                    return true
+                }
+            }
+            Stmt.ExprStmt(e, _) => {
+                if self.expr_has_return(e) {
+                    return true
+                }
+            }
+            _ => {}
+        }
+        return self.check_fn_body_has_return(stmts, i + 1)
+    }
+
+    fn expr_has_return(self, e Expr) -> bool {
+        match e {
+            Expr.If(_, then_branch, else_branch, _) => {
+                if self.check_fn_body_has_return(then_branch, 0) {
+                    return true
+                }
+                if else_branch.len > 0 {
+                    if self.exprs_have_return(else_branch, 0) {
+                        return true
+                    }
+                }
+                return false
+            }
+            _ => { return false }
+        }
+        return false
+    }
+
+    fn exprs_have_return(self, es []Expr, i int) -> bool {
+        if i >= es.len {
+            return false
+        }
+        if self.expr_has_return(es[i]) {
+            return true
+        }
+        return self.exprs_have_return(es, i + 1)
+    }
 }

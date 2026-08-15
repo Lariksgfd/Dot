@@ -22,6 +22,24 @@ func TestStdlibCompiler(t *testing.T) {
 			if !strings.Contains(out, "OK: caught syntax error") {
 				t.Errorf("expected 'OK: caught syntax error' in output, got: %s", out)
 			}
+			for _, want := range []string{
+				"OK: fn ret ok",
+				"OK: fib recursion",
+				"OK: fn as value",
+				"OK: fn var",
+				"OK: tail expr",
+				"OK: import skip",
+				"OK: missing return",
+				"OK: ret mismatch",
+				"OK: tail mismatch",
+				"OK: arity",
+				"OK: arg type",
+				"OK: fn type mismatch",
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("expected %q in output, got: %s", want, out)
+				}
+			}
 		})
 	}
 }

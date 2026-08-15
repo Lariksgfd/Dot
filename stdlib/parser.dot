@@ -101,6 +101,13 @@ impl Parser {
         if self.cur_token_is(TokenType.Impl) {
             return self.parse_impl_decl()
         }
+        // import ast / import "../stdlib/sync.dot": consumed and dropped.
+        // ast.dot has no Decl.Import variant, so no decl is produced. cur is
+        // left on the module name token, parse_program advances past it.
+        if self.cur_token_is(TokenType.Import) {
+            self.next_token() // cur = module name (Ident or String)
+            return None
+        }
         if self.cur_token_is(TokenType.Pub) {
             self.next_token()
             return self.parse_decl()
@@ -744,6 +751,30 @@ impl Parser {
             self.next_token()
             elem = self.parse_type()
             return TypeNode.Pointer([elem], Span.new(start, self.cur_tok.end))
+        }
+        // fn(int, string) -> int: parameter types have no names, the return
+        // type is optional. parse_type leaves cur on the type's last token,
+        // so each iteration advances explicitly to Comma/RParen.
+        if self.cur_token_is(TokenType.Fn) {
+            self.next_token() // cur = LParen
+            params = []TypeNode{}
+            if self.cur_token_is(TokenType.LParen) {
+                self.next_token() // cur = first param type or RParen
+                for not self.cur_token_is(TokenType.RParen) and not self.cur_token_is(TokenType.EOF) {
+                    params.push(self.parse_type())
+                    self.next_token() // cur = Comma or RParen
+                    if self.cur_token_is(TokenType.Comma) {
+                        self.next_token() // cur = next param type
+                    }
+                }
+                self.next_token() // cur = token after RParen
+            }
+            if self.cur_token_is(TokenType.Arrow) {
+                self.next_token() // cur = ret type start
+                ret_ty = Some(self.parse_type())
+                return TypeNode.Func(params, ret_ty, Span.new(start, self.cur_tok.end))
+            }
+            return TypeNode.Func(params, None, Span.new(start, self.cur_tok.end))
         }
         name = self.cur_tok.lexeme
         end = self.cur_tok.end

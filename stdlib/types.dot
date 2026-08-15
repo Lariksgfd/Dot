@@ -15,19 +15,94 @@ pub enum Type {
 
 impl Type {
     pub fn equals(self, other Type) -> bool {
-        // Very basic equality check for v0.1
         match self {
-            Type.Int => match other { Type.Int => true, _ => false }
-            Type.Float => match other { Type.Float => true, _ => false }
-            Type.Bool => match other { Type.Bool => true, _ => false }
-            Type.String => match other { Type.String => true, _ => false }
-            Type.Void => match other { Type.Void => true, _ => false }
-            Type.Nil => match other { Type.Nil => true, _ => false }
-            Type.Error => true // Error type matches anything to suppress cascading errors
-            Type.Unknown => true
-            _ => false // Struct, Func, Array, Slice need deeper comparison
+            Type.Int => {
+                match other {
+                    Type.Int => { return true }
+                    _ => { return false }
+                }
+            }
+            Type.Float => {
+                match other {
+                    Type.Float => { return true }
+                    _ => { return false }
+                }
+            }
+            Type.Bool => {
+                match other {
+                    Type.Bool => { return true }
+                    _ => { return false }
+                }
+            }
+            Type.String => {
+                match other {
+                    Type.String => { return true }
+                    _ => { return false }
+                }
+            }
+            Type.Void => {
+                match other {
+                    Type.Void => { return true }
+                    _ => { return false }
+                }
+            }
+            Type.Nil => {
+                match other {
+                    Type.Nil => { return true }
+                    _ => { return false }
+                }
+            }
+            Type.Error => { return true } // Error type matches anything to suppress cascading errors
+            Type.Unknown => { return true }
+            Type.Func(params, ret_ty) => {
+                match other {
+                    Type.Func(oparams, oret) => {
+                        if not type_lists_equal(params, oparams, 0) {
+                            return false
+                        }
+                        return type_lists_equal(ret_ty, oret, 0)
+                    }
+                    _ => { return false }
+                }
+            }
+            Type.Array(elem) => {
+                match other {
+                    Type.Array(oelem) => {
+                        return type_lists_equal(elem, oelem, 0)
+                    }
+                    _ => { return false }
+                }
+            }
+            Type.Slice(elem) => {
+                match other {
+                    Type.Slice(oelem) => {
+                        return type_lists_equal(elem, oelem, 0)
+                    }
+                    _ => { return false }
+                }
+            }
+            Type.Struct(name) => {
+                match other {
+                    Type.Struct(oname) => { return name == oname }
+                    _ => { return false }
+                }
+            }
         }
+        return false
     }
+}
+
+pub fn type_lists_equal(a []Type, b []Type, i int) -> bool {
+    if a.len != b.len {
+        return false
+    }
+    if i >= a.len {
+        return true
+    }
+    if a[i].equals(b[i]) {
+        return type_lists_equal(a, b, i + 1)
+    }
+    return false
 }
 
 pub enum SymbolKind {

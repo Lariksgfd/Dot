@@ -137,12 +137,29 @@ impl Checker {
             i += 1
         }
 
-        // 5. Check body
-        for stmt in body {
-            self.check_stmt(stmt)
+        // 5. Check body and remember the tail type (value of the last
+        // expression statement, if any)
+        tail_ty = self.check_fn_body_tail(body, 0, Type.Unknown)
+
+        // 6. Body type vs declared return type (simplified port of Go's
+        // checkMissingReturn + assignCompatible): a known tail type must be
+        // compatible, and a body that can fall off the end without a single
+        // return is an error.
+        if is_known(resolved_ret_ty) {
+            if not resolved_ret_ty.equals(Type.Void) {
+                if is_known(tail_ty) {
+                    if not compatible(resolved_ret_ty, tail_ty) {
+                        self.error(span, "Function body type mismatch")
+                    }
+                } else {
+                    if not self.check_fn_body_has_return(body, 0) {
+                        self.error(span, "Missing return value")
+                    }
+                }
+            }
         }
 
-        // 6. Leave scope
+        // 7. Leave scope
         self.ret_ty = []Type{}
         self.pop_scope()
     }
@@ -173,6 +190,16 @@ impl Checker {
                 if elem_ty.len > 0 {
                     return Type.Slice(elem: []Type{self.resolve_type(elem_ty[0])})
                 }
+            }
+            TypeNode.Func(params, ret_ty, span) => {
+                param_types = []Type{}
+                for p in params {
+                    param_types.push(self.resolve_type(p))
+                }
+                return Type.Func(params: param_types, ret_ty: []Type{self.resolve_ret_ty(ret_ty)})
+            }
+            TypeNode.Pointer(elem_ty, span) => {
+                return Type.Unknown
             }
             _ => {}
         }
