@@ -347,22 +347,22 @@ func Default(t Type) Type {
 	return t
 }
 
-  // IsHeap reports whether values of t are heap allocated and therefore
-  // ARC-managed: string, slice, map, enum with payload, dyn, chan, future (D67).
-  // Structs are value types in Dot — NOT heap-allocated.
-  func IsHeap(t Type) bool {
-  	if t == nil {
-  		return false
-  	}
-  	switch x := Underlying(t).(type) {
-  	case *Basic:
-  		return t.Kind() == KindString
-  	case *Slice, *Map, *Dyn, *Chan, *Future:
-  		return true
-  	case *Named:
-  		return IsHeap(x.Underlying)
-  	case *Struct:
-  		return false
+// IsHeap reports whether values of t are heap allocated and therefore
+// ARC-managed: string, slice, map, enum with payload, dyn, chan, future (D67).
+// Structs are value types in Dot — NOT heap-allocated.
+func IsHeap(t Type) bool {
+	if t == nil {
+		return false
+	}
+	switch x := Underlying(t).(type) {
+	case *Basic:
+		return t.Kind() == KindString
+	case *Slice, *Map, *Dyn, *Chan, *Future:
+		return true
+	case *Named:
+		return IsHeap(x.Underlying)
+	case *Struct:
+		return false
 	case *Enum:
 		// Any variant with a payload makes the enum heap-allocated.
 		for _, v := range x.Variants {

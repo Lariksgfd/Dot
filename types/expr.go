@@ -145,18 +145,27 @@ func (c *Checker) checkIdent(x *ast.Ident) Type {
 		return Invalid
 	}
 	c.recordUse(x, sym)
-	
+
 	if sym.Kind == SymVar || sym.Kind == SymParam {
 		if sym.Scope != nil && sym.Scope.Depth() > 1 {
 			for i := len(c.fnStack) - 1; i >= 0; i-- {
 				fnCtx := c.fnStack[i]
 				fnLit, isLit := fnCtx.node.(*ast.FnLit)
-				if !isLit {
+				// Spawn blocks capture their enclosing variables too, but
+				// have no *ast.FnLit node to record under: for them only
+				// the heap marker applies (Captures is keyed by *ast.FnLit).
+				if !isLit && !fnCtx.spawn {
 					continue
 				}
-				fnScope := c.info.Scopes[fnLit]
+				fnScope := c.info.Scopes[fnCtx.node]
 				if fnScope != nil && fnScope.Depth() > sym.Scope.Depth() {
-					c.recordCapture(fnLit, sym)
+					if isLit {
+						c.recordCapture(fnLit, sym)
+					}
+					// D67: captured variables are looked up normally and
+					// ARC-retained through the closure env; Info.Heap tells
+					// Phase 5 which captures are heap-managed.
+					c.info.Heap[x] = IsHeap(sym.Type)
 				}
 			}
 		}
@@ -227,16 +236,22 @@ func (c *Checker) freshEnumValue(named *Named, at ast.Expr) Type {
 }
 
 // recordGenericEnumInstance records an *Instance for a generic enum use
-// (Option[?T], Result[?T,?E]) so Phase 5 can monomorphise it.
+// (Option[?T], Result[?T,?E]) so Phase 5 can monomorphise it. The record is
+// keyed by the use-site expression `at` (the variant name) in Info.Instances,
+// mirroring recordGenericCallInstance in expr_call.go.
 func (c *Checker) recordGenericEnumInstance(named *Named, args []Type, inst Type, at ast.Expr) {
 	mangled := instanceKey(named.Name, args)
-	c.recordInstance(&Instance{
+	rec := c.recordInstance(&Instance{
 		Generic:  named.Sym,
 		TypeArgs: args,
 		Result:   inst,
 		Pos:      at.Pos(),
 		Mangled:  mangled,
 	})
+	if c.info.Instances == nil {
+		c.info.Instances = make(map[ast.Expr]*Instance)
+	}
+	c.info.Instances[at] = rec
 }
 
 // checkSelf types the `self` receiver.
@@ -300,7 +315,7 @@ func (c *Checker) checkBinary(x *ast.BinaryExpr) Type {
 		if !c.sameOperands(x, left, right) {
 			return Bool
 		}
-		if !Comparable(left) {
+		if !Comparable(resolve(left)) {
 			d := c.errorf(x, "%s cannot be compared for equality", left)
 			c.hint(d, "implement a trait or compare the fields individually")
 		}
@@ -310,12 +325,21 @@ func (c *Checker) checkBinary(x *ast.BinaryExpr) Type {
 		if !c.sameOperands(x, left, right) {
 			return Bool
 		}
-		if !Ordered(left) {
+		if !Ordered(resolve(left)) {
 			c.errorf(x, "%s cannot be ordered with %s", left, x.OpString())
 		}
 		return Bool
 
 	case lexer.TokenPlus:
+		// Pin an unresolved inference variable to the other operand first,
+		// so that both `v + 1` (arithmetic) and `v + "s"` (concatenation)
+		// learn the element type of an Option inferred from None (D52).
+		if (hasUnresolvedVars(left) || hasUnresolvedVars(right)) && unify(left, right) {
+			if IsStringType(Underlying(left)) && IsStringType(Underlying(right)) {
+				return left
+			}
+			return c.arithmetic(x, left, right)
+		}
 		if IsStringType(Underlying(left)) && IsStringType(Underlying(right)) {
 			return left
 		}
@@ -336,6 +360,9 @@ func (c *Checker) checkBinary(x *ast.BinaryExpr) Type {
 
 	case lexer.TokenAmp, lexer.TokenPipe, lexer.TokenCaret,
 		lexer.TokenShl, lexer.TokenShr:
+		if (hasUnresolvedVars(left) || hasUnresolvedVars(right)) && unify(left, right) {
+			// fall through: the variable is now pinned to the integer side
+		}
 		if !IsInteger(Underlying(left)) || !IsInteger(Underlying(right)) {
 			c.errorf(x, "operator %s requires integers, found %s and %s",
 				x.OpString(), left, right)
@@ -362,6 +389,15 @@ func (c *Checker) arithmetic(x *ast.BinaryExpr, left, right Type) Type {
 // sameOperands reports whether both operands have the same type, emitting a
 // diagnostic when they do not.
 func (c *Checker) sameOperands(x *ast.BinaryExpr, left, right Type) bool {
+	// A binary operation pins an unresolved inference variable to the type of
+	// the other operand (D52): in `x.map(fn(v) { v + 1 })` the parameter v is
+	// ?T1 until `v + 1` fixes it to int. This mirrors the unification that
+	// assignCompatible already performs for assignments and arguments.
+	if hasUnresolvedVars(left) || hasUnresolvedVars(right) {
+		if unify(left, right) {
+			return true
+		}
+	}
 	if AssignableTo(right, left) || AssignableTo(left, right) {
 		return true
 	}

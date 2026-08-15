@@ -234,9 +234,14 @@ func (c *Checker) checkFnLit(x *ast.FnLit, want Type) Type {
 		}
 	case x.Body != nil:
 		c.checkBlock(x.Body, false)
-		if IsVoid(sig.Result) {
-			if t, ok := c.blockValue(x.Body); ok {
+		if t, ok := c.blockValue(x.Body); ok {
+			if IsVoid(sig.Result) {
 				sig.Result = t
+			} else {
+				// Pin the expected result type to the block's inferred
+				// type: for `x.map(fn(v) { v + 1 })` this binds the map
+				// method's result variable ?U to int.
+				c.assignCompatible(x.Body, t, sig.Result, "lambda result")
 			}
 		}
 	}

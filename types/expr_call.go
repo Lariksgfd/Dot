@@ -22,6 +22,11 @@ func (c *Checker) checkCall(x *ast.CallExpr) Type {
 		}
 		return Invalid
 	}
+	// A generic callee (builtin methods like Option.map / []T.map / reduce,
+	// or a user-declared generic function) is instantiated at the call site:
+	// each declared type parameter becomes a fresh inference variable that
+	// the arguments can pin down by unification (D52).
+	sig = c.instantiateFnSig(sig, x)
 	result := c.checkArgs(x, sig)
 	if id, ok := x.Fn.(*ast.Ident); ok {
 		if sym, ok := c.info.Uses[id]; ok && sym.Kind == SymBuiltin {
@@ -30,8 +35,40 @@ func (c *Checker) checkCall(x *ast.CallExpr) Type {
 			}
 		}
 	}
+	// A variant constructor call (Some(x), Shape.Circle(r)) records its
+	// generic enum instantiation under the callee expression in
+	// recordGenericEnumInstance; mirror it under the CallExpr so codegen's
+	// Instances[callExpr] lookups resolve exactly like generic function
+	// calls do (recordGenericCallInstance below).
+	if inst, ok := c.info.Instances[x.Fn]; ok {
+		c.info.Instances[x] = inst
+	}
 	c.recordGenericCallInstance(x, sig)
 	return result
+}
+
+// instantiateFnSig instantiates a generic function signature at a call site:
+// every declared type parameter becomes a fresh inference variable (D52), so
+// that arguments, lambda bodies and the surrounding context can pin it down
+// by unification. Without this, the result parameter of builtin methods like
+// Option.map stays an unbound *TypeParam (U), which neither unify nor
+// hasUnresolvedVars understand, and every later use of the result misreports.
+func (c *Checker) instantiateFnSig(sig *Fn, at ast.Expr) *Fn {
+	if sig == nil || len(sig.TypeParams) == 0 {
+		return sig
+	}
+	subst := make(map[*TypeParam]Type, len(sig.TypeParams))
+	for _, tp := range sig.TypeParams {
+		subst[tp] = c.newTypeVar(at.Pos())
+	}
+	out, ok := substitute(sig, subst).(*Fn)
+	if !ok || out == nil {
+		return sig
+	}
+	// substitute() does not carry TypeParams over; keep them so that
+	// recordGenericCallInstance still recognises the callee as generic.
+	out.TypeParams = sig.TypeParams
+	return out
 }
 
 // recordGenericCallInstance records an *Instance for a call to a generic

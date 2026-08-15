@@ -100,20 +100,20 @@ func (c *Checker) resolveImportsRecursive(prog *ast.Program, stdlibDir string, l
 			newDecls = append(newDecls, d)
 			continue
 		}
-		
+
 		if len(imp.Path) == 0 {
 			c.errorf(imp, "empty import path")
 			continue
 		}
-		
+
 		isStd := len(imp.Path) >= 2 && imp.Path[0] == "std"
-		
+
 		if !isStd {
 			relPath := imp.Path[0]
 			if len(imp.Path) > 1 {
 				relPath = filepath.Join(imp.Path...)
 			}
-			
+
 			// Append .dot if it doesn't have an extension
 			if filepath.Ext(relPath) == "" {
 				relPath += ".dot"
@@ -121,7 +121,7 @@ func (c *Checker) resolveImportsRecursive(prog *ast.Program, stdlibDir string, l
 
 			dir := filepath.Dir(c.file) // fallback
 			if prog.File != "" {
-			    dir = filepath.Dir(prog.File)
+				dir = filepath.Dir(prog.File)
 			}
 			absPath, err := filepath.Abs(filepath.Join(dir, relPath))
 			if err != nil {
@@ -132,7 +132,7 @@ func (c *Checker) resolveImportsRecursive(prog *ast.Program, stdlibDir string, l
 				continue
 			}
 			loaded[absPath] = true
-			
+
 			src, err := os.ReadFile(absPath)
 			if err != nil {
 				c.errorf(imp, "cannot read imported file %q: %v", relPath, err)
@@ -149,14 +149,14 @@ func (c *Checker) resolveImportsRecursive(prog *ast.Program, stdlibDir string, l
 					newDecls = append(newDecls, childDecl)
 				}
 			}
-			
+
 		} else {
 			stdPath := imp.PathString()
 			if loaded[stdPath] {
 				continue
 			}
 			loaded[stdPath] = true
-			
+
 			imported, cMods, err := resolveStdlibImport(imp, stdlibDir)
 			if err != nil {
 				c.errorf(imp, "%s", err.Error())

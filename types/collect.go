@@ -183,7 +183,7 @@ func (c *Checker) completeTrait(decl *ast.TraitDecl) {
 		sig := c.signatureOf(m, selfParam)
 		sig.TypeParams = tps
 		popFn()
-		
+
 		tr.Methods = append(tr.Methods, Method{
 			Name:    m.Name,
 			Sig:     sig,

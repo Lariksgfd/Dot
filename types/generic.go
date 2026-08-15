@@ -79,10 +79,10 @@ func (n positionNode) Pos() ast.Position { return ast.Position(n) }
 func (n positionNode) End() ast.Position {
 	return ast.Position{File: n.File, Line: n.Line, Column: n.Column + 1, Offset: n.Offset + 1}
 }
-func (n positionNode) SetDoc(doc []lexer.Token)    {}
-func (n positionNode) GetDoc() []lexer.Token       { return nil }
+func (n positionNode) SetDoc(doc []lexer.Token)   {}
+func (n positionNode) GetDoc() []lexer.Token      { return nil }
 func (n positionNode) SetComment(c []lexer.Token) {}
-func (n positionNode) GetComment() []lexer.Token { return nil }
+func (n positionNode) GetComment() []lexer.Token  { return nil }
 
 // checkObjectSafe verifies that tr may be used as `dyn Tr`. `dyn Tr` is legal
 // iff every method of Tr: (1) has a self receiver, (2) does not mention Self
@@ -286,9 +286,12 @@ func mangleType(t Type) string {
 	}
 }
 
-// recordInstance adds inst to Info.Instances and Info.InstanceList, keyed by
-// Mangled for deduplication. The first occurrence wins; later duplicates are
-// dropped so InstanceList stays deterministic.
+// recordInstance registers inst in Info.InstanceList, deduplicated by
+// Mangled. The first occurrence wins; later duplicates are dropped so
+// InstanceList stays deterministic. Callers that need a node->instance
+// mapping store the returned pointer in Info.Instances under the use-site
+// expression themselves (see recordGenericCallInstance and
+// recordGenericEnumInstance).
 func (c *Checker) recordInstance(inst *Instance) *Instance {
 	if inst == nil {
 		return nil
