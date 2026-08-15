@@ -262,12 +262,34 @@ func emitCall(g *generator, x *ast.CallExpr) string {
 		// If it's an indirect call (via closure variable or expression), we must call via the struct.
 		fnType := g.info.TypeOf(x.Fn)
 		if _, isFnType := fnType.(*types.Fn); isFnType {
+			// The callee expression is materialised into a C temporary once
+			// (CG-18): fn and env must come from the same evaluation of the
+			// callee, and the arguments are evaluated afterwards, at the
+			// call site. A callee that is not an lvalue transfers its env
+			// ownership into the temporary, so the env is released after
+			// the call; capture-returning bodies deep-retain their result,
+			// which keeps the result alive independently of the env.
 			fnExpr := g.emitExpr(x.Fn)
 			args := emitCallArgs(g, x, info)
-			if len(args) == 0 {
-				return fmt.Sprintf("(%s).fn((%s).env)", fnExpr, fnExpr)
+			tmp := fmt.Sprintf("_dot_fn_%d", g.unusedIdx)
+			g.unusedIdx++
+			callExpr := fmt.Sprintf("%s.fn(%s.env", tmp, tmp)
+			if len(args) > 0 {
+				callExpr += ", " + strings.Join(args, ", ")
 			}
-			return fmt.Sprintf("(%s).fn((%s).env, %s)", fnExpr, fnExpr, strings.Join(args, ", "))
+			callExpr += ")"
+			if !isLValue(x.Fn) {
+				resType := g.info.TypeOf(x)
+				if resType != nil && resType != types.Invalid && resType.Kind() != types.KindVoid {
+					resTmp := fmt.Sprintf("_dot_call_%d", g.unusedIdx)
+					g.unusedIdx++
+					return fmt.Sprintf("({ %s %s = %s; %s %s = %s; if (%s.env != NULL) { dot_release((DotRefcnt*)(%s.env)); } %s; })",
+						cType(g, fnType), tmp, fnExpr, cFieldType(g, resType), resTmp, callExpr, tmp, tmp, resTmp)
+				}
+				return fmt.Sprintf("({ %s %s = %s; %s; if (%s.env != NULL) { dot_release((DotRefcnt*)(%s.env)); } })",
+					cType(g, fnType), tmp, fnExpr, callExpr, tmp, tmp)
+			}
+			return fmt.Sprintf("({ %s %s = %s; %s; })", cType(g, fnType), tmp, fnExpr, callExpr)
 		}
 
 		return emitMangledCall(g, callFuncName(g, x), x, info)
@@ -314,6 +336,20 @@ func isStructOrEnum(t types.Type) bool {
 	return false
 }
 
+// isBoxedElem reports whether values of t are stored in DotAny slots (slice
+// elements, iterator results) inside a dot_box_struct box: structs and enums
+// (existing behaviour) plus closure values, whose two-field struct does not
+// fit a DotAny slot and is therefore stored as a box pointer (CG-22).
+func isBoxedElem(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	if _, isFn := t.(*types.Fn); isFn {
+		return true
+	}
+	return isStructOrEnum(t)
+}
+
 func isEnumType(t types.Type) bool {
 	switch x := t.(type) {
 	case *types.Enum: return true
@@ -348,9 +384,10 @@ func emitMethodCall(g *generator, call *ast.CallExpr, info *types.CallInfo) stri
 			if i < len(call.Args) {
 				t = g.info.TypeOf(call.Args[i].Value)
 			}
-			if isStructOrEnum(t) {
+			if isBoxedElem(t) {
 				// Box the value: structs are copied into the box, enums are
-				// copied from the object their pointer designates. emitBoxValue
+				// copied from the object their pointer designates, closures
+				// are stored boxed with a deep-retained env. emitBoxValue
 				// deep-retains the boxed copy itself.
 				arg = emitBoxValue(g, arg, t)
 			} else {

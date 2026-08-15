@@ -54,13 +54,32 @@ func emitScopeCleanupStmts(g *generator, scopeVars []scopeVar) {
 
 // scopesDeepestFirst returns every active scope level (current + scopeStack)
 // ordered from the deepest to the shallowest, for return-statement cleanup.
+// Levels at or below the innermost cleanup floor (a function boundary crossed
+// by a closure or spawn body) are excluded: a return inside such a body
+// returns from the nested C function and must not touch the enclosing
+// function's variables, which are not even visible there (CG-34).
 func (g *generator) scopesDeepestFirst() [][]scopeVar {
-	levels := make([][]scopeVar, 0, len(g.scopeStack)+1)
+	floor := 0
+	if len(g.cleanupFloors) > 0 {
+		floor = g.cleanupFloors[len(g.cleanupFloors)-1]
+	}
+	levels := make([][]scopeVar, 0, len(g.scopeStack)-floor+1)
 	levels = append(levels, g.scopeVars)
-	for i := len(g.scopeStack) - 1; i >= 0; i-- {
+	for i := len(g.scopeStack) - 1; i > floor; i-- {
 		levels = append(levels, g.scopeStack[i])
 	}
 	return levels
+}
+
+// pushCleanupFloor records a function-boundary crossing for the body about
+// to be emitted; popCleanupFloor restores the previous boundary. Nested
+// bodies (a closure inside a closure) simply push deeper floors.
+func (g *generator) pushCleanupFloor() {
+	g.cleanupFloors = append(g.cleanupFloors, len(g.scopeStack))
+}
+
+func (g *generator) popCleanupFloor() {
+	g.cleanupFloors = g.cleanupFloors[:len(g.cleanupFloors)-1]
 }
 
 // scopeBlockEndsInReturn reports whether the last statement of a block is a
@@ -119,6 +138,18 @@ func emitRetain(g *generator, expr string, t types.Type) string {
 		return fmt.Sprintf("dot_retain((DotRefcnt*)(%s))", expr)
 	}
 	return expr
+}
+
+// emitFnRetain materialises a closure value into a temporary, retains its env
+// (closures are ARC-managed through their env, see emitFnLit) and yields the
+// value. Used on the copy paths (assignment, return, tail value of a
+// block-expr) so that every live closure reference keeps the captured state
+// alive; scope cleanup releases one env ref per closure reference.
+func emitFnRetain(g *generator, expr string, t types.Type) string {
+	tmp := fmt.Sprintf("_dot_fr_%d", g.unusedIdx)
+	g.unusedIdx++
+	return fmt.Sprintf("({ %s %s = %s; if (%s.env != NULL) { dot_retain((DotRefcnt*)(%s.env)); } %s; })",
+		cType(g, t), tmp, expr, tmp, tmp, tmp)
 }
 
 // emitRelease returns a dot_release call for heap types, or an empty string
@@ -222,8 +253,58 @@ func emitDeepRetain(g *generator, expr string, t types.Type) string {
 		// so a plain retain of the pointer is the correct deep retain: the
 		// payload's own references stay owned by the object itself.
 		return emitRetain(g, expr, t)
+	case *types.Fn:
+		// Closure values are ARC-managed through their env: retaining the
+		// env keeps the captured state alive for the copied reference.
+		tmp := fmt.Sprintf("_dot_rtn_%d", g.unusedIdx)
+		g.unusedIdx++
+		return fmt.Sprintf("({ %s %s = %s; if (%s.env != NULL) { dot_retain((DotRefcnt*)(%s.env)); } %s; })",
+			cType(g, t), tmp, expr, tmp, tmp, tmp)
 	default:
 		return emitRetain(g, expr, t)
+	}
+}
+
+// needsDeepRetain reports whether emitDeepRetain performs any retain for a
+// value of type t: the type has a heap component (string, slice, map,
+// payload-carrying enum, closure env) reachable by value. It mirrors
+// emitDeepRetain's structure so the two can never disagree.
+func needsDeepRetain(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch x := types.Underlying(t).(type) {
+	case *types.Struct:
+		for _, f := range x.Fields {
+			if needsDeepRetain(f.Type) {
+				return true
+			}
+		}
+		return false
+	case *types.Tuple:
+		for _, e := range x.Elems {
+			if needsDeepRetain(e) {
+				return true
+			}
+		}
+		return false
+	case *types.Enum:
+		return types.IsHeap(x)
+	case *types.Fn:
+		return true
+	default:
+		return types.IsHeap(t)
+	}
+}
+
+// emitDeepReleaseLines emits the statements of a deep release for expr of
+// type t, one per line. A no-op when there is nothing to release.
+func emitDeepReleaseLines(g *generator, expr string, t types.Type) {
+	rel := emitDeepRelease(g, expr, t)
+	for _, cl := range strings.Split(strings.TrimRight(rel, "\n"), "\n") {
+		if cl != "" {
+			g.line(cl)
+		}
 	}
 }
 
@@ -308,6 +389,10 @@ func emitDeepReleaseSeen(g *generator, expr string, t types.Type, seen map[types
 		b.WriteString(fmt.Sprintf("dot_release((DotRefcnt*)(%s));\n", expr))
 		b.WriteString("}\n")
 		return b.String()
+	case *types.Fn:
+		// Closure values release their env (which drops the captures and
+		// frees itself) - see emitFnLit.
+		return fmt.Sprintf("if (%s.env != NULL) { dot_release((DotRefcnt*)(%s.env)); };\n", expr, expr)
 	default:
 		if types.IsHeap(t) {
 			rel := emitRelease(g, expr, t)

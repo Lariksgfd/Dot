@@ -46,13 +46,12 @@ func emitIndex(g *generator, x *ast.IndexExpr) string {
 	case *types.Slice:
 		res := fmt.Sprintf("dot_slice_get(%s, %s)", obj, g.emitExpr(x.Indices[0]))
 		elemType := tt.Elem
-		if isStructOrEnum(elemType) {
-			// Struct elements are stored boxed by value; enum elements are
-			// stored boxed by pointer. Boxes carry a DotRefcnt header before
-			// the payload (dot_box_struct), so the payload is reached by
-			// skipping sizeof(DotRefcnt); cFieldType renders the storage
-			// shape (enums become pointers), so the deref yields the right
-			// kind.
+		if isBoxedElem(elemType) {
+			// Boxed elements (structs, enums, closures) carry a DotRefcnt
+			// header before the payload (dot_box_struct), so the payload is
+			// reached by skipping sizeof(DotRefcnt); cFieldType renders the
+			// storage shape (enums become pointers), so the deref yields the
+			// right kind.
 			res = fmt.Sprintf("(*(%s*)dot_box_payload(%s))", cFieldType(g, elemType), res)
 		} else if !types.IsHeap(elemType) && !isPointerLike(elemType) {
 			res = fmt.Sprintf("((%s)(intptr_t)%s)", cType(g, elemType), res)
@@ -119,40 +118,123 @@ func emitTry(g *generator, x *ast.TryExpr) string {
 	return inner
 }
 
-// emitBlockExpr emits a block expression as a GCC statement expression.
+// emitBlockExpr emits a block expression as a GCC statement expression using
+// the full statement machinery (declarations, control flow, scope cleanup),
+// so a block-expr behaves like a function body. The trailing expression is
+// the block's value (D18): it is materialised into a temporary before scope
+// cleanup runs, following the return-statement ownership rules.
 func emitBlockExpr(g *generator, x *ast.BlockExpr) string {
+	return emitBlockExprAs(g, x.Block, g.info.TypeOf(x))
+}
+
+// emitBlockExprAs is emitBlockExpr for blocks that have no BlockExpr node of
+// their own (closure bodies, if-else branches) and therefore no recorded
+// type: want is the expected result type, and Void (or nil) makes the block
+// a plain void statement expression with the trailing expression evaluated
+// for its side effects only.
+func emitBlockExprAs(g *generator, blk *ast.BlockStmt, want types.Type) string {
 	var b strings.Builder
-	b.WriteString("({ ")
-	for _, s := range x.Block.Stmts {
-		switch st := s.(type) {
-		case *ast.ExprStmt:
-			b.WriteString(g.emitExpr(st.X))
-			b.WriteString("; ")
-		case *ast.ReturnStmt:
-			b.WriteString("return ")
-			for i, v := range st.Values {
-				if i > 0 {
-					b.WriteString(", ")
+	oldBuf := g.buf
+	oldIndent := g.indent
+	oldDefers := g.defers
+	g.buf = &b
+	g.indent = 0
+	g.defers = nil
+
+	g.pushScope()
+	stmts := blk.Stmts
+	n := len(stmts)
+
+	var tail *ast.ExprStmt
+	tmp := ""
+	moved := make(map[string]bool)
+	if want != nil && want != types.Invalid && want.Kind() != types.KindVoid && n > 0 {
+		if es, ok := stmts[n-1].(*ast.ExprStmt); ok {
+			vt := g.info.TypeOf(es.X)
+			if vt != nil && vt != types.Invalid && vt.Kind() != types.KindVoid {
+				tail = es
+				tmp = fmt.Sprintf("_dot_block_%d", g.unusedIdx)
+				g.unusedIdx++
+				// A trailing identifier is moved out of the block: its
+				// ownership transfers to the result, so scope cleanup
+				// must skip it. Capture idents are NOT moved (the env
+				// keeps its own reference) and are deep-retained below.
+				if id, ok := es.X.(*ast.Ident); ok && !g.fnCaptures[varName(g, id)] {
+					moved[varName(g, id)] = true
 				}
-				b.WriteString(g.emitExpr(v))
 			}
-			b.WriteString("; ")
-		default:
-			b.WriteString(fmt.Sprintf("/* stmt %T */ ", st))
 		}
 	}
-	b.WriteString("})")
-	return b.String()
+
+	for i, s := range stmts {
+		if i == n-1 && tail != nil {
+			vt := g.info.TypeOf(tail.X)
+			val := g.emitExpr(tail.X)
+			if id, ok := tail.X.(*ast.Ident); ok && g.fnCaptures[varName(g, id)] {
+				val = emitDeepRetain(g, val, vt)
+			} else if isLValue(tail.X) && !isEnumType(vt) {
+				if _, isFn := vt.(*types.Fn); isFn {
+					val = emitFnRetain(g, val, vt)
+				} else {
+					val = emitRetain(g, val, vt)
+				}
+			}
+			g.line(fmt.Sprintf("%s %s = %s;", cFieldType(g, vt), tmp, val))
+			continue
+		}
+		g.emitStmt(s)
+	}
+
+	g.emitDefers()
+	g.defers = oldDefers
+
+	var popped []scopeVar
+	if !scopeBlockEndsInReturn(stmts) {
+		popped = g.popScope()
+	} else {
+		g.popScope()
+	}
+	cleanup := make([]scopeVar, 0, len(popped))
+	for _, sv := range popped {
+		if !moved[sv.name] {
+			cleanup = append(cleanup, sv)
+		}
+	}
+	emitScopeCleanupStmts(g, cleanup)
+
+	g.buf = oldBuf
+	g.indent = oldIndent
+
+	var out strings.Builder
+	out.WriteString("({ ")
+	out.WriteString(b.String())
+	if tmp != "" {
+		out.WriteString(fmt.Sprintf(" %s; ", tmp))
+	}
+	out.WriteString("})")
+	return out.String()
 }
 
 // emitFnLit emits a lambda as a closure struct constructor.
+//
+// [CG-16 SOLUTION] env lifecycle: the environment is a malloc'd struct whose
+// first member is a DotRefcnt header (like dot_box_struct). Every capture is
+// deep-retained into the env at creation; the env's dtor (registered in the
+// header) releases the captures, and dot_release frees the env itself. The
+// closure value stays a plain C struct (not ARC-managed itself); references
+// to it are ARC-managed through the env: emitDeepRetain/emitDeepRelease
+// retain/release `value.env`, closure locals are released by scope cleanup,
+// and assignment/return copy paths retain the env, so the env (and the
+// captured state) dies when the last closure reference is released.
 func emitFnLit(g *generator, x *ast.FnLit) string {
 	name := fmt.Sprintf("_dot_closure_%d", g.nextClosure())
 	params := "void* _env"
 	fnType := g.info.TypeOf(x)
 	var fnParams []types.Param
+	var resultWant types.Type
 	if ft, ok := fnType.(*types.Fn); ok {
 		fnParams = ft.Params
+		resultWant = ft.Result
 	}
 	for i, p := range x.Sig.Params {
 		params += ", "
@@ -162,29 +244,50 @@ func emitFnLit(g *generator, x *ast.FnLit) string {
 		} else {
 			pt = types.Int
 		}
-		params += cType(g, pt) + " " + p.Name
+		ct := cType(g, pt)
+		if ct == "void" {
+			ct = "void*"
+		}
+		params += ct + " " + p.Name
 	}
 
 	captures := g.info.Captures[x]
 	envName := fmt.Sprintf("%s_env", name)
+	dtorName := fmt.Sprintf("%s_drop", name)
 
 	if len(captures) > 0 {
 		var envStruct strings.Builder
-		envStruct.WriteString(fmt.Sprintf("typedef struct { "))
+		envStruct.WriteString("typedef struct { DotRefcnt rc; ")
 		for i, cap := range captures {
-			envStruct.WriteString(fmt.Sprintf("%s v%d; ", cType(g, cap.Type), i))
+			envStruct.WriteString(fmt.Sprintf("%s v%d; ", cFieldType(g, cap.Type), i))
 		}
 		envStruct.WriteString(fmt.Sprintf("} %s;", envName))
 		// The env typedef must precede the function bodies that use it.
 		g.closureDecls = append(g.closureDecls, envStruct.String())
 	}
 
+	savedCaptures := g.fnCaptures
+	g.fnCaptures = nil
+	for _, cap := range captures {
+		if g.fnCaptures == nil {
+			g.fnCaptures = make(map[string]bool)
+		}
+		g.fnCaptures[cap.Name] = true
+	}
+	// The closure body is a separate C function: a return inside it must
+	// only clean scopes opened within the body (CG-34).
+	g.pushCleanupFloor()
 	body := "0"
 	if x.ExprBody != nil {
 		body = g.emitExpr(x.ExprBody)
+		if id, ok := x.ExprBody.(*ast.Ident); ok && g.fnCaptures[varName(g, id)] {
+			body = emitDeepRetain(g, body, g.info.TypeOf(x.ExprBody))
+		}
 	} else if x.Body != nil {
-		body = emitBlockExpr(g, &ast.BlockExpr{Block: x.Body})
+		body = emitBlockExprAs(g, x.Body, resultWant)
 	}
+	g.popCleanupFloor()
+	g.fnCaptures = savedCaptures
 
 	var retType string
 	if ft, ok := fnType.(*types.Fn); ok {
@@ -200,17 +303,48 @@ func emitFnLit(g *generator, x *ast.FnLit) string {
 	if len(captures) > 0 {
 		funcCode.WriteString(fmt.Sprintf("%s* env = (%s*)_env; ", envName, envName))
 		for i, cap := range captures {
-			funcCode.WriteString(fmt.Sprintf("%s %s = env->v%d; ", cType(g, cap.Type), cap.Name, i))
+			// Captures are borrowed views of env-owned references: the
+			// closure body must not release them.
+			funcCode.WriteString(fmt.Sprintf("%s %s = env->v%d; ", cFieldType(g, cap.Type), cap.Name, i))
 		}
 	}
-	funcCode.WriteString(fmt.Sprintf("return %s; }", body))
+	// A body ending in a return diverges: its statement expression is void,
+	// so it is emitted as bare statements (the return inside it does the
+	// returning) instead of `return <stmt-expr>;`, which would reject a void
+	// value in a non-void function.
+	if x.Body != nil && scopeBlockEndsInReturn(x.Body.Stmts) {
+		funcCode.WriteString(body)
+		funcCode.WriteString("; ")
+	} else {
+		funcCode.WriteString(fmt.Sprintf("return %s; ", body))
+	}
+	funcCode.WriteString("}")
 	g.addClosure(funcCode.String())
 
 	if len(captures) > 0 {
-		var init strings.Builder
-		init.WriteString(fmt.Sprintf("({ %s* env = malloc(sizeof(%s)); ", envName, envName))
+		g.closureDecls = append(g.closureDecls, fmt.Sprintf("void %s(void* p);", dtorName))
+		var drop strings.Builder
+		drop.WriteString(fmt.Sprintf("void %s(void* p) { ", dtorName))
+		drop.WriteString(fmt.Sprintf("%s* e = (%s*)p; ", envName, envName))
 		for i, cap := range captures {
-			init.WriteString(fmt.Sprintf("env->v%d = %s; ", i, emitIdent(g, &ast.Ident{Name: cap.Name})))
+			rel := emitDeepRelease(g, fmt.Sprintf("e->v%d", i), cap.Type)
+			if rel != "" {
+				drop.WriteString(rel)
+				if !strings.HasSuffix(rel, ";\n") {
+					drop.WriteString(";\n")
+				}
+			}
+		}
+		drop.WriteString(" }")
+		g.addClosure(drop.String())
+
+		var init strings.Builder
+		init.WriteString(fmt.Sprintf("({ %s* env = (%s*)malloc(sizeof(%s)); ", envName, envName, envName))
+		init.WriteString("if (!env) abort(); ")
+		init.WriteString("atomic_init(&env->rc.count, 1); ")
+		init.WriteString(fmt.Sprintf("env->rc.dtor = %s; ", dtorName))
+		for i, cap := range captures {
+			init.WriteString(fmt.Sprintf("env->v%d = %s; ", i, emitDeepRetain(g, cap.Name, cap.Type)))
 		}
 		init.WriteString(fmt.Sprintf("((%s){ .fn = %s, .env = env }); })", result, name))
 		return init.String()
@@ -238,7 +372,7 @@ func emitArrayLit(g *generator, x *ast.ArrayLit) string {
 	for _, e := range x.Elems {
 		val := g.emitExpr(e)
 		t := g.info.TypeOf(e)
-		if isStructOrEnum(t) {
+		if isBoxedElem(t) {
 			val = fmt.Sprintf("(DotAny)(intptr_t)(%s)", emitBoxValue(g, val, t))
 		} else if t != nil && !isPointerLike(t) {
 			val = fmt.Sprintf("(DotAny)(intptr_t)(%s)", val)
@@ -362,9 +496,13 @@ func emitSpawn(g *generator, x *ast.SpawnExpr) string {
 	var b strings.Builder
 	g.buf = &b
 	g.indent = 1
+	// The spawn body is a separate C function (fiber): returns inside it
+	// must not clean the enclosing function's scopes (CG-34).
+	g.pushCleanupFloor()
 	for _, stmt := range x.Block.Stmts {
 		g.emitStmt(stmt)
 	}
+	g.popCleanupFloor()
 	body := b.String()
 	g.buf = oldBuf
 	g.indent = oldIndent

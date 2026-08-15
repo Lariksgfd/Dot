@@ -168,15 +168,55 @@ func cTupleName(g *generator, t *types.Tuple) string {
 	return info.Name
 }
 
-// cFnPtr emits a function type as a closure struct: struct { R (*fn)(void*, A, B); void* env; }.
+// cFnPtr returns the C type name for a function type: the named closure
+// struct typedef registered by cFnName. Anonymous closure structs do not
+// unify across C declarations (a struct spelled in a parameter list or a
+// statement expression is a distinct type), which broke closure calls,
+// assignments and returns; a named typedef makes every use agree.
 func cFnPtr(g *generator, f *types.Fn) string {
+	return cFnName(g, f)
+}
+
+// fnDefInfo is one pending closure-struct typedef, mirroring tupleInfo.
+type fnDefInfo struct {
+	Name string
+	Text string
+	Fn   *types.Fn
+}
+
+// cFnName returns a stable typedef name for a function type shape,
+// registering the typedef for emission in the header. Identical shapes share
+// one typedef so that prototypes, definitions, closure constructors and call
+// temporaries all reference the same C type.
+func cFnName(g *generator, f *types.Fn) string {
 	result := cType(g, f.Result)
-	var params []string
-	params = append(params, "void*") // env pointer is always first
+	params := []string{"void*"}
 	for _, p := range f.Params {
-		params = append(params, cType(g, p.Type))
+		ct := cType(g, p.Type)
+		// A checker-recorded Void param (seen on zero-arity signatures) is
+		// not valid C in a parameter list; render it as void* so the
+		// call-site NULL argument and the definition agree.
+		if ct == "void" {
+			ct = "void*"
+		}
+		params = append(params, ct)
 	}
-	return fmt.Sprintf("struct { %s (*fn)(%s); void* env; }", result, strings.Join(params, ", "))
+	key := result + "(" + strings.Join(params, ",") + ")"
+	if g.fnDefs == nil {
+		g.fnDefs = make(map[string]*fnDefInfo)
+	}
+	if info, ok := g.fnDefs[key]; ok {
+		return info.Name
+	}
+	info := &fnDefInfo{
+		Name: fmt.Sprintf("DotFn_%d", len(g.fnDefList)),
+		Text: fmt.Sprintf("typedef struct { %s (*fn)(%s); void* env; } DotFn_%d;",
+			result, strings.Join(params, ", "), len(g.fnDefList)),
+		Fn: f,
+	}
+	g.fnDefs[key] = info
+	g.fnDefList = append(g.fnDefList, info)
+	return info.Name
 }
 
 // cNamed handles a user-declared nominal type. Generic instances use

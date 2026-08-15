@@ -125,6 +125,7 @@ func (g *generator) emitFuncDef(fn *ast.FnDecl, recv *types.Named) {
 	g.line(fmt.Sprintf("%s %s(%s) {", result, funcName, params))
 	if fn.Body != nil {
 		g.pushScope()
+		g.registerFnParams(fnType)
 		for _, s := range fn.Body.Stmts {
 			g.emitStmt(s)
 		}
@@ -139,6 +140,22 @@ func (g *generator) emitFuncDef(fn *ast.FnDecl, recv *types.Named) {
 	}
 	g.line("}")
 	g.line("")
+}
+
+// registerFnParams registers Fn-typed parameters in the current scope so
+// that scope cleanup releases their envs: callers retain closure arguments
+// through emitDeepRetain, and the callee owns one reference per closure
+// parameter. This is the Fn half of the general parameter-release problem
+// (CG-26), which stays open for the other heap types.
+func (g *generator) registerFnParams(fnType *types.Fn) {
+	if fnType == nil {
+		return
+	}
+	for _, p := range fnType.Params {
+		if _, isFn := p.Type.(*types.Fn); isFn {
+			g.scopeVars = append(g.scopeVars, scopeVar{name: p.Name, typ: p.Type})
+		}
+	}
 }
 
 // methodType looks up the function type for an impl method from the receiver's Methods.
@@ -540,6 +557,7 @@ func (g *generator) emitMonomorphisedFunc(inst *types.Instance) {
 	if decl, ok := inst.Generic.Decl.(*ast.FnDecl); ok && decl != nil {
 		if decl.Body != nil {
 			g.pushScope()
+			g.registerFnParams(fn)
 			for _, s := range decl.Body.Stmts {
 				g.emitStmt(s)
 			}

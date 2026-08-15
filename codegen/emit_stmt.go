@@ -165,28 +165,79 @@ func (g *generator) allReassigned(x *ast.VarDecl) bool {
 // emitMultiAssign emits a multi-name reassignment: all right-hand sides are
 // evaluated into temporaries first, then assigned left to right, so that
 // `a, b = b, a` swaps (SPEC §3, D11).
+//
+// ARC (CG-03): a temp reading an lvalue takes its own deep retain, and each
+// target's old value is released only AFTER every new value is assigned.
+// Releasing old values before the assignments could free an object another
+// temp still references (a, b = b, a with rc=1 freed both). The temp's fresh
+// retain transfers to the target on assignment, so no extra retain/release
+// pair is emitted; a self-assign instead drops the temp's retain.
 func (g *generator) emitMultiAssign(x *ast.VarDecl) {
 	temps := make([]string, 0, len(x.Values))
+	retained := make([]bool, 0, len(x.Values))
 	for _, v := range x.Values {
 		tmp := fmt.Sprintf("_dot_ma_%d", g.unusedIdx)
 		g.unusedIdx++
-		g.line(fmt.Sprintf("%s %s = %s;", cType(g, g.info.TypeOf(v)), tmp, g.emitExpr(v)))
+		t := g.info.TypeOf(v)
+		val := g.emitExpr(v)
+		// Reading an lvalue copies the reference without consuming the
+		// source: the temp must hold its own deep retain so the deferred
+		// releases below can never free a value it still references.
+		if isLValue(v) && needsDeepRetain(t) {
+			val = emitDeepRetain(g, val, t)
+			retained = append(retained, true)
+		} else {
+			retained = append(retained, false)
+		}
+		g.line(fmt.Sprintf("%s %s = %s;", cFieldType(g, t), tmp, val))
 		temps = append(temps, tmp)
 	}
+
+	olds := make([]string, 0, len(x.Names))
+	oldTypes := make([]types.Type, 0, len(x.Names))
 	for i, name := range x.Names {
 		vn := varName(g, name)
 		declType := g.info.TypeOf(name)
-		if types.IsHeap(declType) {
-			// Transfer the temporary's reference to the target.
+		if types.IsInvalid(declType) {
+			// Reassigned names are recorded as uses, not types (D53);
+			// the checker has already proven value and target match.
+			declType = g.info.TypeOf(x.Values[i])
+		}
+		if !needsDeepRetain(declType) {
+			// Pure value type: nothing to release, nothing to guard.
+			g.line(fmt.Sprintf("%s = %s;", vn, temps[i]))
+			continue
+		}
+		old := fmt.Sprintf("_dot_old_%d", g.unusedIdx)
+		g.unusedIdx++
+		olds = append(olds, old)
+		oldTypes = append(oldTypes, declType)
+		_, isTup := types.Underlying(declType).(*types.Tuple)
+		if types.IsHeap(declType) && !isTup {
+			g.line(fmt.Sprintf("%s %s = NULL;", cFieldType(g, declType), old))
 			g.line(fmt.Sprintf("if ((void*)(%s) != (void*)(%s)) {", vn, temps[i]))
 			g.indent++
-			g.line(fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); }", vn, vn))
+			g.line(fmt.Sprintf("%s = %s;", old, vn))
 			g.line(fmt.Sprintf("%s = %s;", vn, temps[i]))
+			g.indent--
+			g.line("} else {")
+			g.indent++
+			if retained[i] {
+				// Self-assign: the target keeps its own live reference,
+				// so the temp's fresh retain is dropped instead.
+				g.line(fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); }", temps[i], temps[i]))
+			}
 			g.indent--
 			g.line("}")
 		} else {
-			g.line(fmt.Sprintf("%s = %s;", vn, emitDeepRetain(g, temps[i], declType)))
+			// Value type with heap members: transfer the temp's deep
+			// retain to the target; the old members are released below.
+			g.line(fmt.Sprintf("%s %s = %s;", cType(g, declType), old, vn))
+			g.line(fmt.Sprintf("%s = %s;", vn, temps[i]))
 		}
+	}
+	for i, old := range olds {
+		emitDeepReleaseLines(g, old, oldTypes[i])
 	}
 }
 
@@ -271,7 +322,7 @@ func (g *generator) emitAssignStmt(x *ast.AssignExpr) {
 			if idxExpr, ok := tgt.(*ast.IndexExpr); ok {
 				if t := g.info.TypeOf(idxExpr.X); t != nil {
 					if _, isSlice := t.(*types.Slice); isSlice {
-						if isStructOrEnum(valType) {
+						if isBoxedElem(valType) {
 							val = emitBoxValue(g, val, valType)
 						}
 						g.line(fmt.Sprintf("dot_slice_set(%s, %s, (DotAny)(intptr_t)(%s));",
@@ -287,6 +338,26 @@ func (g *generator) emitAssignStmt(x *ast.AssignExpr) {
 			// take the release/retain path below, unit enums the simple one.
 			// (The old memcpy variant treated the target as a value struct,
 			// which produced invalid initializers and corrupted payloads.)
+
+			if _, isFn := tgtType.(*types.Fn); isFn {
+				// Closure assignment: release the target's old env, take
+				// over the new value (single evaluation), and retain the
+				// env when the source is an lvalue so shared closures
+				// keep the captured state alive.
+				tmp := fmt.Sprintf("_dot_new_%d", g.unusedIdx)
+				g.unusedIdx++
+				g.line(fmt.Sprintf("%s %s = %s;", cType(g, tgtType), tmp, val))
+				g.line(fmt.Sprintf("if ((%s.env) != (%s.env)) {", tname, tmp))
+				g.indent++
+				g.line(fmt.Sprintf("if (%s.env != NULL) { dot_release((DotRefcnt*)(%s.env)); }", tname, tname))
+				g.line(fmt.Sprintf("%s = %s;", tname, tmp))
+				if doRetain {
+					g.line(fmt.Sprintf("if (%s.env != NULL) { dot_retain((DotRefcnt*)(%s.env)); }", tname, tname))
+				}
+				g.indent--
+				g.line("}")
+				continue
+			}
 
 			if types.IsHeap(tgtType) {
 				// Evaluate the RHS once into a temporary so the comparison

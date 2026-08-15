@@ -28,6 +28,25 @@ type generator struct {
 	unusedIdx  int
 	tupleDefs  map[string]*tupleInfo
 	tupleList  []*tupleInfo
+	// fnDefs maps a closure-struct shape to its typedef info; fnDefList
+	// holds the typedefs in registration order. fnEmittedIdx marks how many
+	// were flushed into the type section, so a shape first rendered during
+	// function-body emission can be flushed before the bodies.
+	fnDefs       map[string]*fnDefInfo
+	fnDefList    []*fnDefInfo
+	fnEmittedIdx int
+	// fnCaptures holds the C names of the variables the closure currently
+	// being emitted captures (nil outside closures). Return and block-expr
+	// tail values that are capture idents must deep-retain instead of
+	// moving: the env owns its own reference and may die right after a call,
+	// so a result aliasing env contents must keep its own.
+	fnCaptures map[string]bool
+	// cleanupFloors is a stack of scopeStack depths recorded at function
+	// boundaries crossed while emitting a body (closure bodies, spawn
+	// fibers): a return inside such a body is a return from the nested C
+	// function, so return-cleanup must only walk the scopes opened inside
+	// that body and never the enclosing function's (CG-34).
+	cleanupFloors []int
 	// closureDecls holds prototypes (and env typedefs) of closure functions
 	// and spawn fibers, discovered while emitting function bodies. They are
 	// printed before the bodies that reference them.
@@ -99,6 +118,17 @@ func (g *generator) emitFunctionBodies() error {
 	if errDefs != nil {
 		return errDefs
 	}
+	// Safety flush: closure-struct shapes first rendered while emitting
+	// bodies missed the type section; emit their typedefs here, before the
+	// bodies that use them.
+	if g.fnEmittedIdx < len(g.fnDefList) {
+		late := make([]string, 0, len(g.fnDefList)-g.fnEmittedIdx)
+		for i := g.fnEmittedIdx; i < len(g.fnDefList); i++ {
+			late = append(late, g.fnDefList[i].Text)
+		}
+		g.closureDecls = append(late, g.closureDecls...)
+		g.fnEmittedIdx = len(g.fnDefList)
+	}
 	for _, d := range g.closureDecls {
 		g.line(d)
 	}
@@ -132,6 +162,9 @@ func (g *generator) emitHeader() error {
 	// dependency order together with the named types; predeclareTuples only
 	// registers the shapes early so they are known before any C is rendered.
 	g.predeclareTuples()
+	// Closure-struct typedefs are predeclared the same way (they contain
+	// only pointers, but prototypes must reference already-defined types).
+	g.predeclareFnTypes()
 	return nil
 }
 
@@ -193,6 +226,93 @@ func registerTupleTypes(g *generator, t types.Type) {
 		for _, a := range x.TypeArgs {
 			registerTupleTypes(g, a)
 		}
+	}
+}
+
+// registerFnTypes pre-registers the closure-struct typedefs for every fn
+// shape mentioned by t, recursively.
+func registerFnTypes(g *generator, t types.Type) {
+	switch x := t.(type) {
+	case *types.Fn:
+		cFnName(g, x)
+		for _, p := range x.Params {
+			registerFnTypes(g, p.Type)
+		}
+		registerFnTypes(g, x.Result)
+	case *types.Slice:
+		registerFnTypes(g, x.Elem)
+	case *types.Array:
+		registerFnTypes(g, x.Elem)
+	case *types.Map:
+		registerFnTypes(g, x.Key)
+		registerFnTypes(g, x.Value)
+	case *types.Pointer:
+		registerFnTypes(g, x.Elem)
+	case *types.Weak:
+		registerFnTypes(g, x.Elem)
+	case *types.Chan:
+		registerFnTypes(g, x.Elem)
+	case *types.Future:
+		registerFnTypes(g, x.Result)
+	case *types.Tuple:
+		for _, e := range x.Elems {
+			registerFnTypes(g, e)
+		}
+	case *types.Named:
+		for _, a := range x.TypeArgs {
+			registerFnTypes(g, a)
+		}
+	case *types.Struct:
+		for _, f := range x.Fields {
+			registerFnTypes(g, f.Type)
+		}
+	case *types.Enum:
+		for _, v := range x.Variants {
+			for _, p := range v.Fields {
+				registerFnTypes(g, p.Type)
+			}
+		}
+	case *types.TypeVar:
+		if x.Bound != nil {
+			registerFnTypes(g, x.Bound)
+		}
+	}
+}
+
+// predeclareFnTypes walks every function signature and every recorded
+// expression type before any C is rendered, so that the closure-struct
+// typedefs they need are registered for the header emission and function
+// prototypes reference already-defined types.
+func (g *generator) predeclareFnTypes() {
+	for _, decl := range g.prog.Decls {
+		switch d := decl.(type) {
+		case *ast.FnDecl:
+			if ft := g.fnType(d); ft != nil {
+				registerFnTypes(g, ft)
+			}
+		case *ast.ImplDecl:
+			recv := g.implRecvType(d)
+			for _, m := range d.Methods {
+				ft := g.fnType(m)
+				if ft == nil && recv != nil {
+					ft = g.methodType(m, recv)
+				}
+				if ft != nil {
+					registerFnTypes(g, ft)
+				}
+			}
+		}
+	}
+	for _, inst := range g.info.InstanceList {
+		if inst == nil {
+			continue
+		}
+		if f, ok := inst.Result.(*types.Fn); ok {
+			registerFnTypes(g, f)
+		}
+	}
+	for _, t := range g.info.Types {
+		registerFnTypes(g, t)
 	}
 }
 

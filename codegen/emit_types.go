@@ -145,6 +145,24 @@ func (g *generator) emitSortedTypeDefs() error {
 		}
 	}
 
+	// Phase F: closure-struct typedefs. The struct itself holds only a
+	// function pointer and a void*, but the fn-pointer signature embeds its
+	// parameter and result types by value, so their definitions must
+	// precede the typedef.
+	for i := 0; i < len(g.fnDefList); i++ {
+		fi := g.fnDefList[i]
+		var deps []string
+		collectValueDeps(g, fi.Fn.Result, &deps)
+		for _, p := range fi.Fn.Params {
+			collectValueDeps(g, p.Type, &deps)
+		}
+		text := fi.Text
+		addDef(fi.Name, deps, func() {
+			g.line(text)
+		})
+	}
+	g.fnEmittedIdx = len(g.fnDefList)
+
 	// Emit every definition in dependency order (depth-first, cycle-safe).
 	visited := make(map[string]bool)
 	var visit func(cName string)
@@ -281,6 +299,12 @@ func collectValueDeps(g *generator, t types.Type, deps *[]string) {
 		for _, e := range x.Elems {
 			collectValueDeps(g, e, deps)
 		}
+	case *types.Fn:
+		*deps = append(*deps, cFnName(g, x))
+		for _, p := range x.Params {
+			collectValueDeps(g, p.Type, deps)
+		}
+		collectValueDeps(g, x.Result, deps)
 	case *types.TypeVar:
 		if x.Bound != nil {
 			collectValueDeps(g, x.Bound, deps)

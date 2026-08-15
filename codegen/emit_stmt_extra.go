@@ -121,7 +121,7 @@ func (g *generator) emitForIterator(x *ast.ForStmt) {
 	g.indent++
 	elemCType := cFieldType(g, elemType)
 	var init string
-	if isStructOrEnum(elemType) {
+	if isBoxedElem(elemType) {
 		// Boxed elements carry a DotRefcnt header before the payload
 		// (dot_box_struct): skip it to reach the stored value/pointer.
 		init = fmt.Sprintf("*(%s*)dot_box_payload(%s)", elemCType, ivName)
@@ -182,11 +182,19 @@ func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 	// returnRetVal emits one value expression into a temp, applying the same
 	// ownership rules the old code used: moved identifiers are not retained,
 	// heap lvalues are retained, everything else is transferred as-is.
+	// Capture idents are the exception: the env keeps its own reference and
+	// may be released right after the call, so the returned value must deep-
+	// retain instead of moving the env's reference.
 	returnRetVal := func(v ast.Expr, useRetain func(expr string, t types.Type) string) string {
 		val := g.emitExpr(v)
 		t := g.info.TypeOf(v)
-		if id, ok := v.(*ast.Ident); ok && returnedVars[varName(g, id)] {
-			return val
+		if id, ok := v.(*ast.Ident); ok {
+			if g.fnCaptures[varName(g, id)] {
+				return emitDeepRetain(g, val, t)
+			}
+			if returnedVars[varName(g, id)] {
+				return val
+			}
 		}
 		return useRetain(val, t)
 	}
@@ -217,6 +225,9 @@ func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 					return val
 				}
 				if isLValue(x.Values[0]) {
+					if _, isFn := t.(*types.Fn); isFn {
+						return emitFnRetain(g, val, t)
+					}
 					return emitRetain(g, val, t)
 				}
 				return val
@@ -237,6 +248,9 @@ func (g *generator) emitReturnStmt(x *ast.ReturnStmt) {
 		elems[i] = vt
 		exprVal := returnRetVal(v, func(val string, t types.Type) string {
 			if isLValue(v) {
+				if _, isFn := t.(*types.Fn); isFn {
+					return emitFnRetain(g, val, t)
+				}
 				return emitRetain(g, val, t)
 			}
 			return val
