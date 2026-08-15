@@ -101,11 +101,10 @@ impl Checker {
     }
 
     fn check_fn_decl(mut self, name string, params []Param, ret_ty Option[TypeNode], body []Stmt, span Span) {
-        // 1. Resolve return type
-        resolved_ret_ty = Type.Void
-        if ty_node = ret_ty {
-            resolved_ret_ty = self.resolve_type(ty_node)
-        }
+        // 1. Resolve return type. A helper is used because a bare
+        // `resolved_ret_ty = ...` inside an if-body would declare a shadow
+        // variable (Dot scoping), not reassign the outer one.
+        resolved_ret_ty = self.resolve_ret_ty(ret_ty)
 
         // 2. Resolve param types
         param_types = []Type{}
@@ -146,6 +145,13 @@ impl Checker {
         // 6. Leave scope
         self.ret_ty = []Type{}
         self.pop_scope()
+    }
+
+    fn resolve_ret_ty(mut self, ret_ty Option[TypeNode]) -> Type {
+        if ty_node = ret_ty {
+            return self.resolve_type(ty_node)
+        }
+        return Type.Void
     }
 
     fn resolve_type(mut self, node TypeNode) -> Type {

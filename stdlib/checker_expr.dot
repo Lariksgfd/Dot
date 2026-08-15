@@ -384,10 +384,7 @@ impl Checker {
         then_ty = self.check_if_then(then_branch, 0, Type.Unknown)
         self.pop_scope()
 
-        else_ty = Type.Unknown
-        if else_branch.len > 0 {
-            else_ty = self.check_expr(else_branch[else_branch.len - 1])
-        }
+        else_ty = self.check_else_branch(else_branch)
 
         if is_known(then_ty) and is_known(else_ty) {
             if not compatible(then_ty, else_ty) {
@@ -395,6 +392,15 @@ impl Checker {
             }
         }
         return if is_known(then_ty) { then_ty } else { else_ty }
+    }
+
+    // The else-branch value lives in a helper: assigning `else_ty` from an
+    // if-body would declare a shadow variable (Dot scoping), not reassign it.
+    fn check_else_branch(mut self, else_branch []Expr) -> Type {
+        if else_branch.len > 0 {
+            return self.check_expr(else_branch[else_branch.len - 1])
+        }
+        return Type.Unknown
     }
 
     // Walks the then-branch, checking every statement and remembering the

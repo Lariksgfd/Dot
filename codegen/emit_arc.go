@@ -368,6 +368,15 @@ func emitDeepReleaseSeen(g *generator, expr string, t types.Type, seen map[types
 		}
 		var b strings.Builder
 		b.WriteString(fmt.Sprintf("if (%s != NULL) {\n", expr))
+		// Payload fields are owned by the enum object itself and must only be
+		// released when this reference is the last one (the object is about to
+		// die). A release of a still-referenced enum must drop the pointer
+		// reference only; unwrapping an Option and pushing the payload into a
+		// slice retains the payload pointer but not its fields, so releasing
+		// the fields here (the old behaviour) freed them while the object was
+		// still alive and pointing at them — a use-after-free behind the
+		// flaky bootstrap crashes (PA-06).
+		b.WriteString(fmt.Sprintf("if (((DotRefcnt*)(%s))->count == 1) {\n", expr))
 		b.WriteString(fmt.Sprintf("switch ((%s)->tag) {\n", expr))
 		for _, v := range x.Variants {
 			if len(v.Fields) == 0 {
@@ -385,6 +394,7 @@ func emitDeepReleaseSeen(g *generator, expr string, t types.Type, seen map[types
 			}
 			b.WriteString("break;\n}\n")
 		}
+		b.WriteString("}\n")
 		b.WriteString("}\n")
 		b.WriteString(fmt.Sprintf("dot_release((DotRefcnt*)(%s));\n", expr))
 		b.WriteString("}\n")

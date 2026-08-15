@@ -126,13 +126,16 @@ func (g *generator) emitFuncDef(fn *ast.FnDecl, recv *types.Named) {
 	if fn.Body != nil {
 		g.pushScope()
 		g.registerFnParams(fnType)
-		for _, s := range fn.Body.Stmts {
-			g.emitStmt(s)
-		}
+		tail, tmp, moved := g.emitBodyStmts(fn.Body.Stmts, fnType.Result)
+		popped := g.popScope()
 		if !scopeBlockEndsInReturn(fn.Body.Stmts) {
-			emitScopeCleanupStmts(g, g.popScope())
-		} else {
-			g.popScope()
+			if moved != "" {
+				popped = withoutScopeVar(popped, moved)
+			}
+			emitScopeCleanupStmts(g, popped)
+		}
+		if tail {
+			g.line(fmt.Sprintf("    return %s;", tmp))
 		}
 	} else if fn.ExprBody != nil {
 		expr := g.emitExpr(fn.ExprBody)
@@ -140,6 +143,73 @@ func (g *generator) emitFuncDef(fn *ast.FnDecl, recv *types.Named) {
 	}
 	g.line("}")
 	g.line("")
+}
+
+// emitBodyStmts emits the statements of a function body, materialising a
+// trailing expression statement into a temporary that is returned to the
+// caller instead of being dropped. A trailing non-void expression is the
+// function's result (D18, types.blockTerminates); the old code emitted it as
+// a plain statement, so expression-bodied functions written with a block
+// (e.g. `fn equals(...) -> bool { match ... }`) fell off the end of the C
+// function and returned garbage (PA-06).
+//
+// The ownership rules mirror emitBlockExprAs: a trailing identifier is moved
+// out of its local (scope cleanup skips it), captured identifiers and other
+// lvalues are retained so the returned reference survives the local cleanup.
+// The returned tail flag reports whether a result was materialised, and moved
+// names the scope variable whose cleanup must be skipped.
+func (g *generator) emitBodyStmts(stmts []ast.Stmt, want types.Type) (tail bool, tmp string, moved string) {
+	if want == nil || want == types.Invalid || types.IsVoid(want) || len(stmts) == 0 {
+		for _, s := range stmts {
+			g.emitStmt(s)
+		}
+		return false, "", ""
+	}
+	n := len(stmts)
+	es, ok := stmts[n-1].(*ast.ExprStmt)
+	if !ok {
+		for _, s := range stmts {
+			g.emitStmt(s)
+		}
+		return false, "", ""
+	}
+	vt := g.info.TypeOf(es.X)
+	if vt == nil || vt == types.Invalid || types.IsVoid(vt) {
+		for _, s := range stmts {
+			g.emitStmt(s)
+		}
+		return false, "", ""
+	}
+	for _, s := range stmts[:n-1] {
+		g.emitStmt(s)
+	}
+	tmp = fmt.Sprintf("_dot_ret_tail_%d", g.unusedIdx)
+	g.unusedIdx++
+	val := g.emitExpr(es.X)
+	if id, ok := es.X.(*ast.Ident); ok && g.fnCaptures[varName(g, id)] {
+		val = emitDeepRetain(g, val, vt)
+	} else if id, ok := es.X.(*ast.Ident); ok {
+		moved = varName(g, id)
+	} else if isLValue(es.X) && !isEnumType(vt) {
+		if _, isFn := vt.(*types.Fn); isFn {
+			val = emitFnRetain(g, val, vt)
+		} else {
+			val = emitRetain(g, val, vt)
+		}
+	}
+	g.line(fmt.Sprintf("%s %s = %s;", cFieldType(g, vt), tmp, val))
+	return true, tmp, moved
+}
+
+// withoutScopeVar returns scopeVars without the entry named name.
+func withoutScopeVar(scopeVars []scopeVar, name string) []scopeVar {
+	out := make([]scopeVar, 0, len(scopeVars))
+	for _, sv := range scopeVars {
+		if sv.name != name {
+			out = append(out, sv)
+		}
+	}
+	return out
 }
 
 // registerFnParams registers Fn-typed parameters in the current scope so
@@ -558,13 +628,16 @@ func (g *generator) emitMonomorphisedFunc(inst *types.Instance) {
 		if decl.Body != nil {
 			g.pushScope()
 			g.registerFnParams(fn)
-			for _, s := range decl.Body.Stmts {
-				g.emitStmt(s)
-			}
+			tail, tmp, moved := g.emitBodyStmts(decl.Body.Stmts, fn.Result)
+			popped := g.popScope()
 			if !scopeBlockEndsInReturn(decl.Body.Stmts) {
-				emitScopeCleanupStmts(g, g.popScope())
-			} else {
-				g.popScope()
+				if moved != "" {
+					popped = withoutScopeVar(popped, moved)
+				}
+				emitScopeCleanupStmts(g, popped)
+			}
+			if tail {
+				g.line(fmt.Sprintf("    return %s;", tmp))
 			}
 		} else if decl.ExprBody != nil {
 			expr := g.emitExpr(decl.ExprBody)
