@@ -34,12 +34,21 @@ pub enum Expr {
     Match(value []Expr, arms []MatchArm, span Span)
     
     Assign(left []Expr, op TokenType, right []Expr, span Span)
+
+    FnLit(params []Param, ret_ty Option[TypeNode], body []Stmt, span Span)
+
+    StructLit(name string, fields []StructLitField, span Span)
 }
 
 pub struct MatchArm {
     pattern Pattern
     guard   Option[Expr]
     body    Expr
+}
+
+pub struct StructLitField {
+    name  string
+    value Expr
 }
 
 pub enum Pattern {
@@ -78,7 +87,8 @@ pub struct FieldDef {
 }
 
 pub struct VariantDef {
-    name string
+    name   string
+    params []Param
 }
 
 pub enum TypeNode {

@@ -26,7 +26,7 @@ impl Checker {
         global_scope.define(Symbol {
             name: "print",
             kind: SymbolKind.Function,
-            ty: Type.Func(params: []Type{Type.String}, ret_ty: []Type{Type.Void}),
+            ty: Type.Func(params: []Type{Type.Unknown}, ret_ty: []Type{Type.Void}),
             is_mut: false,
         })
 
@@ -81,7 +81,10 @@ impl Checker {
     }
 
     // Enum variants are recorded as fields of a synthetic entry so that
-    // match arms on Enum.Variant can be resolved by name.
+    // match arms on Enum.Variant can be resolved by name. Each variant also
+    // gets a constructor whose params are its real payload types (T-064c2);
+    // a payload-less variant gets an empty params list, so a zero-arg call
+    // passes the arity check.
     fn check_enum_decl(mut self, name string, variants []VariantDef, span Span) {
         enum_ty = Type.Struct(name: name)
         fields = []Symbol{}
@@ -92,12 +95,14 @@ impl Checker {
                 ty: enum_ty,
                 is_mut: false,
             })
-            // Stub constructor: payloads are not parsed yet (T-064), so the
-            // signature is one Unknown param and the enum type as the result.
+            payload_types = []Type{}
+            for p in v.params {
+                payload_types.push(self.resolve_type(p.ty, []string{}))
+            }
             self.current_scope[0].define(Symbol {
                 name: v.name,
                 kind: SymbolKind.Function,
-                ty: Type.Func(params: []Type{Type.Unknown}, ret_ty: []Type{enum_ty}),
+                ty: Type.Func(params: payload_types, ret_ty: []Type{enum_ty}),
                 is_mut: false,
             })
         }

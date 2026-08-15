@@ -14,12 +14,18 @@ impl Checker {
             Expr.Ident(name, span) => {
                 if sym = self.current_scope[0].lookup(name) {
                     if is_fn_kind(sym.kind) {
-                        // A bare stub constructor name (no call parens) is a
-                        // variant VALUE of the enum type, not a function.
+                        // A bare variant constructor name (no call parens) is
+                        // a variant VALUE of the enum type, not a function:
+                        // payload-less variants are unit values (None), and
+                        // legacy Unknown-param stubs keep typing as the enum
+                        // value too.
                         match sym.ty {
                             Type.Func(params, ret_ty) => {
-                                if params.len == 1 and is_unknown(params[0]) {
-                                    if ret_ty.len > 0 {
+                                if ret_ty.len > 0 {
+                                    if params.len == 0 {
+                                        return ret_ty[0]
+                                    }
+                                    if params.len == 1 and is_unknown(params[0]) {
                                         return ret_ty[0]
                                     }
                                 }
@@ -114,8 +120,41 @@ impl Checker {
                 }
                 return Type.Void
             }
+            Expr.FnLit(params, ret_ty, body, span) => {
+                return self.check_fn_lit(params, ret_ty, body, span)
+            }
+            Expr.StructLit(name, fields, span) => {
+                return self.check_struct_lit(name, fields, span)
+            }
         }
         return Type.Unknown
+    }
+
+    fn check_fn_lit(mut self, params []Param, ret_ty Option[TypeNode], body []Stmt, span Span) -> Type {
+        param_types = []Type{}
+        for p in params {
+            param_types.push(self.resolve_type(p.ty, self.type_params))
+        }
+        closure_ret = self.resolve_ret_ty(ret_ty, self.type_params)
+
+        saved_ret = self.ret_ty
+        self.ret_ty = []Type{closure_ret}
+        self.push_scope()
+        i = 0
+        for p in params {
+            self.current_scope[0].define(Symbol {
+                name: p.name,
+                kind: SymbolKind.Variable,
+                ty: param_types[i],
+                is_mut: false,
+            })
+            i += 1
+        }
+        self.check_fn_body_tail(body, 0, Type.Unknown)
+        self.pop_scope()
+        self.ret_ty = saved_ret
+
+        return Type.Func(params: param_types, ret_ty: []Type{closure_ret})
     }
 
     fn check_binary(mut self, left []Expr, op TokenType, right []Expr, span Span) -> Type {
@@ -645,6 +684,32 @@ impl Checker {
         t = self.check_expr(elements[i])
         next_first = if i == 0 { t } else { first }
         return self.tuple_type(elements, i + 1, next_first)
+    }
+
+    // Struct literal: Point { x: 1, y: 2 }. Every field is checked against
+    // the declared StructInfo; an undeclared struct yields Unknown field
+    // types, so all of its fields report "Unknown field".
+    fn check_struct_lit(mut self, name string, fields []StructLitField, span Span) -> Type {
+        self.check_struct_lit_fields(fields, 0, name, span)
+        return Type.Struct(name: name)
+    }
+
+    fn check_struct_lit_fields(mut self, fields []StructLitField, i int, name string, span Span) {
+        if i >= fields.len {
+            return
+        }
+        field = fields[i]
+        f_ty = self.find_struct_field(name, field.name)
+        if is_unknown(f_ty) {
+            self.error(span, "Unknown field: {field.name}")
+        }
+        val_ty = self.check_expr(field.value)
+        if is_known(f_ty) and is_known(val_ty) {
+            if not compatible(f_ty, val_ty) {
+                self.error(span, "Struct field type mismatch")
+            }
+        }
+        return self.check_struct_lit_fields(fields, i + 1, name, span)
     }
 }
 

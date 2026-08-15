@@ -162,7 +162,7 @@ pub fn main() {
     }
 
     c21 = Compiler.new()
-    c21.compile("enum Option {{ None Some }}\nfn m() -> Option {{ x = Some(5) return x }}")
+    c21.compile("enum Option {{ None Some(x int) }}\nfn m() -> Option {{ x = Some(5) return x }}")
     if c21.errors.len == 0 {
         print("OK: some ctor")
     } else {
@@ -170,7 +170,7 @@ pub fn main() {
     }
 
     c22 = Compiler.new()
-    c22.compile("enum Option {{ None Some }}\nfn m() -> bool {{ o = Some(5) return o.is_some() }}")
+    c22.compile("enum Option {{ None Some(x int) }}\nfn m() -> bool {{ o = Some(5) return o.is_some() }}")
     if c22.errors.len == 0 {
         print("OK: option is_some")
     } else {
@@ -178,7 +178,7 @@ pub fn main() {
     }
 
     c23 = Compiler.new()
-    c23.compile("enum Result {{ Ok Err }}\nfn f() -> Result {{ return Ok(1) }}\nfn m() -> bool {{ r = f() return r.is_ok() }}")
+    c23.compile("enum Result {{ Ok(x int) Err(e string) }}\nfn f() -> Result {{ return Ok(1) }}\nfn m() -> bool {{ r = f() return r.is_ok() }}")
     if c23.errors.len == 0 {
         print("OK: result is_ok")
     } else {
@@ -186,7 +186,7 @@ pub fn main() {
     }
 
     c24 = Compiler.new()
-    c24.compile("enum Option {{ None Some }}\nfn inc(n int) -> int {{ return n + 1 }}\nfn m() -> Option {{ o = Some(5) return o.map(inc) }}")
+    c24.compile("enum Option {{ None Some(x int) }}\nfn inc(n int) -> int {{ return n + 1 }}\nfn m() -> Option {{ o = Some(5) return o.map(inc) }}")
     if c24.errors.len == 0 {
         print("OK: option map")
     } else {
@@ -210,10 +210,106 @@ pub fn main() {
     }
 
     c27 = Compiler.new()
-    c27.compile("enum Option {{ None Some }}\nfn m() -> int {{ o = Some(5) return o.nope() }}")
+    c27.compile("enum Option {{ None Some(x int) }}\nfn m() -> int {{ o = Some(5) return o.nope() }}")
     if c27.errors.len > 0 {
         print("OK: unknown method")
     } else {
         print("ERR: unknown method")
+    }
+
+    c28 = Compiler.new()
+    c28.compile("fn m() -> int {{ f = fn(x int) -> int {{ return x * 2 }} return f(5) }}")
+    if c28.errors.len == 0 {
+        print("OK: closure basic")
+    } else {
+        print("ERR: closure basic: " + c28.errors[0])
+    }
+
+    c29 = Compiler.new()
+    c29.compile("fn m() -> int {{ add = fn(a int, b int) -> int {{ return a + b }} return add(1, 2) }}")
+    if c29.errors.len == 0 {
+        print("OK: closure two params")
+    } else {
+        print("ERR: closure two params: " + c29.errors[0])
+    }
+
+    c30 = Compiler.new()
+    c30.compile("fn m() -> int {{ x = 10 f = fn() -> int {{ return x }} return f() }}")
+    if c30.errors.len == 0 {
+        print("OK: closure capture")
+    } else {
+        print("ERR: closure capture: " + c30.errors[0])
+    }
+
+    c31 = Compiler.new()
+    c31.compile("fn apply(f fn(int) -> int, v int) -> int {{ return f(v) }}\nfn m() -> int {{ return apply(fn(x int) -> int {{ return x + 1 }}, 5) }}")
+    if c31.errors.len == 0 {
+        print("OK: closure as arg")
+    } else {
+        print("ERR: closure as arg: " + c31.errors[0])
+    }
+
+    c32 = Compiler.new()
+    c32.compile("struct Point {{ x int y int }}\nfn m() -> int {{ p = Point {{ x: 1, y: 2 }} return p.x }}")
+    if c32.errors.len == 0 {
+        print("OK: struct lit")
+    } else {
+        print("ERR: struct lit: " + c32.errors[0])
+    }
+
+    c33 = Compiler.new()
+    c33.compile("enum Option {{ None Some(x int) }}\nfn m() -> Option {{ x = Some(5) return x }}")
+    if c33.errors.len == 0 {
+        print("OK: payload ctor")
+    } else {
+        print("ERR: payload ctor: " + c33.errors[0])
+    }
+
+    c34 = Compiler.new()
+    c34.compile("enum Option {{ None Some(x int) }}\nfn m() -> bool {{ o = Some(5) return o.is_some() }}")
+    if c34.errors.len == 0 {
+        print("OK: payload is_some")
+    } else {
+        print("ERR: payload is_some: " + c34.errors[0])
+    }
+
+    c35 = Compiler.new()
+    c35.compile("fn m() -> int {{ f = fn(x int) -> int {{ return x * 2 }} return f(\"s\") }}")
+    if c35.errors.len > 0 {
+        print("OK: closure arg type")
+    } else {
+        print("ERR: closure arg type")
+    }
+
+    c36 = Compiler.new()
+    c36.compile("fn m() -> int {{ f = fn(x int) -> string {{ return \"a\" }} return f(5) }}")
+    if c36.errors.len > 0 {
+        print("OK: closure ret mismatch")
+    } else {
+        print("ERR: closure ret mismatch")
+    }
+
+    c37 = Compiler.new()
+    c37.compile("struct Point {{ x int y int }}\nfn m() -> Point {{ p = Point {{ x: 1, y: \"s\" }} return p }}")
+    if c37.errors.len > 0 {
+        print("OK: struct field mismatch")
+    } else {
+        print("ERR: struct field mismatch")
+    }
+
+    c38 = Compiler.new()
+    c38.compile("struct Point {{ x int y int }}\nfn m() -> Point {{ p = Point {{ x: 1, z: 2 }} return p }}")
+    if c38.errors.len > 0 {
+        print("OK: struct unknown field")
+    } else {
+        print("ERR: struct unknown field")
+    }
+
+    c39 = Compiler.new()
+    c39.compile("enum Option {{ None Some(x int) }}\nfn m() -> Option {{ x = Some(\"s\") return x }}")
+    if c39.errors.len > 0 {
+        print("OK: payload type")
+    } else {
+        print("ERR: payload type")
     }
 }

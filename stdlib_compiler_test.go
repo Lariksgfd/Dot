@@ -47,6 +47,18 @@ func TestStdlibCompiler(t *testing.T) {
 				"OK: generic ret mismatch",
 				"OK: generic conflict",
 				"OK: unknown method",
+				"OK: closure basic",
+				"OK: closure two params",
+				"OK: closure capture",
+				"OK: closure as arg",
+				"OK: struct lit",
+				"OK: payload ctor",
+				"OK: payload is_some",
+				"OK: closure arg type",
+				"OK: closure ret mismatch",
+				"OK: struct field mismatch",
+				"OK: struct unknown field",
+				"OK: payload type",
 			} {
 				if !strings.Contains(out, want) {
 					t.Errorf("expected %q in output, got: %s", want, out)

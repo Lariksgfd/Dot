@@ -42,6 +42,8 @@ impl Expr {
             If(_, _, _, span) => span
             Match(_, _, span) => span
             Assign(_, _, _, span) => span
+            FnLit(_, _, _, span) => span
+            StructLit(_, _, span) => span
         }
     }
 }
@@ -90,6 +92,9 @@ impl Parser {
 
     fn parse_prefix(mut self) -> Option[Expr] {
         if self.cur_token_is(TokenType.Ident) {
+            if self.peek_token_is(TokenType.LBrace) {
+                return self.parse_struct_lit(self.cur_tok.lexeme, self.cur_tok.pos)
+            }
             return Some(Expr.Ident(self.cur_tok.lexeme, Span.new(self.cur_tok.pos, self.cur_tok.end)))
         }
         if self.cur_token_is(TokenType.SelfKw) {
@@ -139,8 +144,7 @@ impl Parser {
             return self.parse_match_expr()
         }
         if self.cur_token_is(TokenType.Fn) {
-            self.errors.push("fn literals (closures) are not supported yet")
-            return None
+            return self.parse_fn_lit()
         }
         if self.cur_token_is(TokenType.LBrace) {
             self.errors.push("map literals are not supported yet")
@@ -148,6 +152,49 @@ impl Parser {
         }
         self.errors.push("no prefix parse function found")
         return None
+    }
+
+    // Point { x: 1, y: 2 } -> Expr.StructLit. cur is the struct name and
+    // peek is LBrace when called; leaves cur on RBrace (like the other
+    // literal parsers). An empty literal Point {} is valid. Shorthand
+    // fields {x} and type-prefixed literals are not representable yet.
+    fn parse_struct_lit(mut self, name string, start Position) -> Option[Expr] {
+        self.next_token() // cur = LBrace
+        fields = self.parse_struct_lit_fields()
+        end = self.cur_tok.end
+        return Some(Expr.StructLit(name, fields, Span.new(start, end)))
+    }
+
+    fn parse_struct_lit_fields(mut self) -> []StructLitField {
+        fields = []StructLitField{}
+        self.next_token() // cur = first field name or RBrace
+
+        for not self.cur_token_is(TokenType.RBrace) and not self.cur_token_is(TokenType.EOF) {
+            if self.cur_token_is(TokenType.Ident) {
+                fname = self.cur_tok.lexeme
+                if not self.expect_peek(TokenType.Colon) {
+                    return fields
+                }
+                self.next_token() // cur = value start
+                value = self.parse_expr(PREC_LOWEST)
+                if value.is_some() {
+                    fields.push(StructLitField { name: fname, value: value.unwrap() })
+                }
+            }
+            if self.peek_token_is(TokenType.Comma) {
+                self.next_token() // cur = Comma
+                self.next_token() // cur = next field or RBrace
+            } else if self.peek_token_is(TokenType.RBrace) or self.peek_token_is(TokenType.EOF) {
+                break
+            } else {
+                self.next_token()
+            }
+        }
+
+        if not self.cur_token_is(TokenType.RBrace) {
+            self.expect_peek(TokenType.RBrace)
+        }
+        return fields
     }
 
     // (a) -> grouped; () / (a,) / (a, b) -> TupleLit.
@@ -425,6 +472,41 @@ fn parse_array_elements(mut self, end_tok TokenType) -> []Expr {
         }
         self.next_token() // cur = Ident
         return self.parse_pattern_path(name + "." + self.cur_tok.lexeme)
+    }
+
+    // fn(x int) -> int { x + 1 } -> Expr.FnLit. A missing body (no block)
+    // is accepted silently, like trait method signatures in parse_fn_body.
+    fn parse_fn_lit(mut self) -> Option[Expr] {
+        start = self.cur_tok.pos
+
+        if not self.expect_peek(TokenType.LParen) {
+            return None
+        }
+        params = self.parse_params()
+
+        ret_ty = self.parse_fn_lit_ret()
+        body = self.parse_fn_lit_body()
+        end = self.cur_tok.end
+        return Some(Expr.FnLit(params, ret_ty, body, Span.new(start, end)))
+    }
+
+    // -> ret_ty is optional; the helper keeps the assignment out of an
+    // if-branch so the value survives Dot's if-scope shadowing.
+    fn parse_fn_lit_ret(mut self) -> Option[TypeNode] {
+        if self.peek_token_is(TokenType.Arrow) {
+            self.next_token() // cur = Arrow
+            self.next_token() // cur = ret type start
+            return Some(self.parse_type())
+        }
+        return None
+    }
+
+    fn parse_fn_lit_body(mut self) -> []Stmt {
+        if self.peek_after_newline_is(TokenType.LBrace) {
+            self.next_token() // cur = LBrace
+            return self.parse_block_stmt()
+        }
+        return []Stmt{}
     }
 
     fn has_infix_parse_fn(self, t TokenType) -> bool {

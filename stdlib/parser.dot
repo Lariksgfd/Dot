@@ -112,7 +112,7 @@ impl Parser {
             self.next_token()
             return self.parse_decl()
         }
-        if self.cur_token_is(TokenType.Ident) or self.cur_token_is(TokenType.Const) or self.cur_token_is(TokenType.Mut) {
+        if self.cur_token_is(TokenType.Ident) or self.cur_token_is(TokenType.Const) or self.cur_token_is(TokenType.Mut) or self.cur_token_is(TokenType.If) or self.cur_token_is(TokenType.For) or self.cur_token_is(TokenType.Match) {
             return self.parse_toplevel_stmt()
         }
         return None
@@ -219,8 +219,8 @@ impl Parser {
         return Some(Decl.Struct(name, fields, Span.new(start, end)))
     }
 
-    // enum Name { Variant, Variant(x int, ...) } — variant payloads are
-    // skipped, VariantDef has no payload field in ast.dot.
+    // enum Name { Variant, Variant(x int, ...) } — payloads are parsed into
+    // VariantDef.params; the checker is not aware of them yet (T-064c2).
     fn parse_enum_decl(mut self) -> Option[Decl] {
         start = self.cur_tok.pos
         if not self.expect_peek(TokenType.Ident) { return None }
@@ -242,19 +242,25 @@ impl Parser {
 
         for not self.cur_token_is(TokenType.RBrace) and not self.cur_token_is(TokenType.EOF) {
             if self.cur_token_is(TokenType.Ident) {
-                v = VariantDef { name: self.cur_tok.lexeme }
+                v = self.parse_variant_def(self.cur_tok.lexeme)
                 variants.push(v)
-                if self.peek_token_is(TokenType.LParen) {
-                    for not self.peek_token_is(TokenType.RParen) and not self.peek_token_is(TokenType.EOF) {
-                        self.next_token()
-                    }
-                }
             }
             self.next_token()
         }
 
         end = self.cur_tok.end
         return Some(Decl.Enum(name, variants, Span.new(start, end)))
+    }
+
+    // VariantDef parser: optional (params) payload after the variant name.
+    // parse_params starts on LParen and leaves cur on RParen, so the enum
+    // loop's trailing next_token moves past the closing paren.
+    fn parse_variant_def(mut self, name string) -> VariantDef {
+        if self.peek_token_is(TokenType.LParen) {
+            self.next_token() // cur = LParen
+            return VariantDef { name, params: self.parse_params() }
+        }
+        return VariantDef { name, params: []Param{} }
     }
 
     // trait Name { fn sig ... fn with_default ... }

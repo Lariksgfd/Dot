@@ -272,22 +272,7 @@ impl Lexer {
             end_pos = Position.new(self.file, self.line, self.col, self.offset)
             return Token { kind, lexeme: ident, value: ident, base: 0, suffix: "", parts: nil, pos, end: end_pos }
         } else if self.is_digit(ch) {
-            start = self.offset - 1
-            is_float = false
-            for self.is_digit(self.ch) {
-                self.advance()
-            }
-            if self.ch == 46 { // .
-                self.advance()
-                is_float = true
-                for self.is_digit(self.ch) {
-                    self.advance()
-                }
-            }
-            num_str = self.src[start..self.offset - 1]
-            kind = if is_float { TokenType.Float } else { TokenType.Int }
-            end_pos = Position.new(self.file, self.line, self.col, self.offset)
-            return Token { kind, lexeme: num_str, value: num_str, base: 10, suffix: "", parts: nil, pos, end: end_pos }
+            return self.read_number(pos)
         } else if ch == 34 { // "
             self.advance()
             start = self.offset - 1
@@ -484,5 +469,39 @@ impl Lexer {
             pos,
             end: end_pos
         }
+    }
+
+    // Number literal. A dot is consumed as part of a float only when the
+    // next source char is not a dot (so 0..10 lexes as Int + DotDot + Int).
+    // Early returns instead of an is_float flag: a bare `x = true` inside an
+    // if-body would create a shadow variable (Dot scoping), not reassign.
+    fn read_number(mut self, pos Position) -> Token {
+        start = self.offset - 1
+        for self.is_digit(self.ch) {
+            self.advance()
+        }
+        if self.ch == 46 and self.offset < self.src.len and self.src[self.offset] != 46 {
+            self.advance() // consume the dot
+            for self.is_digit(self.ch) {
+                self.advance()
+            }
+            num_str = self.slice_number(start)
+            end_pos = Position.new(self.file, self.line, self.col, self.offset)
+            return Token { kind: TokenType.Float, lexeme: num_str, value: num_str, base: 10, suffix: "", parts: nil, pos, end: end_pos }
+        }
+        num_str = self.slice_number(start)
+        end_pos = Position.new(self.file, self.line, self.col, self.offset)
+        return Token { kind: TokenType.Int, lexeme: num_str, value: num_str, base: 10, suffix: "", parts: nil, pos, end: end_pos }
+    }
+
+    // advance() sets ch = -1 WITHOUT bumping offset when the input is
+    // exhausted, so the naive src[start..offset - 1] drops the last char of
+    // a number at the end of input. When the scan ran into EOF, the end of
+    // the number is src.len instead of offset - 1.
+    fn slice_number(self, start int) -> string {
+        if self.ch == -1 {
+            return self.src[start..self.src.len]
+        }
+        return self.src[start..self.offset - 1]
     }
 }
