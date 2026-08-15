@@ -12,6 +12,7 @@ pub enum Type {
     Slice(elem []Type)
     Struct(name string)
     TypeVar(name string)
+    Map(key []Type, val []Type)
 }
 
 impl Type {
@@ -91,6 +92,17 @@ impl Type {
             Type.TypeVar(name) => {
                 match other {
                     Type.TypeVar(oname) => { return name == oname }
+                    _ => { return false }
+                }
+            }
+            Type.Map(key, val) => {
+                match other {
+                    Type.Map(ok, ov) => {
+                        if not type_lists_equal(key, ok, 0) {
+                            return false
+                        }
+                        return type_lists_equal(val, ov, 0)
+                    }
                     _ => { return false }
                 }
             }

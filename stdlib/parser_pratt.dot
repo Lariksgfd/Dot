@@ -44,6 +44,7 @@ impl Expr {
             Assign(_, _, _, span) => span
             FnLit(_, _, _, span) => span
             StructLit(_, _, span) => span
+            MapLit(_, span) => span
         }
     }
 }
@@ -147,8 +148,7 @@ impl Parser {
             return self.parse_fn_lit()
         }
         if self.cur_token_is(TokenType.LBrace) {
-            self.errors.push("map literals are not supported yet")
-            return None
+            return self.parse_map_lit()
         }
         self.errors.push("no prefix parse function found")
         return None
@@ -197,41 +197,91 @@ impl Parser {
         return fields
     }
 
-    // (a) -> grouped; () / (a,) / (a, b) -> TupleLit.
-    // Named tuples (x: 1, y: 2) are not representable in ast.dot yet.
+    // {k: v, k2: v2} -> Expr.MapLit. cur is LBrace when called; leaves cur
+    // on RBrace (like the other literal parsers). An empty literal {} is a
+    // valid empty map. Keys are arbitrary expressions, not just identifiers.
+    fn parse_map_lit(mut self) -> Option[Expr] {
+        start = self.cur_tok.pos
+        entries = self.parse_map_entries()
+        end = self.cur_tok.end
+        return Some(Expr.MapLit(entries, Span.new(start, end)))
+    }
+
+    fn parse_map_entries(mut self) -> []MapEntryNode {
+        entries = []MapEntryNode{}
+        self.next_token() // cur = first key or RBrace
+
+        for not self.cur_token_is(TokenType.RBrace) and not self.cur_token_is(TokenType.EOF) {
+            key = self.parse_expr(PREC_LOWEST)
+            if key.is_none() {
+                return entries
+            }
+            if not self.expect_peek(TokenType.Colon) {
+                return entries
+            }
+            self.next_token() // cur = value start
+            value = self.parse_expr(PREC_LOWEST)
+            if value.is_some() {
+                entries.push(MapEntryNode { key: key.unwrap(), value: value.unwrap() })
+            }
+            if self.peek_token_is(TokenType.Comma) {
+                self.next_token() // cur = Comma
+                self.next_token() // cur = next key or RBrace
+            } else if self.peek_token_is(TokenType.RBrace) or self.peek_token_is(TokenType.EOF) {
+                break
+            } else {
+                self.next_token()
+            }
+        }
+
+        if not self.cur_token_is(TokenType.RBrace) {
+            self.expect_peek(TokenType.RBrace)
+        }
+        return entries
+    }
+
+    // (a) -> grouped; () / (a,) / (a, b) -> TupleLit. A named element
+    // (x: 1) makes a tuple even without a comma, since dropping the name
+    // would change the meaning.
     fn parse_group_or_tuple(mut self) -> Option[Expr] {
         start = self.cur_tok.pos
 
         if self.peek_token_is(TokenType.RParen) {
             self.next_token()
-            return Some(Expr.TupleLit([]Expr{}, Span.new(start, self.cur_tok.end)))
+            return Some(Expr.TupleLit([]TupleElem{}, Span.new(start, self.cur_tok.end)))
         }
 
-        self.next_token()
-        first = self.parse_expr(PREC_LOWEST)
+        self.next_token() // cur = first element
+        first = self.parse_tuple_elem()
         if first.is_none() {
             for not self.cur_token_is(TokenType.RParen) and not self.cur_token_is(TokenType.EOF) {
                 self.next_token()
             }
             return None
         }
+        first_elem = first.unwrap()
 
         if not self.peek_token_is(TokenType.Comma) {
             if not self.expect_peek(TokenType.RParen) {
                 return None
             }
-            return first
+            if first_elem.name.is_some() {
+                return Some(Expr.TupleLit([]TupleElem{first_elem}, Span.new(start, self.cur_tok.end)))
+            }
+            return Some(first_elem.value)
         }
 
-        elements = []Expr{first.unwrap()}
+        elements = []TupleElem{first_elem}
         for self.peek_token_is(TokenType.Comma) {
-            self.next_token()
+            self.next_token() // cur = Comma
             if self.peek_token_is(TokenType.RParen) {
-                self.next_token()
-                break
+                // Trailing comma: cur lands on RParen here, so return
+                // directly instead of expect_peek, which checks peek.
+                self.next_token() // cur = RParen
+                return Some(Expr.TupleLit(elements, Span.new(start, self.cur_tok.end)))
             }
-            self.next_token()
-            el = self.parse_expr(PREC_LOWEST)
+            self.next_token() // cur = next element
+            el = self.parse_tuple_elem()
             if el.is_some() {
                 elements.push(el.unwrap())
             }
@@ -241,6 +291,26 @@ impl Parser {
             return None
         }
         return Some(Expr.TupleLit(elements, Span.new(start, self.cur_tok.end)))
+    }
+
+    // One tuple element: `x: expr` (named) or a plain expression. The named
+    // arm returns early so its locals stay inside the branch scope.
+    fn parse_tuple_elem(mut self) -> Option[TupleElem] {
+        if self.cur_token_is(TokenType.Ident) and self.peek_token_is(TokenType.Colon) {
+            name = self.cur_tok.lexeme
+            self.next_token() // cur = Colon
+            self.next_token() // cur = value start
+            value = self.parse_expr(PREC_LOWEST)
+            if value.is_none() {
+                return None
+            }
+            return Some(TupleElem { name: Some(name), value: value.unwrap() })
+        }
+        value = self.parse_expr(PREC_LOWEST)
+        if value.is_none() {
+            return None
+        }
+        return Some(TupleElem { name: None, value: value.unwrap() })
     }
 
     // [1, 2, 3] -> ArrayLit; []int{1, 2} -> ArrayLit (type annotation is dropped,

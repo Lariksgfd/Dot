@@ -59,6 +59,14 @@ func TestStdlibCompiler(t *testing.T) {
 				"OK: struct field mismatch",
 				"OK: struct unknown field",
 				"OK: payload type",
+				"OK: map lit",
+				"OK: typed map",
+				"OK: empty map",
+				"OK: map val mismatch",
+				"OK: map key mismatch",
+				"OK: named tuple",
+				"OK: mixed tuple",
+				"OK: tuple trailing comma",
 			} {
 				if !strings.Contains(out, want) {
 					t.Errorf("expected %q in output, got: %s", want, out)

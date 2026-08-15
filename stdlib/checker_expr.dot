@@ -126,6 +126,9 @@ impl Checker {
             Expr.StructLit(name, fields, span) => {
                 return self.check_struct_lit(name, fields, span)
             }
+            Expr.MapLit(entries, span) => {
+                return self.check_map_lit(entries, span)
+            }
         }
         return Type.Unknown
     }
@@ -677,11 +680,39 @@ impl Checker {
         return self.check_array_elems(elements, i + 1, next_ty, span)
     }
 
-    fn tuple_type(mut self, elements []Expr, i int, first Type) -> Type {
+    fn check_map_lit(mut self, entries []MapEntryNode, span Span) -> Type {
+        return self.check_map_entries(entries, 0, Type.Unknown, Type.Unknown, span)
+    }
+
+    // Walks map literal entries, accumulating the first known key and value
+    // types and requiring every later entry to be compatible with them.
+    fn check_map_entries(mut self, entries []MapEntryNode, i int, k_ty Type, v_ty Type, span Span) -> Type {
+        if i >= entries.len {
+            return Type.Map(key: []Type{k_ty}, val: []Type{v_ty})
+        }
+        entry = entries[i]
+        k = self.check_expr(entry.key)
+        v = self.check_expr(entry.value)
+        if is_known(k_ty) and is_known(k) {
+            if not compatible(k_ty, k) {
+                self.error(span, "Map keys must have the same type")
+            }
+        }
+        if is_known(v_ty) and is_known(v) {
+            if not compatible(v_ty, v) {
+                self.error(span, "Map values must have the same type")
+            }
+        }
+        next_k = if is_unknown(k_ty) { k } else { k_ty }
+        next_v = if is_unknown(v_ty) { v } else { v_ty }
+        return self.check_map_entries(entries, i + 1, next_k, next_v, span)
+    }
+
+    fn tuple_type(mut self, elements []TupleElem, i int, first Type) -> Type {
         if i >= elements.len {
             return first
         }
-        t = self.check_expr(elements[i])
+        t = self.check_expr(elements[i].value)
         next_first = if i == 0 { t } else { first }
         return self.tuple_type(elements, i + 1, next_first)
     }

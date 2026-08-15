@@ -727,18 +727,20 @@ impl Parser {
             self.errors.push("expected expression after assignment")
             return None
         }
-        elements = []Expr{first.unwrap()}
+        elements = []TupleElem{}
+        first_expr = first.unwrap()
+        elements.push(TupleElem { name: None, value: first_expr })
         for self.peek_token_is(TokenType.Comma) {
             self.next_token() // cur = Comma
             self.next_token() // cur = value
             el = self.parse_expr(PREC_LOWEST)
             if el.is_some() {
-                elements.push(el.unwrap())
+                elements.push(TupleElem { name: None, value: el.unwrap() })
             }
         }
         if elements.len == 1 {
             end = self.cur_tok.end
-            return Some(Stmt.Let(name, None, elements[0], is_mut, Span.new(start, end)))
+            return Some(Stmt.Let(name, None, first_expr, is_mut, Span.new(start, end)))
         }
         end = self.cur_tok.end
         return Some(Stmt.Let(name, None, Expr.TupleLit(elements, Span.new(start, end)), is_mut, Span.new(start, end)))
@@ -746,6 +748,25 @@ impl Parser {
 
     pub fn parse_type(mut self) -> TypeNode {
         start = self.cur_tok.pos
+        // map[string]int -> TypeNode.Map. "map" is not a keyword, so it lexes
+        // as Ident; only treat it as a map type when LBracket follows. cur is
+        // the Ident "map" and peek is LBracket when this branch is taken.
+        // parse_type leaves cur on the last token of a type (for Named that is
+        // the name itself), so one explicit next_token is needed to reach the
+        // RBracket that closes the key type; then val type follows.
+        if self.cur_token_is(TokenType.Ident) and self.cur_tok.lexeme == "map" and self.peek_token_is(TokenType.LBracket) {
+            self.next_token() // cur = LBracket
+            self.next_token() // cur = key type start
+            key_ty = self.parse_type()
+            // Named branch of parse_type leaves cur on the name itself, so
+            // advance past it explicitly to reach RBracket.
+            self.next_token() // cur = RBracket
+            if self.cur_token_is(TokenType.RBracket) {
+                self.next_token() // cur = val type start
+                val_ty = self.parse_type()
+                return TypeNode.Map([key_ty], [val_ty], Span.new(start, self.cur_tok.end))
+            }
+        }
         if self.cur_token_is(TokenType.LBracket) {
             self.next_token()
             if self.cur_token_is(TokenType.RBracket) {

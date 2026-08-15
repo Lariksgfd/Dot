@@ -224,6 +224,11 @@ impl Checker {
             TypeNode.Pointer(elem_ty, span) => {
                 return Type.Unknown
             }
+            TypeNode.Map(key_ty, val_ty, span) => {
+                if key_ty.len > 0 and val_ty.len > 0 {
+                    return Type.Map(key: []Type{self.resolve_type(key_ty[0], tps)}, val: []Type{self.resolve_type(val_ty[0], tps)})
+                }
+            }
             _ => {}
         }
         return Type.Unknown
