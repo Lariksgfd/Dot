@@ -49,11 +49,8 @@ impl Expr {
     }
 }
 
-// Token-kind equality that is safe in the bootstrap C codegen: enum values
-// are compared through their stringified variant names, which are emitted
-// from real variant tags.
 fn kind_eq(a TokenType, b TokenType) -> bool {
-    return "{a}" == "{b}"
+    return a == b
 }
 
 impl Parser {

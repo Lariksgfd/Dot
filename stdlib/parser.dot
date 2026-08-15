@@ -30,7 +30,7 @@ impl Parser {
         self.peek_tok = self.peek2_tok
         self.peek2_tok = self.l.next_token()
         // Skip newlines transparently for now, or handle them based on statement rules
-        for "{self.cur_tok.kind}" == "{TokenType.Newline}" {
+        for self.cur_tok.kind == TokenType.Newline {
             self.cur_tok = self.peek_tok
             self.peek_tok = self.peek2_tok
             self.peek2_tok = self.l.next_token()
@@ -38,15 +38,15 @@ impl Parser {
     }
 
     pub fn cur_token_is(self, t TokenType) -> bool {
-        return "{self.cur_tok.kind}" == "{t}"
+        return self.cur_tok.kind == t
     }
 
     pub fn peek_token_is(self, t TokenType) -> bool {
-        return "{self.peek_tok.kind}" == "{t}"
+        return self.peek_tok.kind == t
     }
 
     pub fn peek2_token_is(self, t TokenType) -> bool {
-        return "{self.peek2_tok.kind}" == "{t}"
+        return self.peek2_tok.kind == t
     }
 
     // True when t is the next token, or when one newline sits between cur
@@ -666,13 +666,13 @@ impl Parser {
     // Can this token start a type annotation? Fixed arrays [N]T are excluded:
     // they are ambiguous with index assignments a[0] = 1 at statement start.
     fn starts_type(self, t TokenType) -> bool {
-        if "{t}" == "{TokenType.Ident}" { return true }
-        if "{t}" == "{TokenType.Star}" { return true }
-        if "{t}" == "{TokenType.SelfType}" { return true }
-        if "{t}" == "{TokenType.Dyn}" { return true }
-        if "{t}" == "{TokenType.Fn}" { return true }
-        if "{t}" == "{TokenType.LBracket}" {
-            if "{self.peek2_tok.kind}" == "{TokenType.RBracket}" {
+        if t == TokenType.Ident { return true }
+        if t == TokenType.Star { return true }
+        if t == TokenType.SelfType { return true }
+        if t == TokenType.Dyn { return true }
+        if t == TokenType.Fn { return true }
+        if t == TokenType.LBracket {
+            if self.peek2_tok.kind == TokenType.RBracket {
                 return true
             }
         }

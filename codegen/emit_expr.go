@@ -147,10 +147,16 @@ func emitBinary(g *generator, x *ast.BinaryExpr) string {
 		if isStringExpr(g, x.X) {
 			return fmt.Sprintf("dot_string_eq(%s, %s)", lhs, rhs)
 		}
+		if isEnumType(g.info.TypeOf(x.X)) {
+			return emitEnumEq(g, lhs, rhs, g.info.TypeOf(x.X), false)
+		}
 		return fmt.Sprintf("(%s == %s)", lhs, rhs)
 	case lexer.TokenBangEq:
 		if isStringExpr(g, x.X) {
 			return fmt.Sprintf("!dot_string_eq(%s, %s)", lhs, rhs)
+		}
+		if isEnumType(g.info.TypeOf(x.X)) {
+			return emitEnumEq(g, lhs, rhs, g.info.TypeOf(x.X), true)
 		}
 		return fmt.Sprintf("(%s != %s)", lhs, rhs)
 	case lexer.TokenLt:
@@ -193,6 +199,27 @@ func isStringExpr(g *generator, e ast.Expr) bool {
 		return true
 	}
 	return types.IsStringType(types.Underlying(t))
+}
+
+// emitEnumEq emits tag-based equality for two enum-typed operands. Enum
+// values are heap-allocated tagged unions, so a pointer comparison would be
+// wrong (two separately allocated values of the same variant compare
+// unequal). Equality is variant identity: both non-NULL and matching tags.
+// Payloads are not compared (SPEC defines no payload comparison for ==);
+// NULL == NULL is true, NULL vs value is false.
+func emitEnumEq(g *generator, lhs, rhs string, t types.Type, neg bool) string {
+	cname := cType(g, t)
+	ta := fmt.Sprintf("_dot_eq_a_%d", g.unusedIdx)
+	g.unusedIdx++
+	tb := fmt.Sprintf("_dot_eq_b_%d", g.unusedIdx)
+	g.unusedIdx++
+	op := ""
+	if neg {
+		op = "!"
+	}
+	return fmt.Sprintf(
+		"({ %s* %s = (%s); %s* %s = (%s); %s((%s) == (%s) || ((%s) != NULL && (%s) != NULL && (%s)->tag == (%s)->tag)); })",
+		cname, ta, lhs, cname, tb, rhs, op, ta, tb, ta, tb, ta, tb)
 }
 
 // emitPow selects the correct runtime power function based on the result type.

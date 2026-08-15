@@ -1,0 +1,46 @@
+// CG-38: == / != on enum values (C backend) — tag identity semantics.
+// [ОТМЕТКА] Payloads are NOT compared: two values of the same variant are
+// equal regardless of payload (coder's decision, SPEC does not define
+// payload comparison).
+enum Color {
+    Red
+    Green
+    Blue
+}
+
+enum Shape {
+    Circle(radius float)
+    Square(side float)
+}
+
+fn pick(x int) -> Color {
+    if x > 0 {
+        return Color.Green
+    }
+    return Color.Red
+}
+
+fn circle(r float) -> Shape {
+    return Shape.Circle(r)
+}
+
+fn main() {
+    a = Color.Red
+    b = Color.Red
+    c = Color.Green
+    print(a == b)  // 1
+    print(a == c)  // 0
+    print(a != c)  // 1
+    print(a != b)  // 0
+
+    s1 = Shape.Circle(5.0)
+    s2 = Shape.Circle(99.0)
+    s3 = Shape.Square(2.0)
+    print(s1 == s2)  // 1 — same tag, payload ignored
+    print(s1 == s3)  // 0
+    print(s1 != s3)  // 1
+
+    print(pick(1) == pick(0))  // 0 — function results, different tags
+    print(pick(1) == pick(2))  // 1 — same tag
+    print(circle(1.0) == s2)   // 1 — same tag, payload ignored
+}

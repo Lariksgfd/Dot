@@ -13,7 +13,7 @@ impl Checker {
             Expr.NilLit(span) => { return Type.Nil }
             Expr.Ident(name, span) => {
                 if sym = self.current_scope[0].lookup(name) {
-                    if is_fn_kind(sym.kind) {
+                    if sym.kind == SymbolKind.Function {
                         // A bare variant constructor name (no call parens) is
                         // a variant VALUE of the enum type, not a function:
                         // payload-less variants are unit values (None), and
@@ -317,7 +317,7 @@ impl Checker {
         match callee {
             Expr.Ident(name, _) => {
                 if sym = self.current_scope[0].lookup(name) {
-                    if is_fn_kind(sym.kind) {
+                    if sym.kind == SymbolKind.Function {
                         return sym.ty
                     }
                 }
@@ -783,14 +783,4 @@ pub fn result_method(name string) -> Type {
         return Type.Func(params: []Type{Type.Func(params: []Type{Type.Unknown}, ret_ty: []Type{Type.Unknown})}, ret_ty: []Type{Type.Struct(name: "Result")})
     }
     return Type.Unknown
-}
-
-// Enum equality is unsafe in the bootstrap C codegen (see parser_pratt
-// kind_eq), so SymbolKind is compared via match.
-fn is_fn_kind(k SymbolKind) -> bool {
-    match k {
-        SymbolKind.Function => { return true }
-        _ => {}
-    }
-    return false
 }

@@ -212,6 +212,24 @@ func TestE2E_CG37MatchLoopReassign(t *testing.T) {
 	}
 }
 
+// TestE2E_CG38EnumEq checks == and != on enum values end to end. Semantics
+// are tag identity (CG-38): values of the same variant are equal even with
+// different payloads; [ОТМЕТКА] payloads are not compared (SPEC does not
+// define payload comparison).
+func TestE2E_CG38EnumEq(t *testing.T) {
+	for _, useLLVM := range []bool{false, true} {
+		t.Run(fmt.Sprintf("llvm=%v", useLLVM), func(t *testing.T) {
+			out, err := buildAndRun(t, "testdata/cg38_enum_eq.dot", useLLVM)
+			if err != nil {
+				t.Fatalf("build+run failed: %v\noutput: %s", err, out)
+			}
+			if !contains(out, "1010101011") {
+				t.Errorf("expected enum equality output, got: %s", out)
+			}
+		})
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchSubstring(s, substr)
 }
