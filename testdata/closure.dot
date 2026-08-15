@@ -83,7 +83,7 @@ fn main() {
     print("S5b")
     print([fn(x int) -> int = x + 1, fn(x int) -> int = x * 2][1](41))
     print("S5c")
-    print([fn(x int) -> int = x + n,][0](41))
+    print([fn(x int) -> int = x + n][0](41))
     print("|")
 
     // S6: match with block arms returning values.
