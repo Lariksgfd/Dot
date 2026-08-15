@@ -14,6 +14,7 @@ pub struct Checker {
     errors        []string
     loop_depth    int
     ret_ty        []Type
+    type_params   []string
     structs       []StructInfo
 }
 
@@ -34,6 +35,7 @@ impl Checker {
             errors: []string{},
             loop_depth: 0,
             ret_ty: []Type{},
+            type_params: []string{},
             structs: []StructInfo{},
         }
     }
@@ -57,7 +59,7 @@ impl Checker {
 
     pub fn check_decl(mut self, decl Decl) {
         match decl {
-            Decl.Fn(name, params, ret_ty, body, span) => self.check_fn_decl(name, params, ret_ty, body, span)
+            Decl.Fn(name, params, type_params, ret_ty, body, span) => self.check_fn_decl(name, params, type_params, ret_ty, body, span)
             Decl.Struct(name, fields, span) => self.check_struct_decl(name, fields, span)
             Decl.Enum(name, variants, span) => self.check_enum_decl(name, variants, span)
             Decl.Trait(name, methods, span) => {}
@@ -71,7 +73,7 @@ impl Checker {
             syms.push(Symbol {
                 name: f.name,
                 kind: SymbolKind.Variable,
-                ty: self.resolve_type(f.ty),
+                ty: self.resolve_type(f.ty, []string{}),
                 is_mut: false,
             })
         }
@@ -90,6 +92,14 @@ impl Checker {
                 ty: enum_ty,
                 is_mut: false,
             })
+            // Stub constructor: payloads are not parsed yet (T-064), so the
+            // signature is one Unknown param and the enum type as the result.
+            self.current_scope[0].define(Symbol {
+                name: v.name,
+                kind: SymbolKind.Function,
+                ty: Type.Func(params: []Type{Type.Unknown}, ret_ty: []Type{enum_ty}),
+                is_mut: false,
+            })
         }
         self.structs.push(StructInfo { name, fields })
         self.current_scope[0].define(Symbol {
@@ -100,16 +110,20 @@ impl Checker {
         })
     }
 
-    fn check_fn_decl(mut self, name string, params []Param, ret_ty Option[TypeNode], body []Stmt, span Span) {
+    fn check_fn_decl(mut self, name string, params []Param, type_params []string, ret_ty Option[TypeNode], body []Stmt, span Span) {
+        // 0. Install the type parameters so resolve_type can turn their
+        // names into TypeVar types while checking params, return type and body.
+        self.type_params = type_params
+
         // 1. Resolve return type. A helper is used because a bare
         // `resolved_ret_ty = ...` inside an if-body would declare a shadow
         // variable (Dot scoping), not reassign the outer one.
-        resolved_ret_ty = self.resolve_ret_ty(ret_ty)
+        resolved_ret_ty = self.resolve_ret_ty(ret_ty, self.type_params)
 
         // 2. Resolve param types
         param_types = []Type{}
         for p in params {
-            param_types.push(self.resolve_type(p.ty))
+            param_types.push(self.resolve_type(p.ty, self.type_params))
         }
 
         // 3. Register function in current scope
@@ -162,18 +176,22 @@ impl Checker {
         // 7. Leave scope
         self.ret_ty = []Type{}
         self.pop_scope()
+        self.type_params = []string{}
     }
 
-    fn resolve_ret_ty(mut self, ret_ty Option[TypeNode]) -> Type {
+    fn resolve_ret_ty(mut self, ret_ty Option[TypeNode], tps []string) -> Type {
         if ty_node = ret_ty {
-            return self.resolve_type(ty_node)
+            return self.resolve_type(ty_node, tps)
         }
         return Type.Void
     }
 
-    fn resolve_type(mut self, node TypeNode) -> Type {
+    fn resolve_type(mut self, node TypeNode, tps []string) -> Type {
         match node {
             TypeNode.Named(name, span) => {
+                if type_param_list_contains(tps, name, 0) {
+                    return Type.TypeVar(name: name)
+                }
                 if name == "int" { return Type.Int }
                 if name == "float" { return Type.Float }
                 if name == "bool" { return Type.Bool }
@@ -183,20 +201,20 @@ impl Checker {
             }
             TypeNode.Array(elem_ty, span) => {
                 if elem_ty.len > 0 {
-                    return Type.Array(elem: []Type{self.resolve_type(elem_ty[0])})
+                    return Type.Array(elem: []Type{self.resolve_type(elem_ty[0], tps)})
                 }
             }
             TypeNode.Slice(elem_ty, span) => {
                 if elem_ty.len > 0 {
-                    return Type.Slice(elem: []Type{self.resolve_type(elem_ty[0])})
+                    return Type.Slice(elem: []Type{self.resolve_type(elem_ty[0], tps)})
                 }
             }
             TypeNode.Func(params, ret_ty, span) => {
                 param_types = []Type{}
                 for p in params {
-                    param_types.push(self.resolve_type(p))
+                    param_types.push(self.resolve_type(p, tps))
                 }
-                return Type.Func(params: param_types, ret_ty: []Type{self.resolve_ret_ty(ret_ty)})
+                return Type.Func(params: param_types, ret_ty: []Type{self.resolve_ret_ty(ret_ty, tps)})
             }
             TypeNode.Pointer(elem_ty, span) => {
                 return Type.Unknown
@@ -321,6 +339,82 @@ pub fn compatible(a Type, b Type) -> bool {
         _ => {}
     }
     return false
+}
+
+pub fn type_param_list_contains(tps []string, name string, i int) -> bool {
+    if i >= tps.len {
+        return false
+    }
+    if tps[i] == name {
+        return true
+    }
+    return type_param_list_contains(tps, name, i + 1)
+}
+
+pub fn lookup_binding(bindings []TypeBinding, name string, i int) -> Option[Type] {
+    if i >= bindings.len {
+        return None
+    }
+    if bindings[i].name == name {
+        return Some(bindings[i].ty)
+    }
+    return lookup_binding(bindings, name, i + 1)
+}
+
+// Substitute every TypeVar in t using bindings (linear scan by name).
+// Unknown names are left as-is.
+pub fn substitute(t Type, bindings []TypeBinding, i int) -> Type {
+    match t {
+        Type.TypeVar(name) => {
+            if b_ty = lookup_binding(bindings, name, 0) {
+                return b_ty
+            }
+            return t
+        }
+        Type.Func(params, ret_ty) => {
+            return Type.Func(params: type_lists_subst(params, bindings, 0), ret_ty: type_lists_subst(ret_ty, bindings, 0))
+        }
+        Type.Array(elem) => {
+            return Type.Array(elem: type_lists_subst(elem, bindings, 0))
+        }
+        Type.Slice(elem) => {
+            return Type.Slice(elem: type_lists_subst(elem, bindings, 0))
+        }
+        _ => { return t }
+    }
+    return t
+}
+
+pub fn type_lists_subst(a []Type, bindings []TypeBinding, i int) -> []Type {
+    if i >= a.len {
+        return []Type{}
+    }
+    out = []Type{}
+    out.push(substitute(a[i], bindings, 0))
+    return append_type_list(out, type_lists_subst(a, bindings, i + 1), 0)
+}
+
+pub fn append_type_list(dst []Type, src []Type, i int) -> []Type {
+    if i >= src.len {
+        return dst
+    }
+    dst.push(src[i])
+    return append_type_list(dst, src, i + 1)
+}
+
+// Returns a fresh slice with one more binding appended; the input is never mutated.
+pub fn bind_typevar(bindings []TypeBinding, name string, ty Type) -> []TypeBinding {
+    out = copy_type_bindings(bindings, 0, []TypeBinding{})
+    out.push(TypeBinding { name: name, ty: ty })
+    return out
+}
+
+fn copy_type_bindings(bindings []TypeBinding, i int, acc []TypeBinding) -> []TypeBinding {
+    if i >= bindings.len {
+        return acc
+    }
+    acc.push(bindings[i])
+    return copy_type_bindings(bindings, i + 1, acc)
 }
 
 pub fn index_of_char(s string, ch int) -> int {

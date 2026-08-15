@@ -12,7 +12,7 @@ impl Checker {
                 val_ty = self.check_expr(value)
 
                 if ty_node = ty_opt {
-                    decl_ty = self.resolve_type(ty_node)
+                    decl_ty = self.resolve_type(ty_node, []string{})
                     if is_known(decl_ty) and is_known(val_ty) {
                         if not compatible(decl_ty, val_ty) {
                             self.error(span, "Type mismatch in let binding")

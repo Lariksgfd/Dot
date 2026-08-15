@@ -13,6 +13,20 @@ impl Checker {
             Expr.NilLit(span) => { return Type.Nil }
             Expr.Ident(name, span) => {
                 if sym = self.current_scope[0].lookup(name) {
+                    if is_fn_kind(sym.kind) {
+                        // A bare stub constructor name (no call parens) is a
+                        // variant VALUE of the enum type, not a function.
+                        match sym.ty {
+                            Type.Func(params, ret_ty) => {
+                                if params.len == 1 and is_unknown(params[0]) {
+                                    if ret_ty.len > 0 {
+                                        return ret_ty[0]
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                     return sym.ty
                 }
                 self.error(span, "Undefined variable: {name}")
@@ -53,29 +67,11 @@ impl Checker {
                 if callee.len == 0 {
                     return Type.Error
                 }
-                callee_ty = self.check_expr(callee[0])
-                arg_tys = []Type{}
-                for arg in args {
-                    arg_tys.push(self.check_expr(arg))
-                }
+                callee_ty = self.callee_type(callee[0])
+                arg_tys = self.check_call_args(args, 0, []Type{})
                 match callee_ty {
                     Type.Func(params, ret_ty) => {
-                        if args.len != params.len {
-                            self.error(span, "Argument count mismatch")
-                        }
-                        i = 0
-                        for i < args.len and i < params.len {
-                            if is_known(params[i]) and is_known(arg_tys[i]) {
-                                if not compatible(params[i], arg_tys[i]) {
-                                    self.error(span, "Argument type mismatch")
-                                }
-                            }
-                            i += 1
-                        }
-                        if ret_ty.len > 0 {
-                            return ret_ty[0]
-                        }
-                        return Type.Void
+                        return self.check_fn_call(params, ret_ty, arg_tys, args.len, span)
                     }
                     Type.Error => { return Type.Error }
                     Type.Unknown => { return Type.Unknown }
@@ -228,9 +224,7 @@ impl Checker {
                     return Type.Error
                 }
                 callee_ty = self.check_expr(callee[0])
-                for arg in args {
-                    self.check_expr(arg)
-                }
+                arg_tys = self.check_call_args(args, 0, []Type{})
                 match callee_ty {
                     Type.Func(params, ret_ty) => {
                         if args.len + 1 == params.len {
@@ -240,15 +234,13 @@ impl Checker {
                                     self.error(span, "Pipe argument type mismatch")
                                 }
                             }
-                        } else {
-                            if args.len != params.len {
-                                self.error(span, "Argument count mismatch")
-                            }
+                            arg_tys.push(l_ty)
+                            return self.check_fn_call(params, ret_ty, arg_tys, args.len + 1, span)
                         }
-                        if ret_ty.len > 0 {
-                            return ret_ty[0]
+                        if args.len != params.len {
+                            self.error(span, "Argument count mismatch")
                         }
-                        return Type.Void
+                        return self.check_fn_call(params, ret_ty, arg_tys, args.len, span)
                     }
                     Type.Error => { return Type.Error }
                     Type.Unknown => { return Type.Unknown }
@@ -265,6 +257,112 @@ impl Checker {
             }
         }
         return Type.Unknown
+    }
+
+    // Recursive argument walker: checks every argument and collects its type.
+    fn check_call_args(mut self, args []Expr, i int, acc []Type) -> []Type {
+        if i >= args.len {
+            return acc
+        }
+        acc.push(self.check_expr(args[i]))
+        return self.check_call_args(args, i + 1, acc)
+    }
+
+    // The type of a call target: an identifier naming a function is taken
+    // directly from its symbol, so stub constructors stay callable even
+    // though a bare name would type-check as the enum value.
+    fn callee_type(mut self, callee Expr) -> Type {
+        match callee {
+            Expr.Ident(name, _) => {
+                if sym = self.current_scope[0].lookup(name) {
+                    if is_fn_kind(sym.kind) {
+                        return sym.ty
+                    }
+                }
+                return self.check_expr(callee)
+            }
+            _ => {
+                return self.check_expr(callee)
+            }
+        }
+        return Type.Error
+    }
+
+    // Shared call logic: bind TypeVar params to known argument types, check
+    // the arguments and substitute the bindings into the result type.
+    fn check_fn_call(mut self, params []Type, ret_ty []Type, arg_tys []Type, nargs int, span Span) -> Type {
+        // Lenient mode for enum variant stub constructors: one Unknown param
+        // accepts any number of arguments and the result is the enum type.
+        if params.len == 1 and is_unknown(params[0]) {
+            if ret_ty.len > 0 {
+                return ret_ty[0]
+            }
+            return Type.Void
+        }
+        if nargs != params.len {
+            self.error(span, "Argument count mismatch")
+        }
+        bindings = self.collect_bindings(params, arg_tys, 0, []TypeBinding{}, span)
+        self.check_fn_args(params, arg_tys, 0, span)
+        if ret_ty.len > 0 {
+            if is_known(ret_ty[0]) {
+                return substitute(ret_ty[0], bindings, 0)
+            }
+            return ret_ty[0]
+        }
+        return Type.Void
+    }
+
+    // Binds TypeVar params to their known argument types, position by position.
+    // A second binding for the same TypeVar must be compatible with the first
+    // one, otherwise the call is a type conflict.
+    fn collect_bindings(mut self, params []Type, arg_tys []Type, i int, acc []TypeBinding, span Span) -> []TypeBinding {
+        if i >= params.len or i >= arg_tys.len {
+            return acc
+        }
+        next = self.bind_one(params[i], arg_tys[i], acc, span)
+        return self.collect_bindings(params, arg_tys, i + 1, next, span)
+    }
+
+    fn bind_one(mut self, p Type, a Type, acc []TypeBinding, span Span) -> []TypeBinding {
+        match p {
+            Type.TypeVar(n) => {
+                if is_known(a) {
+                    if prev = lookup_binding(acc, n, 0) {
+                        if not compatible(prev, a) {
+                            self.error(span, "Argument type mismatch")
+                        }
+                        return acc
+                    }
+                    return bind_typevar(acc, n, a)
+                }
+                return acc
+            }
+            _ => { return acc }
+        }
+        return acc
+    }
+
+    // TypeVar params accept anything; everything else is checked as usual.
+    fn check_fn_args(mut self, params []Type, arg_tys []Type, i int, span Span) {
+        if i >= params.len or i >= arg_tys.len {
+            return
+        }
+        self.check_fn_arg(params[i], arg_tys[i], span)
+        return self.check_fn_args(params, arg_tys, i + 1, span)
+    }
+
+    fn check_fn_arg(mut self, p Type, a Type, span Span) {
+        match p {
+            Type.TypeVar(_) => { return }
+            _ => {}
+        }
+        if is_known(p) and is_known(a) {
+            if not compatible(p, a) {
+                self.error(span, "Argument type mismatch")
+            }
+        }
+        return
     }
 
     fn check_range(mut self, l_ty Type, r_ty Type, span Span) -> Type {
@@ -350,6 +448,20 @@ impl Checker {
             Type.Struct(struct_name) => {
                 f_ty = self.find_struct_field(struct_name, name)
                 if is_unknown(f_ty) {
+                    if struct_name == "Option" {
+                        m_ty = option_method(name)
+                        if is_unknown(m_ty) {
+                            self.error(span, "Unknown field: {name}")
+                        }
+                        return m_ty
+                    }
+                    if struct_name == "Result" {
+                        m_ty = result_method(name)
+                        if is_unknown(m_ty) {
+                            self.error(span, "Unknown field: {name}")
+                        }
+                        return m_ty
+                    }
                     self.error(span, "Unknown field: {name}")
                 }
                 return f_ty
@@ -534,4 +646,55 @@ impl Checker {
         next_first = if i == 0 { t } else { first }
         return self.tuple_type(elements, i + 1, next_first)
     }
+}
+
+// Built-in methods of the Option enum. The element type is not tracked, so
+// closures take and return Unknown.
+pub fn option_method(name string) -> Type {
+    if name == "map" {
+        return Type.Func(params: []Type{Type.Func(params: []Type{Type.Unknown}, ret_ty: []Type{Type.Unknown})}, ret_ty: []Type{Type.Struct(name: "Option")})
+    }
+    if name == "and_then" {
+        return Type.Func(params: []Type{Type.Func(params: []Type{Type.Unknown}, ret_ty: []Type{Type.Unknown})}, ret_ty: []Type{Type.Struct(name: "Option")})
+    }
+    if name == "unwrap" {
+        return Type.Func(params: []Type{}, ret_ty: []Type{Type.Unknown})
+    }
+    if name == "is_some" {
+        return Type.Func(params: []Type{}, ret_ty: []Type{Type.Bool})
+    }
+    if name == "is_none" {
+        return Type.Func(params: []Type{}, ret_ty: []Type{Type.Bool})
+    }
+    return Type.Unknown
+}
+
+// Built-in methods of the Result enum.
+pub fn result_method(name string) -> Type {
+    if name == "unwrap" {
+        return Type.Func(params: []Type{}, ret_ty: []Type{Type.Unknown})
+    }
+    if name == "is_ok" {
+        return Type.Func(params: []Type{}, ret_ty: []Type{Type.Bool})
+    }
+    if name == "is_err" {
+        return Type.Func(params: []Type{}, ret_ty: []Type{Type.Bool})
+    }
+    if name == "map" {
+        return Type.Func(params: []Type{Type.Func(params: []Type{Type.Unknown}, ret_ty: []Type{Type.Unknown})}, ret_ty: []Type{Type.Struct(name: "Result")})
+    }
+    if name == "map_err" {
+        return Type.Func(params: []Type{Type.Func(params: []Type{Type.Unknown}, ret_ty: []Type{Type.Unknown})}, ret_ty: []Type{Type.Struct(name: "Result")})
+    }
+    return Type.Unknown
+}
+
+// Enum equality is unsafe in the bootstrap C codegen (see parser_pratt
+// kind_eq), so SymbolKind is compared via match.
+fn is_fn_kind(k SymbolKind) -> bool {
+    match k {
+        SymbolKind.Function => { return true }
+        _ => {}
+    }
+    return false
 }

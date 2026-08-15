@@ -120,4 +120,100 @@ pub fn main() {
     } else {
         print("ERR: fn type mismatch")
     }
+
+    c16 = Compiler.new()
+    c16.compile("fn identity[T](x T) -> T {{ return x }}\nfn m() -> int {{ return identity(5) }}")
+    if c16.errors.len == 0 {
+        print("OK: generic identity")
+    } else {
+        print("ERR: generic identity: " + c16.errors[0])
+    }
+
+    c17 = Compiler.new()
+    c17.compile("fn f[T](a T, b T) -> bool {{ return true }}\nfn m() -> bool {{ return f(1, 2) }}")
+    if c17.errors.len == 0 {
+        print("OK: generic two params")
+    } else {
+        print("ERR: generic two params: " + c17.errors[0])
+    }
+
+    c18 = Compiler.new()
+    c18.compile("fn wrap[T](x T) -> []T {{ return [x] }}\nfn m() -> []int {{ return wrap(5) }}")
+    if c18.errors.len == 0 {
+        print("OK: generic subst")
+    } else {
+        print("ERR: generic subst: " + c18.errors[0])
+    }
+
+    c19 = Compiler.new()
+    c19.compile("fn id[T](x T) -> T {{ return x }}\nfn m() -> int {{ a = 1 return id(a) }}")
+    if c19.errors.len == 0 {
+        print("OK: generic var arg")
+    } else {
+        print("ERR: generic var arg: " + c19.errors[0])
+    }
+
+    c20 = Compiler.new()
+    c20.compile("enum Option {{ None Some }}\nfn find() -> Option {{ return None }}")
+    if c20.errors.len == 0 {
+        print("OK: none return")
+    } else {
+        print("ERR: none return: " + c20.errors[0])
+    }
+
+    c21 = Compiler.new()
+    c21.compile("enum Option {{ None Some }}\nfn m() -> Option {{ x = Some(5) return x }}")
+    if c21.errors.len == 0 {
+        print("OK: some ctor")
+    } else {
+        print("ERR: some ctor: " + c21.errors[0])
+    }
+
+    c22 = Compiler.new()
+    c22.compile("enum Option {{ None Some }}\nfn m() -> bool {{ o = Some(5) return o.is_some() }}")
+    if c22.errors.len == 0 {
+        print("OK: option is_some")
+    } else {
+        print("ERR: option is_some: " + c22.errors[0])
+    }
+
+    c23 = Compiler.new()
+    c23.compile("enum Result {{ Ok Err }}\nfn f() -> Result {{ return Ok(1) }}\nfn m() -> bool {{ r = f() return r.is_ok() }}")
+    if c23.errors.len == 0 {
+        print("OK: result is_ok")
+    } else {
+        print("ERR: result is_ok: " + c23.errors[0])
+    }
+
+    c24 = Compiler.new()
+    c24.compile("enum Option {{ None Some }}\nfn inc(n int) -> int {{ return n + 1 }}\nfn m() -> Option {{ o = Some(5) return o.map(inc) }}")
+    if c24.errors.len == 0 {
+        print("OK: option map")
+    } else {
+        print("ERR: option map: " + c24.errors[0])
+    }
+
+    c25 = Compiler.new()
+    c25.compile("fn identity[T](x T) -> T {{ return x }}\nfn m() -> int {{ return identity(\"s\") }}")
+    if c25.errors.len > 0 {
+        print("OK: generic ret mismatch")
+    } else {
+        print("ERR: generic ret mismatch")
+    }
+
+    c26 = Compiler.new()
+    c26.compile("fn f[T](a T, b T) -> bool {{ return true }}\nfn m() -> bool {{ return f(1, \"x\") }}")
+    if c26.errors.len > 0 {
+        print("OK: generic conflict")
+    } else {
+        print("ERR: generic conflict")
+    }
+
+    c27 = Compiler.new()
+    c27.compile("enum Option {{ None Some }}\nfn m() -> int {{ o = Some(5) return o.nope() }}")
+    if c27.errors.len > 0 {
+        print("OK: unknown method")
+    } else {
+        print("ERR: unknown method")
+    }
 }

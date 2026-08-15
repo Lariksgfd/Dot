@@ -35,6 +35,18 @@ func TestStdlibCompiler(t *testing.T) {
 				"OK: arity",
 				"OK: arg type",
 				"OK: fn type mismatch",
+				"OK: generic identity",
+				"OK: generic two params",
+				"OK: generic subst",
+				"OK: generic var arg",
+				"OK: none return",
+				"OK: some ctor",
+				"OK: option is_some",
+				"OK: result is_ok",
+				"OK: option map",
+				"OK: generic ret mismatch",
+				"OK: generic conflict",
+				"OK: unknown method",
 			} {
 				if !strings.Contains(out, want) {
 					t.Errorf("expected %q in output, got: %s", want, out)

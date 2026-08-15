@@ -129,7 +129,7 @@ impl Parser {
         stmt = self.parse_stmt()
         end = self.cur_tok.end
         if stmt.is_some() {
-            return Some(Decl.Fn("<stmt>", []Param{}, None, []Stmt{stmt.unwrap()}, Span.new(start, end)))
+            return Some(Decl.Fn("<stmt>", []Param{}, []string{}, None, []Stmt{stmt.unwrap()}, Span.new(start, end)))
         }
         return None
     }
@@ -141,12 +141,21 @@ impl Parser {
         }
         name = self.cur_tok.lexeme
 
-        // generic type params fn f[T](...) are skipped
+        // generic type params fn f[T, U](...): names are collected, an empty
+        // list fn f[]() is valid and yields an empty slice
+        type_params = []string{}
         if self.peek_token_is(TokenType.LBracket) {
-            for not self.peek_token_is(TokenType.RBracket) and not self.peek_token_is(TokenType.EOF) {
-                self.next_token()
+            self.next_token() // cur = LBracket
+            self.next_token() // cur = first type param or RBracket
+            for not self.cur_token_is(TokenType.RBracket) and not self.cur_token_is(TokenType.EOF) {
+                if self.cur_token_is(TokenType.Ident) {
+                    type_params.push(self.cur_tok.lexeme)
+                }
+                self.next_token() // cur = Comma or RBracket
+                if self.cur_token_is(TokenType.Comma) {
+                    self.next_token() // cur = next type param
+                }
             }
-            self.next_token() // cur = RBracket
         }
 
         if not self.expect_peek(TokenType.LParen) {
@@ -159,22 +168,22 @@ impl Parser {
             self.next_token()
             self.next_token()
             ret_ty = Some(self.parse_type())
-            return self.parse_fn_body(name, params, ret_ty, start)
+            return self.parse_fn_body(name, params, type_params, ret_ty, start)
         }
-        return self.parse_fn_body(name, params, None, start)
+        return self.parse_fn_body(name, params, type_params, None, start)
     }
 
     // The body may be missing entirely (trait method signatures). Missing
     // bodies are accepted silently, no error is reported.
-    fn parse_fn_body(mut self, name string, params []Param, ret_ty Option[TypeNode], start Position) -> Option[Decl] {
+    fn parse_fn_body(mut self, name string, params []Param, type_params []string, ret_ty Option[TypeNode], start Position) -> Option[Decl] {
         if self.peek_after_newline_is(TokenType.LBrace) {
             self.next_token() // cur = LBrace
             body = self.parse_block_stmt()
             end = self.cur_tok.end
-            return Some(Decl.Fn(name, params, ret_ty, body, Span.new(start, end)))
+            return Some(Decl.Fn(name, params, type_params, ret_ty, body, Span.new(start, end)))
         }
         end = self.cur_tok.end
-        return Some(Decl.Fn(name, params, ret_ty, []Stmt{}, Span.new(start, end)))
+        return Some(Decl.Fn(name, params, type_params, ret_ty, []Stmt{}, Span.new(start, end)))
     }
 
     fn parse_struct_decl(mut self) -> Option[Decl] {

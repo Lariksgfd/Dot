@@ -60,7 +60,7 @@ pub enum Stmt {
 }
 
 pub enum Decl {
-    Fn(name string, params []Param, ret_ty Option[TypeNode], body []Stmt, span Span)
+    Fn(name string, params []Param, type_params []string, ret_ty Option[TypeNode], body []Stmt, span Span)
     Struct(name string, fields []FieldDef, span Span)
     Enum(name string, variants []VariantDef, span Span)
     Trait(name string, methods []Decl, span Span)
