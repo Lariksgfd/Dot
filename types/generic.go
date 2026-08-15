@@ -214,6 +214,15 @@ func instanceKey(base string, args []Type) string {
 	return b.String()
 }
 
+// MangleInstance returns the canonical mangled C name for a generic
+// instantiation of base with args. It is the single source of truth shared
+// with codegen: the C backend must reference every instantiated type under
+// exactly this name, otherwise it emits duplicate typedefs or references
+// types that were never declared.
+func MangleInstance(base string, args []Type) string {
+	return instanceKey(base, args)
+}
+
 // mangleType returns a valid C identifier spelling of t for use in
 // instanceKey.
 func mangleType(t Type) string {
