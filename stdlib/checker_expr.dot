@@ -1,0 +1,531 @@
+import ast
+import types
+import lexer
+import checker
+
+impl Checker {
+    pub fn check_expr(mut self, expr Expr) -> Type {
+        match expr {
+            Expr.IntLit(value, span) => { return Type.Int }
+            Expr.FloatLit(value, span) => { return Type.Float }
+            Expr.StringLit(value, span) => { return Type.String }
+            Expr.BoolLit(value, span) => { return Type.Bool }
+            Expr.NilLit(span) => { return Type.Nil }
+            Expr.Ident(name, span) => {
+                if sym = self.current_scope[0].lookup(name) {
+                    return sym.ty
+                }
+                self.error(span, "Undefined variable: {name}")
+                return Type.Error
+            }
+            Expr.Unary(op, right, span) => {
+                if right.len == 0 {
+                    return Type.Error
+                }
+                t = self.check_expr(right[0])
+                match op {
+                    TokenType.Not => {
+                        if is_known(t) {
+                            if not is_bool(t) {
+                                self.error(span, "'not' requires a bool operand")
+                            }
+                        }
+                        return Type.Bool
+                    }
+                    TokenType.Minus => {
+                        if is_known(t) {
+                            if not is_int(t) and not is_float(t) {
+                                self.error(span, "Unary minus requires a number")
+                            }
+                        }
+                        return t
+                    }
+                    _ => {
+                        return t
+                    }
+                }
+                return Type.Unknown
+            }
+            Expr.Binary(left, op, right, span) => {
+                return self.check_binary(left, op, right, span)
+            }
+            Expr.Call(callee, args, span) => {
+                if callee.len == 0 {
+                    return Type.Error
+                }
+                callee_ty = self.check_expr(callee[0])
+                arg_tys = []Type{}
+                for arg in args {
+                    arg_tys.push(self.check_expr(arg))
+                }
+                match callee_ty {
+                    Type.Func(params, ret_ty) => {
+                        if args.len != params.len {
+                            self.error(span, "Argument count mismatch")
+                        }
+                        i = 0
+                        for i < args.len and i < params.len {
+                            if is_known(params[i]) and is_known(arg_tys[i]) {
+                                if not compatible(params[i], arg_tys[i]) {
+                                    self.error(span, "Argument type mismatch")
+                                }
+                            }
+                            i += 1
+                        }
+                        if ret_ty.len > 0 {
+                            return ret_ty[0]
+                        }
+                        return Type.Void
+                    }
+                    Type.Error => { return Type.Error }
+                    Type.Unknown => { return Type.Unknown }
+                    _ => {
+                        self.error(span, "Cannot call non-function")
+                        return Type.Error
+                    }
+                }
+                return Type.Error
+            }
+            Expr.Index(left, index, span) => {
+                return self.check_index(left, index, span)
+            }
+            Expr.Field(left, name, span) => {
+                return self.check_field(left, name, span)
+            }
+            Expr.ArrayLit(elements, span) => {
+                elem_ty = self.check_array_elems(elements, 0, Type.Unknown, span)
+                return Type.Array(elem: []Type{elem_ty})
+            }
+            Expr.TupleLit(elements, span) => {
+                return self.tuple_type(elements, 0, Type.Void)
+            }
+            Expr.If(condition, then_branch, else_branch, span) => {
+                return self.check_if_expr(condition, then_branch, else_branch, span)
+            }
+            Expr.Match(value, arms, span) => {
+                return self.check_match_expr(value, arms, span)
+            }
+            Expr.Assign(left, op, right, span) => {
+                if left.len == 0 or right.len == 0 {
+                    return Type.Error
+                }
+                l_ty = self.check_expr(left[0])
+                r_ty = self.check_expr(right[0])
+                if is_known(l_ty) and is_known(r_ty) {
+                    if not compatible(l_ty, r_ty) {
+                        self.error(span, "Type mismatch in assignment")
+                    }
+                }
+                return Type.Void
+            }
+        }
+        return Type.Unknown
+    }
+
+    fn check_binary(mut self, left []Expr, op TokenType, right []Expr, span Span) -> Type {
+        if left.len == 0 or right.len == 0 {
+            return Type.Error
+        }
+        l_ty = self.check_expr(left[0])
+        r_ty = self.check_expr(right[0])
+
+        match op {
+            TokenType.PipeArrow => { return self.check_pipe(left[0], right[0], l_ty, r_ty, span) }
+            TokenType.DotDot => { return self.check_range(l_ty, r_ty, span) }
+            TokenType.DotDotEq => { return self.check_range(l_ty, r_ty, span) }
+            TokenType.And => {
+                self.require_bool(l_ty, span, "Left operand of 'and'")
+                self.require_bool(r_ty, span, "Right operand of 'and'")
+                return Type.Bool
+            }
+            TokenType.Or => {
+                self.require_bool(l_ty, span, "Left operand of 'or'")
+                self.require_bool(r_ty, span, "Right operand of 'or'")
+                return Type.Bool
+            }
+            TokenType.EqEq => {
+                self.require_same(l_ty, r_ty, span)
+                return Type.Bool
+            }
+            TokenType.BangEq => {
+                self.require_same(l_ty, r_ty, span)
+                return Type.Bool
+            }
+            TokenType.Lt => {
+                self.require_same(l_ty, r_ty, span)
+                return Type.Bool
+            }
+            TokenType.Gt => {
+                self.require_same(l_ty, r_ty, span)
+                return Type.Bool
+            }
+            TokenType.LtEq => {
+                self.require_same(l_ty, r_ty, span)
+                return Type.Bool
+            }
+            TokenType.GtEq => {
+                self.require_same(l_ty, r_ty, span)
+                return Type.Bool
+            }
+            TokenType.Plus => {
+                if is_string(l_ty) and is_string(r_ty) {
+                    return Type.String
+                }
+                self.require_same(l_ty, r_ty, span)
+                return l_ty
+            }
+            TokenType.Minus => {
+                self.require_same(l_ty, r_ty, span)
+                return l_ty
+            }
+            TokenType.Star => {
+                self.require_same(l_ty, r_ty, span)
+                return l_ty
+            }
+            TokenType.Slash => {
+                self.require_same(l_ty, r_ty, span)
+                return l_ty
+            }
+            TokenType.Percent => {
+                self.require_same(l_ty, r_ty, span)
+                return l_ty
+            }
+            TokenType.StarStar => {
+                self.require_same(l_ty, r_ty, span)
+                return l_ty
+            }
+            TokenType.Amp => {
+                self.require_same(l_ty, r_ty, span)
+                return l_ty
+            }
+            TokenType.Pipe => {
+                self.require_same(l_ty, r_ty, span)
+                return l_ty
+            }
+            TokenType.Caret => {
+                self.require_same(l_ty, r_ty, span)
+                return l_ty
+            }
+            TokenType.Shl => {
+                self.require_same(l_ty, r_ty, span)
+                return l_ty
+            }
+            TokenType.Shr => {
+                self.require_same(l_ty, r_ty, span)
+                return l_ty
+            }
+            _ => { return Type.Unknown }
+        }
+        return Type.Unknown
+    }
+
+    // The left side is piped into the call on the right: it becomes the last
+    // argument, or the only argument of a call with no arguments.
+    fn check_pipe(mut self, lhs Expr, rhs Expr, l_ty Type, r_ty Type, span Span) -> Type {
+        match rhs {
+            Expr.Call(callee, args, _) => {
+                if callee.len == 0 {
+                    return Type.Error
+                }
+                callee_ty = self.check_expr(callee[0])
+                for arg in args {
+                    self.check_expr(arg)
+                }
+                match callee_ty {
+                    Type.Func(params, ret_ty) => {
+                        if args.len + 1 == params.len {
+                            last_pt = params[params.len - 1]
+                            if is_known(last_pt) and is_known(l_ty) {
+                                if not compatible(last_pt, l_ty) {
+                                    self.error(span, "Pipe argument type mismatch")
+                                }
+                            }
+                        } else {
+                            if args.len != params.len {
+                                self.error(span, "Argument count mismatch")
+                            }
+                        }
+                        if ret_ty.len > 0 {
+                            return ret_ty[0]
+                        }
+                        return Type.Void
+                    }
+                    Type.Error => { return Type.Error }
+                    Type.Unknown => { return Type.Unknown }
+                    _ => {
+                        self.error(span, "Cannot call non-function")
+                        return Type.Error
+                    }
+                }
+                return Type.Error
+            }
+            _ => {
+                self.error(span, "Pipe right side must be a call")
+                return l_ty
+            }
+        }
+        return Type.Unknown
+    }
+
+    fn check_range(mut self, l_ty Type, r_ty Type, span Span) -> Type {
+        self.require_same(l_ty, r_ty, span)
+        return if is_known(l_ty) { l_ty } else { r_ty }
+    }
+
+    fn check_index(mut self, left []Expr, index []Expr, span Span) -> Type {
+        if left.len == 0 or index.len == 0 {
+            return Type.Error
+        }
+        left_ty = self.check_expr(left[0])
+        idx_ty = self.check_expr(index[0])
+
+        // s[a..b] arrives as Index(left, Binary(a, DotDot, b)) since
+        // ast.dot has no SliceExpr variant.
+        if is_range_expr(index[0]) {
+            return self.slice_type(left_ty, span)
+        }
+
+        if is_known(idx_ty) {
+            if not is_int(idx_ty) {
+                self.error(span, "Index must be an integer")
+            }
+        }
+
+        match left_ty {
+            Type.Array(elem) => {
+                if elem.len > 0 {
+                    return elem[0]
+                }
+                return Type.Unknown
+            }
+            Type.Slice(elem) => {
+                if elem.len > 0 {
+                    return elem[0]
+                }
+                return Type.Unknown
+            }
+            Type.String => { return Type.Int }
+            Type.Error => { return Type.Error }
+            Type.Unknown => { return Type.Unknown }
+            _ => {
+                self.error(span, "Cannot index this value")
+                return Type.Unknown
+            }
+        }
+        return Type.Unknown
+    }
+
+    fn slice_type(mut self, left_ty Type, span Span) -> Type {
+        match left_ty {
+            Type.Array(elem) => {
+                if elem.len > 0 {
+                    return Type.Slice(elem)
+                }
+                return Type.Unknown
+            }
+            Type.Slice(elem) => {
+                if elem.len > 0 {
+                    return Type.Slice(elem)
+                }
+                return Type.Unknown
+            }
+            Type.String => { return Type.String }
+            Type.Error => { return Type.Error }
+            Type.Unknown => { return Type.Unknown }
+            _ => {
+                self.error(span, "Cannot slice this value")
+                return Type.Unknown
+            }
+        }
+        return Type.Unknown
+    }
+
+    fn check_field(mut self, left []Expr, name string, span Span) -> Type {
+        if left.len == 0 {
+            return Type.Error
+        }
+        left_ty = self.check_expr(left[0])
+
+        match left_ty {
+            Type.Struct(struct_name) => {
+                f_ty = self.find_struct_field(struct_name, name)
+                if is_unknown(f_ty) {
+                    self.error(span, "Unknown field: {name}")
+                }
+                return f_ty
+            }
+            Type.Array(_) => { return self.builtin_field(name) }
+            Type.Slice(_) => { return self.builtin_field(name) }
+            Type.String => { return self.builtin_field(name) }
+            Type.Error => { return Type.Error }
+            Type.Unknown => { return Type.Unknown }
+            _ => {
+                self.error(span, "Cannot access field on this value")
+                return Type.Unknown
+            }
+        }
+        return Type.Unknown
+    }
+
+    fn builtin_field(self, name string) -> Type {
+        if name == "len" {
+            return Type.Int
+        }
+        return Type.Unknown
+    }
+
+    fn check_if_expr(mut self, condition []Expr, then_branch []Stmt, else_branch []Expr, span Span) -> Type {
+        if condition.len > 0 {
+            cond_ty = self.check_expr(condition[0])
+            self.require_bool(cond_ty, span, "If condition")
+        }
+
+        self.push_scope()
+        then_ty = self.check_if_then(then_branch, 0, Type.Unknown)
+        self.pop_scope()
+
+        else_ty = Type.Unknown
+        if else_branch.len > 0 {
+            else_ty = self.check_expr(else_branch[else_branch.len - 1])
+        }
+
+        if is_known(then_ty) and is_known(else_ty) {
+            if not compatible(then_ty, else_ty) {
+                self.error(span, "If branches have different types")
+            }
+        }
+        return if is_known(then_ty) { then_ty } else { else_ty }
+    }
+
+    // Walks the then-branch, checking every statement and remembering the
+    // type of the last expression statement as the branch value type.
+    fn check_if_then(mut self, stmts []Stmt, i int, acc Type) -> Type {
+        if i >= stmts.len {
+            return acc
+        }
+        match stmts[i] {
+            Stmt.ExprStmt(e, _) => {
+                t = self.check_expr(e)
+                return self.check_if_then(stmts, i + 1, t)
+            }
+            _ => {
+                self.check_stmt(stmts[i])
+                return self.check_if_then(stmts, i + 1, acc)
+            }
+        }
+        return Type.Unknown
+    }
+
+    fn check_match_expr(mut self, value []Expr, arms []MatchArm, span Span) -> Type {
+        sel_ty = Type.Unknown
+        if value.len > 0 {
+            sel_ty = self.check_expr(value[0])
+        }
+        return self.check_match_arms(arms, 0, sel_ty, Type.Unknown, span)
+    }
+
+    fn check_match_arms(mut self, arms []MatchArm, i int, sel_ty Type, result_ty Type, span Span) -> Type {
+        if i >= arms.len {
+            return result_ty
+        }
+        arm = arms[i]
+
+        match arm.pattern {
+            Pattern.Ident(name) => {
+                dot_idx = index_of_char(name, 46)
+                if dot_idx >= 0 {
+                    // Enum variant path Enum.Variant: check it exists
+                    enum_name = name[0..dot_idx]
+                    variant_name = name[dot_idx + 1..name.len]
+                    v_ty = self.find_struct_field(enum_name, variant_name)
+                    if is_unknown(v_ty) {
+                        self.error(span, "Unknown enum variant: {name}")
+                    }
+                } else {
+                    // Value binding
+                    self.current_scope[0].define(Symbol {
+                        name,
+                        kind: SymbolKind.Variable,
+                        ty: sel_ty,
+                        is_mut: false,
+                    })
+                }
+            }
+            Pattern.IntLit(_) => {
+                if is_known(sel_ty) {
+                    if not is_int(sel_ty) {
+                        self.error(span, "Integer pattern does not match selector type")
+                    }
+                }
+            }
+            Pattern.CatchAll => {}
+        }
+
+        if guard = arm.guard {
+            g_ty = self.check_expr(guard)
+            self.require_bool(g_ty, span, "Match guard")
+        }
+
+        arm_ty = self.check_expr(arm.body)
+
+        if is_known(result_ty) and is_known(arm_ty) {
+            if not compatible(result_ty, arm_ty) {
+                self.error(span, "Match arms have different types")
+            }
+        }
+        next_ty = if is_unknown(result_ty) { arm_ty } else { result_ty }
+        return self.check_match_arms(arms, i + 1, sel_ty, next_ty, span)
+    }
+
+    fn find_struct_field(self, struct_name string, field_name string) -> Type {
+        for si in self.structs {
+            if si.name == struct_name {
+                for f in si.fields {
+                    if f.name == field_name {
+                        return f.ty
+                    }
+                }
+            }
+        }
+        return Type.Unknown
+    }
+
+    fn require_same(mut self, l_ty Type, r_ty Type, span Span) {
+        if is_known(l_ty) and is_known(r_ty) {
+            if not compatible(l_ty, r_ty) {
+                self.error(span, "Type mismatch in binary expression")
+            }
+        }
+    }
+
+    fn require_bool(mut self, t Type, span Span, what string) {
+        if is_known(t) {
+            if not is_bool(t) {
+                self.error(span, "{what} must be bool")
+            }
+        }
+    }
+
+    fn check_array_elems(mut self, elements []Expr, i int, elem_ty Type, span Span) -> Type {
+        if i >= elements.len {
+            return elem_ty
+        }
+        e_ty = self.check_expr(elements[i])
+        if is_known(elem_ty) and is_known(e_ty) {
+            if not compatible(elem_ty, e_ty) {
+                self.error(span, "Array elements must have the same type")
+            }
+        }
+        next_ty = if is_unknown(elem_ty) { e_ty } else { elem_ty }
+        return self.check_array_elems(elements, i + 1, next_ty, span)
+    }
+
+    fn tuple_type(mut self, elements []Expr, i int, first Type) -> Type {
+        if i >= elements.len {
+            return first
+        }
+        t = self.check_expr(elements[i])
+        next_first = if i == 0 { t } else { first }
+        return self.tuple_type(elements, i + 1, next_first)
+    }
+}

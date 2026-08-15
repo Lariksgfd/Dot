@@ -1,0 +1,143 @@
+import ast
+import types
+import checker
+
+impl Checker {
+    pub fn check_stmt(mut self, stmt Stmt) {
+        match stmt {
+            Stmt.ExprStmt(expr, span) => {
+                self.check_expr(expr)
+            }
+            Stmt.Let(name, ty_opt, value, is_mut, span) => {
+                val_ty = self.check_expr(value)
+
+                if ty_node = ty_opt {
+                    decl_ty = self.resolve_type(ty_node)
+                    if is_known(decl_ty) and is_known(val_ty) {
+                        if not compatible(decl_ty, val_ty) {
+                            self.error(span, "Type mismatch in let binding")
+                        }
+                    }
+                }
+
+                self.current_scope[0].define(Symbol {
+                    name,
+                    kind: SymbolKind.Variable,
+                    ty: val_ty,
+                    is_mut,
+                })
+            }
+            Stmt.Return(value_opt, span) => {
+                if val_expr = value_opt {
+                    val_ty = self.check_expr(val_expr)
+                    if self.ret_ty.len > 0 {
+                        if is_known(self.ret_ty[0]) and is_known(val_ty) {
+                            if not compatible(self.ret_ty[0], val_ty) {
+                                self.error(span, "Return value type mismatch")
+                            }
+                        }
+                    }
+                } else {
+                    if self.ret_ty.len > 0 {
+                        if is_known(self.ret_ty[0]) {
+                            if not self.ret_ty[0].equals(Type.Void) {
+                                self.error(span, "Missing return value")
+                            }
+                        }
+                    }
+                }
+            }
+            Stmt.Break(label, span) => {
+                if self.loop_depth == 0 {
+                    self.error(span, "break outside of a loop")
+                }
+            }
+            Stmt.Continue(label, span) => {
+                if self.loop_depth == 0 {
+                    self.error(span, "continue outside of a loop")
+                }
+            }
+            Stmt.For(pattern, iterable, body, span) => {
+                self.check_for_stmt(pattern, iterable, body, span)
+            }
+            Stmt.While(condition, body, span) => {
+                self.check_while_stmt(condition, body, span)
+            }
+            Stmt.Block(stmts, span) => {
+                self.push_scope()
+                for s in stmts {
+                    self.check_stmt(s)
+                }
+                self.pop_scope()
+            }
+        }
+    }
+
+    fn check_while_stmt(mut self, condition Expr, body []Stmt, span Span) {
+        cond_ty = self.check_expr(condition)
+        self.require_bool(cond_ty, span, "Loop condition")
+
+        self.push_scope()
+        self.loop_depth += 1
+        for s in body {
+            self.check_stmt(s)
+        }
+        self.loop_depth -= 1
+        self.pop_scope()
+    }
+
+    fn check_for_stmt(mut self, pattern Pattern, iterable Expr, body []Stmt, span Span) {
+        iter_ty = self.check_expr(iterable)
+        elem_ty = self.iteration_elem_ty(iter_ty, pattern, span)
+
+        self.push_scope()
+        self.loop_depth += 1
+
+        match pattern {
+            Pattern.Ident(name) => {
+                self.current_scope[0].define(Symbol {
+                    name,
+                    kind: SymbolKind.Variable,
+                    ty: elem_ty,
+                    is_mut: true,
+                })
+            }
+            _ => {}
+        }
+
+        for s in body {
+            self.check_stmt(s)
+        }
+
+        self.loop_depth -= 1
+        self.pop_scope()
+    }
+
+    fn iteration_elem_ty(mut self, iter_ty Type, pattern Pattern, span Span) -> Type {
+        match iter_ty {
+            Type.Array(elem) => {
+                if elem.len > 0 {
+                    return elem[0]
+                }
+                return Type.Unknown
+            }
+            Type.Slice(elem) => {
+                if elem.len > 0 {
+                    return elem[0]
+                }
+                return Type.Unknown
+            }
+            Type.String => { return Type.Int }
+            Type.Int => { return Type.Int }
+            Type.Error => { return Type.Error }
+            Type.Unknown => { return Type.Unknown }
+            _ => {}
+        }
+        // Infinite loops parse as Pattern.CatchAll with a bool iterable
+        if is_catchall(pattern) {
+            return Type.Unknown
+        }
+        self.error(span, "Cannot iterate over this value")
+        return Type.Unknown
+    }
+}

@@ -1,16 +1,26 @@
 import ast
 import types
 import lexer
+import checker_stmt
+import checker_expr
+
+pub struct StructInfo {
+    name   string
+    fields []Symbol
+}
 
 pub struct Checker {
     current_scope []Scope
     errors        []string
+    loop_depth    int
+    ret_ty        []Type
+    structs       []StructInfo
 }
 
 impl Checker {
     pub fn new() -> Checker {
         global_scope = Scope.new([]Scope{})
-        
+
         // Define some builtins
         global_scope.define(Symbol {
             name: "print",
@@ -22,11 +32,13 @@ impl Checker {
         return Checker {
             current_scope: []Scope{global_scope},
             errors: []string{},
+            loop_depth: 0,
+            ret_ty: []Type{},
+            structs: []StructInfo{},
         }
     }
 
     pub fn error(mut self, span Span, msg string) {
-        // In a real compiler we'd format the span properly
         self.errors.push("Type Error: {msg}")
     }
 
@@ -46,11 +58,46 @@ impl Checker {
     pub fn check_decl(mut self, decl Decl) {
         match decl {
             Decl.Fn(name, params, ret_ty, body, span) => self.check_fn_decl(name, params, ret_ty, body, span)
-            Decl.Struct(name, fields, span) => {}
-            Decl.Enum(name, variants, span) => {}
+            Decl.Struct(name, fields, span) => self.check_struct_decl(name, fields, span)
+            Decl.Enum(name, variants, span) => self.check_enum_decl(name, variants, span)
             Decl.Trait(name, methods, span) => {}
             Decl.Impl(trait_name, target, methods, span) => {}
         }
+    }
+
+    fn check_struct_decl(mut self, name string, fields []FieldDef, span Span) {
+        syms = []Symbol{}
+        for f in fields {
+            syms.push(Symbol {
+                name: f.name,
+                kind: SymbolKind.Variable,
+                ty: self.resolve_type(f.ty),
+                is_mut: false,
+            })
+        }
+        self.structs.push(StructInfo { name, fields: syms })
+    }
+
+    // Enum variants are recorded as fields of a synthetic entry so that
+    // match arms on Enum.Variant can be resolved by name.
+    fn check_enum_decl(mut self, name string, variants []VariantDef, span Span) {
+        enum_ty = Type.Struct(name: name)
+        fields = []Symbol{}
+        for v in variants {
+            fields.push(Symbol {
+                name: v.name,
+                kind: SymbolKind.Variable,
+                ty: enum_ty,
+                is_mut: false,
+            })
+        }
+        self.structs.push(StructInfo { name, fields })
+        self.current_scope[0].define(Symbol {
+            name,
+            kind: SymbolKind.Struct,
+            ty: enum_ty,
+            is_mut: false,
+        })
     }
 
     fn check_fn_decl(mut self, name string, params []Param, ret_ty Option[TypeNode], body []Stmt, span Span) {
@@ -69,7 +116,7 @@ impl Checker {
         // 3. Register function in current scope
         fn_ty = Type.Func(params: param_types, ret_ty: []Type{resolved_ret_ty})
         self.current_scope[0].define(Symbol {
-            name: name,
+            name,
             kind: SymbolKind.Function,
             ty: fn_ty,
             is_mut: false,
@@ -77,7 +124,8 @@ impl Checker {
 
         // 4. Enter function scope
         self.push_scope()
-        
+        self.ret_ty = []Type{resolved_ret_ty}
+
         // Define params in the function's scope
         i = 0
         for p in params {
@@ -85,7 +133,7 @@ impl Checker {
                 name: p.name,
                 kind: SymbolKind.Variable,
                 ty: param_types[i],
-                is_mut: false, // params are immutable by default
+                is_mut: false,
             })
             i += 1
         }
@@ -96,115 +144,8 @@ impl Checker {
         }
 
         // 6. Leave scope
+        self.ret_ty = []Type{}
         self.pop_scope()
-    }
-
-    pub fn check_stmt(mut self, stmt Stmt) {
-        match stmt {
-            Stmt.ExprStmt(expr, span) => {
-                self.check_expr(expr)
-            }
-            Stmt.Let(name, ty_opt, value, is_mut, span) => {
-                val_ty = self.check_expr(value)
-                
-                if ty_node = ty_opt {
-                    decl_ty = self.resolve_type(ty_node)
-                    if not decl_ty.equals(val_ty) {
-                        self.error(span, "Type mismatch in let binding")
-                    }
-                }
-                
-                self.current_scope[0].define(Symbol {
-                    name: name,
-                    kind: SymbolKind.Variable,
-                    ty: val_ty,
-                    is_mut: is_mut,
-                })
-            }
-            Stmt.Return(value_opt, span) => {
-                if val_expr = value_opt {
-                    self.check_expr(val_expr)
-                    // TODO: verify against function return type
-                }
-            }
-            Stmt.Block(stmts, span) => {
-                self.push_scope()
-                for s in stmts {
-                    self.check_stmt(s)
-                }
-                self.pop_scope()
-            }
-            _ => {}
-        }
-    }
-
-    pub fn check_expr(mut self, expr Expr) -> Type {
-        match expr {
-            Expr.IntLit(value, span) => { return Type.Int }
-            Expr.FloatLit(value, span) => { return Type.Float }
-            Expr.StringLit(value, span) => { return Type.String }
-            Expr.BoolLit(value, span) => { return Type.Bool }
-            Expr.NilLit(span) => { return Type.Nil }
-            Expr.Ident(name, span) => {
-                if sym = self.current_scope[0].lookup(name) {
-                    return sym.ty
-                }
-                self.error(span, "Undefined variable: {name}")
-                return Type.Error
-            }
-            Expr.Binary(left, op, right, span) => {
-                if left.len > 0 and right.len > 0 {
-                    l_ty = self.check_expr(left[0])
-                    r_ty = self.check_expr(right[0])
-                    if not l_ty.equals(r_ty) {
-                        self.error(span, "Type mismatch in binary expression")
-                    }
-                    // Relational ops return bool, math returns the same type
-                    is_rel = match op { 
-                        TokenType.EqEq => true, 
-                        TokenType.BangEq => true,
-                        TokenType.Lt => true,
-                        TokenType.Gt => true,
-                        TokenType.LtEq => true,
-                        TokenType.GtEq => true,
-                        _ => false 
-                    }
-                    if is_rel {
-                        return Type.Bool
-                    }
-                    return l_ty
-                }
-                return Type.Error
-            }
-            Expr.Call(callee, args, span) => {
-                if callee.len > 0 {
-                    callee_ty = self.check_expr(callee[0])
-                    for arg in args {
-                        self.check_expr(arg)
-                    }
-                    
-                    match callee_ty {
-                        Type.Func(params, ret_ty) => {
-                            if args.len != params.len {
-                                self.error(span, "Argument count mismatch")
-                            }
-                            if ret_ty.len > 0 {
-                                return ret_ty[0]
-                            }
-                            return Type.Void
-                        }
-                        Type.Error => { return Type.Error }
-                        _ => {
-                            self.error(span, "Cannot call non-function")
-                            return Type.Error
-                        }
-                    }
-                }
-                return Type.Error
-            }
-            _ => { return Type.Unknown }
-        }
-        return Type.Unknown
     }
 
     fn resolve_type(mut self, node TypeNode) -> Type {
@@ -231,4 +172,132 @@ impl Checker {
         }
         return Type.Unknown
     }
+}
+
+pub fn is_catchall(p Pattern) -> bool {
+    return match p {
+        Pattern.CatchAll => true
+        _ => false
+    }
+}
+
+pub fn is_range_expr(e Expr) -> bool {
+    match e {
+        Expr.Binary(_, op, _, _) => {
+            return is_range_op(op)
+        }
+        _ => {}
+    }
+    return false
+}
+
+pub fn is_range_op(op TokenType) -> bool {
+    return match op {
+        TokenType.DotDot => true
+        TokenType.DotDotEq => true
+        _ => false
+    }
+}
+
+pub fn is_unknown(t Type) -> bool {
+    return match t {
+        Type.Unknown => true
+        _ => false
+    }
+}
+
+pub fn is_error(t Type) -> bool {
+    return match t {
+        Type.Error => true
+        _ => false
+    }
+}
+
+pub fn is_known(t Type) -> bool {
+    if is_unknown(t) or is_error(t) {
+        return false
+    }
+    return true
+}
+
+pub fn is_bool(t Type) -> bool {
+    return match t {
+        Type.Bool => true
+        _ => false
+    }
+}
+
+pub fn is_int(t Type) -> bool {
+    return match t {
+        Type.Int => true
+        _ => false
+    }
+}
+
+pub fn is_float(t Type) -> bool {
+    return match t {
+        Type.Float => true
+        _ => false
+    }
+}
+
+pub fn is_string(t Type) -> bool {
+    return match t {
+        Type.String => true
+        _ => false
+    }
+}
+
+// Type compatibility for this checker version: exact matches plus a few
+// stub-level relaxations (nil fits anything, arrays and slices interchange).
+pub fn compatible(a Type, b Type) -> bool {
+    if a.equals(b) or b.equals(a) {
+        return true
+    }
+    match a {
+        Type.Nil => { return true }
+        _ => {}
+    }
+    match b {
+        Type.Nil => { return true }
+        _ => {}
+    }
+    match a {
+        Type.Array(ae) => {
+            match b {
+                Type.Slice(be) => {
+                    if ae.len > 0 and be.len > 0 {
+                        return ae[0].equals(be[0]) or be[0].equals(ae[0])
+                    }
+                    return true
+                }
+                _ => {}
+            }
+        }
+        Type.Slice(ae) => {
+            match b {
+                Type.Array(be) => {
+                    if ae.len > 0 and be.len > 0 {
+                        return ae[0].equals(be[0]) or be[0].equals(ae[0])
+                    }
+                    return true
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    return false
+}
+
+pub fn index_of_char(s string, ch int) -> int {
+    i = 0
+    for i < s.len {
+        c = s[i] as int
+        if c == ch {
+            return i
+        }
+        i += 1
+    }
+    return -1
 }
