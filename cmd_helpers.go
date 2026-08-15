@@ -36,8 +36,15 @@ func reportErr(phase string, err error, source string) error {
 		return nil
 	}
 	if list, ok := err.(*errors.ErrorList); ok {
-		fmt.Fprintln(os.Stderr, errors.FormatAll(list, source))
-		return fmt.Errorf("%s failed: %d error(s)", phase, list.Len())
+		if list.Len() > 0 {
+			fmt.Fprintln(os.Stderr, errors.FormatAll(list, source))
+		}
+		// Warnings do not prevent compilation (SeverityWarning): fail only
+		// on actual errors.
+		if n := list.ErrorCount(); n > 0 {
+			return fmt.Errorf("%s failed: %d error(s)", phase, n)
+		}
+		return nil
 	}
 	return err
 }
@@ -63,7 +70,15 @@ func pipeline(sourceFile string, useLLVM bool) (string, *types.Info, *ast.Progra
 
 	info, checkErr := types.CheckWithImports(prog, sourceFile, findStdlibDir())
 	if checkErr != nil {
-		return "", nil, nil, source, reportErr("type checking", checkErr, source)
+		// reportErr fails only on actual errors; a warnings-only list must
+		// not abort the pipeline.
+		if err := reportErr("type checking", checkErr, source); err != nil {
+			return "", nil, nil, source, err
+		}
+	} else if info != nil && info.Diagnostics.WarningCount() > 0 {
+		// Err() is nil for a warnings-only list, but the warnings still
+		// deserve to be printed.
+		reportErr("type checking", info.Diagnostics, source)
 	}
 
 	var generatedCode string

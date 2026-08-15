@@ -198,6 +198,20 @@ func TestE2E_MultiAssign(t *testing.T) {
 	}
 }
 
+func TestE2E_CG37MatchLoopReassign(t *testing.T) {
+	for _, useLLVM := range []bool{false, true} {
+		t.Run(fmt.Sprintf("llvm=%v", useLLVM), func(t *testing.T) {
+			out, err := buildAndRun(t, "testdata/cg37_match_loop.dot", useLLVM)
+			if err != nil {
+				t.Fatalf("build+run failed: %v\noutput: %s", err, out)
+			}
+			if !contains(out, "eq: 1|0|1 | sums: 10|10") {
+				t.Errorf("expected match/loop/reassign output, got: %s", out)
+			}
+		})
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchSubstring(s, substr)
 }

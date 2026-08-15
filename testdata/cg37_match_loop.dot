@@ -1,0 +1,51 @@
+enum Shape {
+    Circle
+    Square
+    Triangle
+}
+
+impl Shape {
+    pub fn equals(self, other Shape) -> bool {
+        match self {
+            Shape.Circle => match other { Shape.Circle => true, _ => false }
+            Shape.Square => match other { Shape.Square => true, _ => false }
+            Shape.Triangle => match other { Shape.Triangle => true, _ => false }
+            _ => false
+        }
+    }
+}
+
+fn sum_to_plain(n int) -> int {
+    s = 0
+    for i in 1..n {
+        s = s + i
+    }
+    return s
+}
+
+fn sum_to_blockmatch(n int) -> int {
+    match n {
+        0 => 0
+        _ => {
+            s = 0
+            for i in 1..n {
+                s = s + i
+            }
+            s
+        }
+    }
+}
+
+fn main() {
+    print("eq: ")
+    print(Shape.Circle.equals(Shape.Circle))
+    print("|")
+    print(Shape.Circle.equals(Shape.Square))
+    print("|")
+    print(Shape.Triangle.equals(Shape.Triangle))
+    print(" | sums: ")
+    print(sum_to_plain(5))
+    print("|")
+    print(sum_to_blockmatch(5))
+    print("\n")
+}

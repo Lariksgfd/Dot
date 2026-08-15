@@ -69,6 +69,15 @@ func (g *generator) emitVarDecl(x *ast.VarDecl) {
 		// A name the checker treated as a reassignment (D53) has no Defs
 		// entry: emit a plain assignment, not a C declaration.
 		if id, isIdent := name.(*ast.Ident); isIdent && g.info.Defs[id] == nil && val != "" {
+			if types.IsInvalid(declType) {
+				// Reassigned names are recorded as uses, not types (D53):
+				// recover the target type from the resolved symbol so heap
+				// targets still get release/retain (loop-body reassignments
+				// of an outer string/enum come through this path).
+				if sym, ok := g.info.Uses[id]; ok && sym != nil && sym.Type != nil {
+					declType = sym.Type
+				}
+			}
 			var doRetain bool
 			if i < len(x.Values) {
 				doRetain = isLValue(x.Values[i])
@@ -81,7 +90,7 @@ func (g *generator) emitVarDecl(x *ast.VarDecl) {
 				// from a call was freed (and recomputed) between its uses.
 				tmp := fmt.Sprintf("_dot_new_%d", g.unusedIdx)
 				g.unusedIdx++
-				g.line(fmt.Sprintf("%s %s = %s;", cType(g, declType), tmp, val))
+				g.line(fmt.Sprintf("%s %s = %s;", cFieldType(g, declType), tmp, val))
 				g.line(fmt.Sprintf("if ((void*)(%s) != (void*)(%s)) {", vn, tmp))
 				g.indent++
 				g.line(fmt.Sprintf("if (%s != NULL) { dot_release((DotRefcnt*)(%s)); }", vn, vn))
@@ -106,6 +115,19 @@ func (g *generator) emitVarDecl(x *ast.VarDecl) {
 		if isEnumType(declType) {
 			isEnum = true
 			ct += "*"
+		}
+		// D53 shadowing: a fresh declaration whose C name shadows an
+		// enclosing local would make its own initialiser read the NEW
+		// (uninitialised) C variable (`int64_t s = (s + i);` is UB, and the
+		// Dot semantics says the RHS sees the OUTER binding). Evaluate the
+		// initialiser into a temporary before the declaration so it resolves
+		// the enclosing variable, exactly like C scoping would if the names
+		// did not collide.
+		if val != "" && g.shadowsEnclosing(vn) {
+			tmp := fmt.Sprintf("_dot_sh_%d", g.unusedIdx)
+			g.unusedIdx++
+			g.line(fmt.Sprintf("%s %s = %s;", ct, tmp, val))
+			val = tmp
 		}
 		if val == "" {
 			g.line(fmt.Sprintf("%s %s;", ct, vn))

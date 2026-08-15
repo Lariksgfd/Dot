@@ -174,7 +174,7 @@ func (g *generator) emitBodyStmts(stmts []ast.Stmt, want types.Type) (tail bool,
 		return false, "", ""
 	}
 	vt := g.info.TypeOf(es.X)
-	if vt == nil || vt == types.Invalid || types.IsVoid(vt) {
+	if vt == nil || vt == types.Invalid || types.IsVoid(vt) || types.IsNever(vt) {
 		for _, s := range stmts {
 			g.emitStmt(s)
 		}

@@ -127,7 +127,7 @@ func (l *ErrorList) Add(err error) bool {
 	return true
 }
 
-// Len returns the number of collected errors.
+// Len returns the number of collected diagnostics.
 func (l *ErrorList) Len() int {
 	if l == nil {
 		return 0
@@ -135,10 +135,44 @@ func (l *ErrorList) Len() int {
 	return len(l.Errors)
 }
 
-// Err returns l if it contains at least one error, otherwise nil.
-// Always use this when returning an *ErrorList as an error.
+// ErrorCount returns the number of diagnostics with SeverityError. Unknown
+// diagnostic types (not *LexError) count as errors.
+func (l *ErrorList) ErrorCount() int {
+	if l == nil {
+		return 0
+	}
+	n := 0
+	for _, e := range l.Errors {
+		if le, ok := e.(*LexError); ok {
+			if le.Severity == SeverityError {
+				n++
+			}
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// WarningCount returns the number of diagnostics with SeverityWarning.
+func (l *ErrorList) WarningCount() int {
+	if l == nil {
+		return 0
+	}
+	n := 0
+	for _, e := range l.Errors {
+		if le, ok := e.(*LexError); ok && le.Severity == SeverityWarning {
+			n++
+		}
+	}
+	return n
+}
+
+// Err returns l if it contains at least one error, otherwise nil. A list
+// holding only warnings is not an error, so warnings never fail a phase by
+// themselves. Always use this when returning an *ErrorList as an error.
 func (l *ErrorList) Err() error {
-	if l == nil || len(l.Errors) == 0 {
+	if l == nil || l.ErrorCount() == 0 {
 		return nil
 	}
 	return l

@@ -141,7 +141,17 @@ func (c *Checker) checkBlock(block *ast.BlockStmt, ownScope bool) {
 		c.checkStmt(s)
 		if c.info.Terminates[s] && i < len(block.Stmts)-1 {
 			c.warnf(block.Stmts[i+1], "unreachable code")
-			break
+			// Keep checking the dead statements so their type info stays
+			// complete (the C backend emits every statement, checked or
+			// not); no further unreachable diagnostics inside the dead
+			// region.
+			for j := i + 1; j < len(block.Stmts); j++ {
+				if c.bail {
+					return
+				}
+				c.checkStmt(block.Stmts[j])
+			}
+			return
 		}
 	}
 }
@@ -282,8 +292,8 @@ func (c *Checker) bindName(decl *ast.VarDecl, n ast.Expr, t Type, topLevel bool)
 		}
 	}
 	if !decl.Const && decl.Type == nil {
-		if sym, ok := c.scope.LookupLocal(id.Name); ok {
-			// Reassignment of an existing binding in this very scope.
+		if sym, ok := c.reassignTarget(id.Name); ok {
+			// Reassignment of an existing binding.
 			if !sym.Mutable {
 				d := c.errorf(id, "cannot assign to constant %q", id.Name)
 				c.hint(d, "declare it without 'const' to allow reassignment")
@@ -310,6 +320,32 @@ func (c *Checker) bindName(decl *ast.VarDecl, n ast.Expr, t Type, topLevel bool)
 	}
 	c.declare(sym, id)
 	c.recordType(id, t)
+}
+
+// reassignTarget returns the binding a bare `name = expr` targets, or nil.
+// Rule R of D53: a name already declared in the current scope is reassigned.
+// Inside a loop body the search additionally walks outward through enclosing
+// scopes, so `s = s + i` mutates a surrounding binding (a function-body local
+// or a match-arm local) instead of shadowing it: a loop body is not a
+// shadowing scope. The walk stops after the enclosing function scope, so
+// closures and globals keep D53 rule S (shadowing). Block scopes (if
+// branches, match arms, plain blocks) also keep rule S.
+func (c *Checker) reassignTarget(name string) (*Symbol, bool) {
+	if sym, ok := c.scope.LookupLocal(name); ok {
+		return sym, true
+	}
+	if c.scope == nil || c.scope.Kind != ScopeLoop {
+		return nil, false
+	}
+	for s := c.scope.Parent; s != nil; s = s.Parent {
+		if sym, ok := s.LookupLocal(name); ok {
+			return sym, true
+		}
+		if s.Kind == ScopeFunc {
+			break
+		}
+	}
+	return nil, false
 }
 
 // checkReturn checks a return statement against the enclosing signature.

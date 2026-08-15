@@ -769,9 +769,19 @@ func emitEnumMatch(g *generator, subj string, subjType types.Type, resType types
 			b.WriteString(strconv.Itoa(tag))
 			b.WriteString(": { ")
 			b.WriteString(patternBindings(g, tmp, arm.Pattern, subjType))
-			b.WriteString("_match_res = ")
-			b.WriteString(g.emitExpr(arm.Body))
-			b.WriteString("; break; } ")
+			// A diverging arm (its body returns from the enclosing
+			// function) never produces a value: emit the body as a plain
+			// statement expression instead of assigning it to _match_res,
+			// which would be invalid C (`_match_res = ({ return ... })`).
+			if types.IsNever(g.info.TypeOf(arm.Body)) {
+				b.WriteString(g.emitExpr(arm.Body))
+				b.WriteString("; ")
+			} else {
+				b.WriteString("_match_res = ")
+				b.WriteString(g.emitExpr(arm.Body))
+				b.WriteString("; ")
+			}
+			b.WriteString("break; } ")
 		} else {
 			fallback = append(fallback, arm)
 		}
@@ -850,6 +860,19 @@ func matchArmCond(g *generator, subj string, subjType types.Type, pat ast.Patter
 // end the chain; guarded arms nest the rest of the chain in the guard's else
 // branch so a failed guard tries the next arm.
 func writeMatchFallbackExprs(b *strings.Builder, g *generator, subj string, subjType types.Type, arms []*ast.MatchArm) {
+	// emitArm writes the arm body into the builder. Diverging bodies (Never)
+	// are emitted as plain statement expressions; producing bodies assign to
+	// _match_res.
+	emitArm := func(arm *ast.MatchArm) {
+		if types.IsNever(g.info.TypeOf(arm.Body)) {
+			b.WriteString(g.emitExpr(arm.Body))
+			b.WriteString("; ")
+			return
+		}
+		b.WriteString("_match_res = ")
+		b.WriteString(g.emitExpr(arm.Body))
+		b.WriteString("; ")
+	}
 	var emitChain func(i int)
 	emitChain = func(i int) {
 		if i >= len(arms) {
@@ -860,9 +883,7 @@ func writeMatchFallbackExprs(b *strings.Builder, g *generator, subj string, subj
 		last := i == len(arms)-1
 		if cond == "true" && guard == "" && last {
 			b.WriteString(bindings)
-			b.WriteString("_match_res = ")
-			b.WriteString(g.emitExpr(arm.Body))
-			b.WriteString("; ")
+			emitArm(arm)
 			return
 		}
 		b.WriteString("if (")
@@ -873,15 +894,12 @@ func writeMatchFallbackExprs(b *strings.Builder, g *generator, subj string, subj
 			b.WriteString("if (")
 			b.WriteString(guard)
 			b.WriteString(") { ")
-			b.WriteString("_match_res = ")
-			b.WriteString(g.emitExpr(arm.Body))
-			b.WriteString("; } else { ")
+			emitArm(arm)
+			b.WriteString("} else { ")
 			emitChain(i + 1)
 			b.WriteString(" }")
 		} else {
-			b.WriteString("_match_res = ")
-			b.WriteString(g.emitExpr(arm.Body))
-			b.WriteString("; ")
+			emitArm(arm)
 		}
 		b.WriteString("}")
 		if !last {

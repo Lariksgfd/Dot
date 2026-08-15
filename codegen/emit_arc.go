@@ -38,6 +38,26 @@ func (g *generator) popScope() []scopeVar {
 	return popped
 }
 
+// shadowsEnclosing reports whether a C variable of this name is already
+// visible in any enclosing scope level. A fresh declaration that shadows an
+// enclosing local must evaluate its initialiser before the declaration,
+// because in C the new name is already in scope inside its own initialiser.
+func (g *generator) shadowsEnclosing(name string) bool {
+	for _, sv := range g.scopeVars {
+		if sv.name == name {
+			return true
+		}
+	}
+	for _, level := range g.scopeStack {
+		for _, sv := range level {
+			if sv.name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // emitScopeCleanupStmts emits release statements for scopeVars into the
 // output buffer, one per line. It is a no-op when scopeVars is empty.
 func emitScopeCleanupStmts(g *generator, scopeVars []scopeVar) {

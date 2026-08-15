@@ -158,6 +158,72 @@ func TestErrorList_NilReceiver(t *testing.T) {
 	}
 }
 
+func TestErrorList_CountsBySeverity(t *testing.T) {
+	var l ErrorList
+	l.Add(NewTypeWarning("f", 1, 1, 0, 1, "warn one"))
+	l.Add(NewTypeError("f", 2, 1, 5, 1, "err one"))
+	l.Add(NewTypeWarning("f", 3, 1, 9, 1, "warn two"))
+	l.Add(fmt.Errorf("plain error"))
+
+	if got := l.ErrorCount(); got != 2 {
+		t.Errorf("ErrorCount() = %d, want 2 (type error + plain error)", got)
+	}
+	if got := l.WarningCount(); got != 2 {
+		t.Errorf("WarningCount() = %d, want 2", got)
+	}
+}
+
+func TestErrorList_CountsNilReceiver(t *testing.T) {
+	var l *ErrorList
+	if got := l.ErrorCount(); got != 0 {
+		t.Errorf("nil.ErrorCount() = %d, want 0", got)
+	}
+	if got := l.WarningCount(); got != 0 {
+		t.Errorf("nil.WarningCount() = %d, want 0", got)
+	}
+}
+
+func TestNewTypeWarning_Severity(t *testing.T) {
+	w := NewTypeWarning("f", 1, 1, 0, 1, "careful")
+	if w.Severity != SeverityWarning {
+		t.Errorf("NewTypeWarning severity = %v, want SeverityWarning", w.Severity)
+	}
+	if w.Length != 1 {
+		t.Errorf("NewTypeWarning length = %d, want 1", w.Length)
+	}
+	w2 := NewTypeWarning("f", 1, 1, 0, 0, "careful")
+	if w2.Length != 1 {
+		t.Errorf("NewTypeWarning(length=0).Length = %d, want 1", w2.Length)
+	}
+	e := NewTypeError("f", 1, 1, 0, 1, "bad")
+	if e.Severity != SeverityError {
+		t.Errorf("NewTypeError severity = %v, want SeverityError", e.Severity)
+	}
+}
+
+func TestFormatAll_WarningSummary(t *testing.T) {
+	var l ErrorList
+	l.Add(NewTypeWarning("f.dot", 1, 1, 0, 1, "unreachable code"))
+	got := FormatAll(&l, "x\n")
+	if !strings.Contains(got, "warning: unreachable code") {
+		t.Errorf("missing warning header:\n%s", got)
+	}
+	if !strings.HasSuffix(got, "\n\n1 warning") {
+		t.Errorf("summary = ...%q, want it to end with '1 warning'", got)
+	}
+}
+
+func TestFormatAll_MixedSummary(t *testing.T) {
+	var l ErrorList
+	l.Add(NewTypeWarning("f.dot", 1, 1, 0, 1, "warn"))
+	l.Add(NewTypeError("f.dot", 2, 1, 5, 1, "err"))
+	l.Add(NewTypeError("f.dot", 3, 1, 9, 1, "err"))
+	got := FormatAll(&l, "a\nb\nc\n")
+	if !strings.HasSuffix(got, "\n\n2 errors, 1 warning") {
+		t.Errorf("summary = ...%q, want it to end with '2 errors, 1 warning'", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // FormatLexError
 // ---------------------------------------------------------------------------

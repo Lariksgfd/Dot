@@ -84,16 +84,28 @@ func FormatAll(list *ErrorList, source string) string {
 		blocks = append(blocks, fmt.Sprintf("%s: too many errors (stopped after %d)",
 			SeverityError, MaxErrors))
 	}
-	blocks = append(blocks, summary(len(list.Errors)))
+	blocks = append(blocks, summary(list.ErrorCount(), list.WarningCount()))
 	return strings.Join(blocks, "\n\n")
 }
 
-// summary returns "1 error" or "N errors".
-func summary(n int) string {
-	if n == 1 {
-		return "1 error"
+// summary renders "N errors", "N warnings" or a combination.
+func summary(errors, warnings int) string {
+	var parts []string
+	if errors > 0 {
+		if errors == 1 {
+			parts = append(parts, "1 error")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d errors", errors))
+		}
 	}
-	return fmt.Sprintf("%d errors", n)
+	if warnings > 0 {
+		if warnings == 1 {
+			parts = append(parts, "1 warning")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d warnings", warnings))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // caretWidth clamps a lexeme length to a printable caret run length.

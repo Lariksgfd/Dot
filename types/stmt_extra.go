@@ -103,6 +103,13 @@ func (c *Checker) blockTerminates(block *ast.BlockStmt) bool {
 	if c.info.Terminates[last] {
 		return true
 	}
+	// A trailing return always terminates even when it was never checked
+	// (dead code after an already-terminating statement): checkBlock stops
+	// checking at the first unreachable statement, so its Terminates flag
+	// is never recorded.
+	if _, ok := last.(*ast.ReturnStmt); ok {
+		return true
+	}
 	// A trailing expression statement supplies the value of the block.
 	if es, ok := last.(*ast.ExprStmt); ok {
 		t := c.info.TypeOf(es.X)

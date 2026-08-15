@@ -316,9 +316,28 @@ func (c *Checker) branchValue(block *ast.BlockStmt, want Type) Type {
 	for i, s := range block.Stmts {
 		last := i == len(block.Stmts)-1
 		if es, ok := s.(*ast.ExprStmt); ok && last {
-			return c.checkExprExpect(es.X, want)
+			c.checkExprExpect(es.X, want)
+			continue
 		}
 		c.checkStmt(s)
+	}
+	// A block containing any terminating statement (return/break/continue,
+	// or a Never-typed expression) diverges before reaching its end, so its
+	// type is Never, not Void (D50). The scan covers every statement, not
+	// just the last one: statements after the terminator are dead code and
+	// must not turn the block back into a value/Void block. This is what
+	// lets mixed match arms merge (`0 => true` next to
+	// `_ => { return false; x = 1 }`) into a single result type instead of
+	// degrading to Void.
+	for _, s := range block.Stmts {
+		if c.info.Terminates[s] {
+			return Never
+		}
+	}
+	if len(block.Stmts) > 0 {
+		if es, ok := block.Stmts[len(block.Stmts)-1].(*ast.ExprStmt); ok {
+			return c.info.TypeOf(es.X)
+		}
 	}
 	return Void
 }
