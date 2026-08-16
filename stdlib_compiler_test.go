@@ -195,7 +195,7 @@ func TestStdlibCompiler(t *testing.T) {
 			"OK: emit field slice len",
 			"OK: emit field slice cap",
 			"OK: emit method call",
-			"OK: emit method builtin todo",
+			"OK: emit method builtin push",
 			"OK: infer index slice",
 			"OK: infer index string",
 			"OK: infer range slice",

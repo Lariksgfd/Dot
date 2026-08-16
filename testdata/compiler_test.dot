@@ -1466,10 +1466,10 @@ pub fn main() {
     }
 
     c198 = emit_expr(Expr.Call([Expr.Field([mkid("v")], "push", s0())], [mki(1)], s0()), vars_v)
-    if str_eq(c198, "<TODO>") {
-        print("OK: emit method builtin todo")
+    if str_eq(c198, "dot_slice_push(v, (DotAny)(intptr_t)(1))") {
+        print("OK: emit method builtin push")
     } else {
-        print("ERR: emit method builtin todo: " + c198)
+        print("ERR: emit method builtin push: " + c198)
     }
 
     if Type.Int.equals(infer_type(Expr.Index([mkid("a")], [mki(0)], s0()), vars_a)) {
@@ -2574,14 +2574,14 @@ pub fn main() {
     sigs_f = []FnSig{}
     sigs_f.push(FnSig { name: "f", ret: Type.String })
 
-    it301 = infer_type_full(Expr.Call([mkid("f")], [mki(1)], s0()), []VarInfo{}, sigs_f)
+    it301 = infer_type_full(Expr.Call([mkid("f")], [mki(1)], s0()), []VarInfo{}, sigs_f, []CodegenStructInfo{})
     if Type.String.equals(it301) {
         print("OK: infer call known sig")
     } else {
         print("ERR: infer call known sig")
     }
 
-    it302 = infer_type_full(Expr.Call([mkid("zz")], [mki(1)], s0()), []VarInfo{}, sigs_f)
+    it302 = infer_type_full(Expr.Call([mkid("zz")], [mki(1)], s0()), []VarInfo{}, sigs_f, []CodegenStructInfo{})
     is_unknown302 = match it302 { Type.Unknown => true, _ => false }
     if is_unknown302 {
         print("OK: infer call unknown sig")
@@ -2597,7 +2597,7 @@ pub fn main() {
         print("ERR: infer call public wrapper unknown")
     }
 
-    it304 = infer_type_full(Expr.Call([Expr.Field([mkid("p")], "dist", s0())], [mki(3)], s0()), vars_p, sigs_f)
+    it304 = infer_type_full(Expr.Call([Expr.Field([mkid("p")], "dist", s0())], [mki(3)], s0()), vars_p, sigs_f, []CodegenStructInfo{})
     is_unknown304 = match it304 { Type.Unknown => true, _ => false }
     if is_unknown304 {
         print("OK: infer method call unknown")
@@ -2611,7 +2611,7 @@ pub fn main() {
     d305 = Decl.Fn("main", []Param{}, []string{}, None, body305, s0())
     sigs_g = []FnSig{}
     sigs_g.push(FnSig { name: "g", ret: Type.String })
-    emit_fn_def_full(d305, b305, 0, sigs_g)
+    emit_fn_def_full(d305, b305, 0, sigs_g, []CodegenStructInfo{})
     c305 = bfinish(b305)
     if str_contains(c305, "DotString* s = Dot_g();") {
         print("OK: emit let call known sig")

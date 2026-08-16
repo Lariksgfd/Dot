@@ -47,18 +47,19 @@ import codegen_expr
 // is the fn signature registry (stage 7b) so expression emission can infer
 // Call result types from declared signatures (codegen_decl fills it).
 pub struct StmtCtx {
-    vars   []VarInfo
-    heap   []string
-    unused int
-    ret_ty Type
-    sigs   []FnSig
+    vars    []VarInfo
+    heap    []string
+    unused  int
+    ret_ty  Type
+    sigs    []FnSig
+    structs []CodegenStructInfo
 }
 
 // emit_stmt renders one statement into out at the given depth and returns
 // the updated vars (Let appends its VarInfo). Functional style: the vars
 // slice flows in and out, nothing is rebound (D53).
 pub fn emit_stmt(st Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
-    return emit_stmt_ctx(st, StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: Type.Unknown, sigs: []FnSig{} }, out, depth).vars
+    return emit_stmt_ctx(st, StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: Type.Unknown, sigs: []FnSig{}, structs: []CodegenStructInfo{} }, out, depth).vars
 }
 
 fn emit_stmt_ctx(st Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
@@ -76,7 +77,7 @@ fn emit_stmt_ctx(st Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
 
 // emit_stmts renders a list of statements in order, threading vars through.
 pub fn emit_stmts(stmts []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
-    return emit_stmts_ctx(stmts, 0, StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: Type.Unknown, sigs: []FnSig{} }, out, depth).vars
+    return emit_stmts_ctx(stmts, 0, StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: Type.Unknown, sigs: []FnSig{}, structs: []CodegenStructInfo{} }, out, depth).vars
 }
 
 fn emit_stmts_ctx(stmts []Stmt, i int, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
@@ -95,7 +96,7 @@ fn emit_expr_stmt_ctx(e Expr, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
         emit_assign_stmt(e, ctx, out, depth)
         return ctx
     }
-    bwriteln(out, depth, emit_expr_full(e, ctx.vars, ctx.sigs) + ";")
+    bwriteln(out, depth, emit_expr_full(e, ctx.vars, ctx.sigs, ctx.structs) + ";")
     return ctx
 }
 
@@ -122,7 +123,7 @@ fn emit_assign_stmt(e Expr, ctx StmtCtx, out CBuilder, depth int) {
             }
             op_s = assign_op_str(op)
             if op_s.len == 0 {
-                bwriteln(out, depth, emit_expr_full(e, ctx.vars, ctx.sigs) + ";")
+                bwriteln(out, depth, emit_expr_full(e, ctx.vars, ctx.sigs, ctx.structs) + ";")
                 return
             }
             // [РЕШЕНИЕ] ARC: a plain `=` into a heap-typed local releases
@@ -134,13 +135,13 @@ fn emit_assign_stmt(e Expr, ctx StmtCtx, out CBuilder, depth int) {
             // Compound ops keep the plain C form (Go PlusAssign path), and
             // index targets never take this path (is_heap_target requires
             // an Ident; dot_slice_set lowering is a 4b TODO).
-            tname = emit_expr_full(left[0], ctx.vars, ctx.sigs)
+            tname = emit_expr_full(left[0], ctx.vars, ctx.sigs, ctx.structs)
             if is_plain_assign_op(op) and is_heap_target(left[0], ctx.vars) and not expr_is_ident(right[0], tname) {
                 bwriteln(out, depth, "dot_release(" + tname + ");")
             }
-            bwriteln(out, depth, tname + " " + op_s + " " + emit_expr_full(right[0], ctx.vars, ctx.sigs) + ";")
+            bwriteln(out, depth, tname + " " + op_s + " " + emit_expr_full(right[0], ctx.vars, ctx.sigs, ctx.structs) + ";")
         }
-        _ => bwriteln(out, depth, emit_expr_full(e, ctx.vars, ctx.sigs) + ";")
+        _ => bwriteln(out, depth, emit_expr_full(e, ctx.vars, ctx.sigs, ctx.structs) + ";")
     }
 }
 
@@ -185,8 +186,8 @@ fn expr_is_ident(e Expr, name string) -> bool {
 // double-release it and the shadowed outer object still leaks (shadowing
 // is discouraged anyway).
 fn emit_let(name string, ty_opt Option[TypeNode], value Expr, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
-    v_ty = let_decl_ty(ty_opt, value, ctx.vars, ctx.sigs)
-    init = emit_expr_full(value, ctx.vars, ctx.sigs)
+    v_ty = let_decl_ty(ty_opt, value, ctx.vars, ctx.sigs, ctx.structs)
+    init = emit_expr_full(value, ctx.vars, ctx.sigs, ctx.structs)
     bwriteln(out, depth, ty_to_c(v_ty) + " " + name + " = " + init + ";")
     next_vars = ctx.vars
     next_vars.push(VarInfo { name, ty: v_ty })
@@ -194,19 +195,19 @@ fn emit_let(name string, ty_opt Option[TypeNode], value Expr, ctx StmtCtx, out C
     if is_heap(v_ty) {
         next_heap.push(name)
     }
-    return StmtCtx { vars: next_vars, heap: next_heap, unused: ctx.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs }
+    return StmtCtx { vars: next_vars, heap: next_heap, unused: ctx.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }
 }
 
 // let_decl_ty picks the declaration type: the annotation wins when present
 // and resolvable, otherwise the inferred value type.
-fn let_decl_ty(ty_opt Option[TypeNode], value Expr, vars []VarInfo, sigs []FnSig) -> Type {
+fn let_decl_ty(ty_opt Option[TypeNode], value Expr, vars []VarInfo, sigs []FnSig, structs []CodegenStructInfo) -> Type {
     if ty_node = ty_opt {
         ann_ty = tynode_to_ty(ty_node)
         if not is_unknown_ty(ann_ty) {
             return ann_ty
         }
     }
-    return infer_type_full(value, vars, sigs)
+    return infer_type_full(value, vars, sigs, structs)
 }
 
 // [РЕШЕНИЕ] ARC: every live heap local is released before the return,
@@ -228,12 +229,12 @@ fn emit_return_stmt(v_opt Option[Expr], ctx StmtCtx, out CBuilder, depth int) ->
     }
     emit_return_releases(ctx.heap, "", out, depth)
     bwriteln(out, depth, "return;")
-    return StmtCtx { vars: ctx.vars, heap: []string{}, unused: ctx.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs }
+    return StmtCtx { vars: ctx.vars, heap: []string{}, unused: ctx.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }
 }
 
 fn emit_return_expr(v Expr, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
-    ret_expr = emit_expr_full(v, ctx.vars, ctx.sigs)
-    ret_ty = infer_type_full(v, ctx.vars, ctx.sigs)
+    ret_expr = emit_expr_full(v, ctx.vars, ctx.sigs, ctx.structs)
+    ret_ty = infer_type_full(v, ctx.vars, ctx.sigs, ctx.structs)
     ret_is_ident = is_ident_expr(v)
     skip = if ret_is_ident { ident_name_of(v) } else { "" }
     temp_ty = if is_unknown_ty(ret_ty) or is_void_ty(ret_ty) { ctx.ret_ty } else { ret_ty }
@@ -242,11 +243,11 @@ fn emit_return_expr(v Expr, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
         bwriteln(out, depth, ty_to_c(temp_ty) + " " + tmp + " = " + ret_expr + ";")
         emit_return_releases(ctx.heap, "", out, depth)
         bwriteln(out, depth, "return " + tmp + ";")
-        return StmtCtx { vars: ctx.vars, heap: []string{}, unused: ctx.unused + 1, ret_ty: ctx.ret_ty, sigs: ctx.sigs }
+        return StmtCtx { vars: ctx.vars, heap: []string{}, unused: ctx.unused + 1, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }
     }
     emit_return_releases(ctx.heap, skip, out, depth)
     bwriteln(out, depth, "return " + ret_expr + ";")
-    return StmtCtx { vars: ctx.vars, heap: []string{}, unused: ctx.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs }
+    return StmtCtx { vars: ctx.vars, heap: []string{}, unused: ctx.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }
 }
 
 // emit_return_releases emits dot_release for every live heap local except
@@ -304,7 +305,7 @@ fn emit_block(stmts []Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     inner = emit_stmts_ctx(stmts, 0, ctx, out, depth + 1)
     heap_out = pop_block_heap(inner.heap, entry, out, depth + 1)
     bwriteln(out, depth, "}}")
-    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs }
+    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }
 }
 
 // pop_block_heap releases heap[start..] (the names the current block
@@ -354,19 +355,19 @@ fn emit_heap_releases_from(heap []string, start int, out CBuilder, depth int) {
 // underscore (immune to the catch-all case) and no common single-letter
 // binding (b/l/k/t/m/p only); every statement expression opens its own C
 // scope, so nested/sibling temps cannot collide.
-pub fn emit_block_expr(body []Stmt, vars []VarInfo, sigs []FnSig) -> string {
+pub fn emit_block_expr(body []Stmt, vars []VarInfo, sigs []FnSig, structs []CodegenStructInfo) -> string {
     b = new_builder()
-    ctx0 = StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: Type.Unknown, sigs }
+    ctx0 = StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: Type.Unknown, sigs, structs }
     n = body.len
     if n == 0 {
         return "({{ (void)0; }})"
     }
     last = body[n - 1]
     init = emit_stmts_ctx(body[0..n - 1], 0, ctx0, b, 0)
-    if tail_e = block_tail_expr(last, init.vars, init.sigs) {
-        vt = infer_type_full(tail_e, init.vars, init.sigs)
+    if tail_e = block_tail_expr(last, init.vars, init.sigs, init.structs) {
+        vt = infer_type_full(tail_e, init.vars, init.sigs, init.structs)
         skip = if is_ident_expr(tail_e) { ident_name_of(tail_e) } else { "" }
-        bwriteln(b, 0, ty_to_c(vt) + " blktmp = " + emit_expr_full(tail_e, init.vars, init.sigs) + ";")
+        bwriteln(b, 0, ty_to_c(vt) + " blktmp = " + emit_expr_full(tail_e, init.vars, init.sigs, init.structs) + ";")
         emit_return_releases(init.heap, skip, b, 0)
         return "({{ " + bfinish(b) + " blktmp; }})"
     }
@@ -380,11 +381,11 @@ pub fn emit_block_expr(body []Stmt, vars []VarInfo, sigs []FnSig) -> string {
 // emitBodyStmts/emitBlockExprAs rule) whose inferred type is known and not
 // void. The type is inferred against the init-threaded vars, so a tail that
 // reads a block-local Let still qualifies.
-fn block_tail_expr(last Stmt, vars []VarInfo, sigs []FnSig) -> Option[Expr] {
+fn block_tail_expr(last Stmt, vars []VarInfo, sigs []FnSig, structs []CodegenStructInfo) -> Option[Expr] {
     match last {
         Stmt.ExprStmt(e, _) => {
             if not is_assign_expr(e) {
-                vt = infer_type_full(e, vars, sigs)
+                vt = infer_type_full(e, vars, sigs, structs)
                 if is_block_tail_ty(vt) {
                     return Some(e)
                 }
@@ -413,13 +414,13 @@ fn is_block_tail_ty(t Type) -> bool {
 // ForCond). ast.dot has a dedicated Stmt.While because the self-hosted
 // parser folds `for cond {...}` into it (parser.dot parse_for_stmt).
 fn emit_while_stmt(condition Expr, body []Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
-    cond = emit_expr_full(condition, ctx.vars, ctx.sigs)
+    cond = emit_expr_full(condition, ctx.vars, ctx.sigs, ctx.structs)
     bwriteln(out, depth, "while (" + cond + ") {{")
     entry = ctx.heap.len
     inner = emit_stmts_ctx(body, 0, ctx, out, depth + 1)
     heap_out = pop_block_heap(inner.heap, entry, out, depth + 1)
     bwriteln(out, depth, "}}")
-    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs }
+    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }
 }
 
 // emit_for_stmt dispatches the two For shapes the self-hosted parser
@@ -443,7 +444,7 @@ fn emit_for_infinite(body []Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtC
     inner = emit_stmts_ctx(body, 0, ctx, out, depth + 1)
     heap_out = pop_block_heap(inner.heap, entry, out, depth + 1)
     bwriteln(out, depth, "}}")
-    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs }
+    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }
 }
 
 // emit_for_in picks the for-in form from the iterable: a Binary with
@@ -456,7 +457,7 @@ fn emit_for_in(name string, iterable Expr, body []Stmt, ctx StmtCtx, out CBuilde
     if for_is_range_expr(iterable) {
         return emit_for_range(name, iterable, body, ctx, out, depth)
     }
-    iter_ty = infer_type_full(iterable, ctx.vars, ctx.sigs)
+    iter_ty = infer_type_full(iterable, ctx.vars, ctx.sigs, ctx.structs)
     match iter_ty {
         Type.Slice(_) => { return emit_for_iter(name, iterable, iter_ty, body, ctx, out, depth) }
         Type.Array(_) => { return emit_for_iter(name, iterable, iter_ty, body, ctx, out, depth) }
@@ -473,39 +474,39 @@ fn emit_for_in(name string, iterable Expr, body []Stmt, ctx StmtCtx, out CBuilde
 // the body does not affect iteration (D63). Counter names embed depth, so
 // nested and sibling loops cannot collide in C scope.
 fn emit_for_range(name string, range_e Expr, body []Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
-    parts = for_range_parts(range_e, ctx.vars, ctx.sigs)
+    parts = for_range_parts(range_e, ctx.vars, ctx.sigs, ctx.structs)
     counter = "_dot_range_" + int_to_str(depth)
     bwriteln(out, depth, "for (int64_t " + counter + " = " + parts[0] + "; " + counter + " " + parts[1] + " " + parts[2] + "; " + counter + "++) {{")
     bwriteln(out, depth + 1, "int64_t " + name + " = " + counter + ";")
     entry = ctx.heap.len
     inner_vars = ctx.vars
     inner_vars.push(VarInfo { name, ty: Type.Int })
-    inner = emit_stmts_ctx(body, 0, StmtCtx { vars: inner_vars, heap: ctx.heap, unused: ctx.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs }, out, depth + 1)
+    inner = emit_stmts_ctx(body, 0, StmtCtx { vars: inner_vars, heap: ctx.heap, unused: ctx.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }, out, depth + 1)
     heap_out = pop_block_heap(inner.heap, entry, out, depth + 1)
     bwriteln(out, depth, "}}")
-    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs }
+    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }
 }
 
 // for_range_parts extracts [lo, cmp, hi] from the DotDot binary. cmp is
 // "<=" for inclusive ranges (DotDotEq), "<" otherwise. Missing bounds
 // default to 0 (the parser always builds a full binary, so this is only a
 // safety net).
-fn for_range_parts(range_e Expr, vars []VarInfo, sigs []FnSig) -> []string {
+fn for_range_parts(range_e Expr, vars []VarInfo, sigs []FnSig, structs []CodegenStructInfo) -> []string {
     match range_e {
         Expr.Binary(lo, op, hi, _) => {
             if for_is_inclusive_op(op) {
-                return []string{for_range_bound(lo, vars, sigs), "<=", for_range_bound(hi, vars, sigs)}
+                return []string{for_range_bound(lo, vars, sigs, structs), "<=", for_range_bound(hi, vars, sigs, structs)}
             }
-            return []string{for_range_bound(lo, vars, sigs), "<", for_range_bound(hi, vars, sigs)}
+            return []string{for_range_bound(lo, vars, sigs, structs), "<", for_range_bound(hi, vars, sigs, structs)}
         }
         _ => {}
     }
     return []string{"0", "<", "0"}
 }
 
-fn for_range_bound(es []Expr, vars []VarInfo, sigs []FnSig) -> string {
+fn for_range_bound(es []Expr, vars []VarInfo, sigs []FnSig, structs []CodegenStructInfo) -> string {
     if es.len > 0 {
-        return emit_expr_full(es[0], vars, sigs)
+        return emit_expr_full(es[0], vars, sigs, structs)
     }
     return "0"
 }
@@ -547,7 +548,7 @@ fn emit_for_iter(name string, iterable Expr, iter_ty Type, body []Stmt, ctx Stmt
     elem = for_elem_ty(iter_ty)
     it = "_dot_it_" + int_to_str(depth)
     iv = "_dot_iv_" + int_to_str(depth)
-    src = emit_expr_full(iterable, ctx.vars, ctx.sigs)
+    src = emit_expr_full(iterable, ctx.vars, ctx.sigs, ctx.structs)
     bwriteln(out, depth, "{{")
     bwriteln(out, depth + 1, "DotIter " + it + " = dot_iter_slice(" + src + ");")
     bwriteln(out, depth + 1, "DotAny " + iv + " = NULL;")
@@ -560,11 +561,11 @@ fn emit_for_iter(name string, iterable Expr, iter_ty Type, body []Stmt, ctx Stmt
     entry = ctx.heap.len
     inner_vars = ctx.vars
     inner_vars.push(VarInfo { name, ty: elem })
-    inner = emit_stmts_ctx(body, 0, StmtCtx { vars: inner_vars, heap: ctx.heap, unused: ctx.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs }, out, depth + 2)
+    inner = emit_stmts_ctx(body, 0, StmtCtx { vars: inner_vars, heap: ctx.heap, unused: ctx.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }, out, depth + 2)
     heap_out = pop_block_heap(inner.heap, entry, out, depth + 2)
     bwriteln(out, depth + 1, "}}")
     bwriteln(out, depth, "}}")
-    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs }
+    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }
 }
 
 // emit_for_map renders `for k, v in m` as a map iterator loop. ast.dot has
@@ -577,7 +578,7 @@ fn emit_for_map(name string, iterable Expr, iter_ty Type, body []Stmt, ctx StmtC
     key_ty = for_map_key_ty(iter_ty)
     it = "_dot_it_" + int_to_str(depth)
     iv = "_dot_iv_" + int_to_str(depth)
-    src = emit_expr_full(iterable, ctx.vars, ctx.sigs)
+    src = emit_expr_full(iterable, ctx.vars, ctx.sigs, ctx.structs)
     bwriteln(out, depth, "{{")
     bwriteln(out, depth + 1, "DotIter " + it + " = dot_iter_map(" + src + ");")
     bwriteln(out, depth + 1, ty_to_c(key_ty) + " " + name + " = " + zero_c_value(key_ty) + ";")
@@ -589,11 +590,11 @@ fn emit_for_map(name string, iterable Expr, iter_ty Type, body []Stmt, ctx StmtC
     entry = ctx.heap.len
     inner_vars = ctx.vars
     inner_vars.push(VarInfo { name, ty: key_ty })
-    inner = emit_stmts_ctx(body, 0, StmtCtx { vars: inner_vars, heap: ctx.heap, unused: ctx.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs }, out, depth + 2)
+    inner = emit_stmts_ctx(body, 0, StmtCtx { vars: inner_vars, heap: ctx.heap, unused: ctx.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }, out, depth + 2)
     heap_out = pop_block_heap(inner.heap, entry, out, depth + 2)
     bwriteln(out, depth + 1, "}}")
     bwriteln(out, depth, "}}")
-    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs }
+    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty, sigs: ctx.sigs, structs: ctx.structs }
 }
 
 fn for_elem_ty(t Type) -> Type {

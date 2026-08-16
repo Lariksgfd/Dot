@@ -35,8 +35,8 @@ pub fn emit_type_decl(d Decl, out CBuilder, depth int) {
         Decl.Struct(name, fields, _) => emit_struct_def(name, fields, out, depth)
         Decl.Enum(name, variants, _) => emit_enum_def(name, variants, out, depth)
         Decl.Trait(name, _, _) => bwriteln(out, depth, "/* <TODO 5b: trait vtable " + name + "> */")
-        Decl.Impl(_, target, methods, _) => emit_impl_def_from(target, methods, out, depth, []FnSig{})
-        Decl.Fn(name, params, _, ret_ty, body, _) => emit_fn_def_from(name, params, ret_ty, body, out, depth, []FnSig{})
+        Decl.Impl(_, target, methods, _) => emit_impl_def_from(target, methods, out, depth, []FnSig{}, []CodegenStructInfo{})
+        Decl.Fn(name, params, _, ret_ty, body, _) => emit_fn_def_from(name, params, ret_ty, body, out, depth, []FnSig{}, []CodegenStructInfo{})
         // extern decls live in the C runtime headers: ExternFn prototypes
         // are emitted by emit_fn_decl (stage 7c2, `extern` prefix) and its
         // definition is skipped in emit_fn_defs (no body in the AST);
@@ -167,12 +167,12 @@ pub fn emit_fn_decl(d Decl, out CBuilder, depth int) {
 // emitBodyStmts tail handling). The public form carries no fn registry
 // (stage 7b) — emit_program goes through emit_fn_def_full.
 pub fn emit_fn_def(d Decl, out CBuilder, depth int) {
-    emit_fn_def_full(d, out, depth, []FnSig{})
+    emit_fn_def_full(d, out, depth, []FnSig{}, []CodegenStructInfo{})
 }
 
-fn emit_fn_def_full(d Decl, out CBuilder, depth int, sigs []FnSig) {
+fn emit_fn_def_full(d Decl, out CBuilder, depth int, sigs []FnSig, structs []CodegenStructInfo) {
     match d {
-        Decl.Fn(name, params, _, ret_ty, body, _) => emit_fn_def_from(name, params, ret_ty, body, out, depth, sigs)
+        Decl.Fn(name, params, _, ret_ty, body, _) => emit_fn_def_from(name, params, ret_ty, body, out, depth, sigs, structs)
         _ => {}
     }
 }
@@ -199,12 +199,12 @@ pub fn emit_impl_decl(d Decl, out CBuilder, depth int) {
 // ...) { <body> }`. self is registered in vars as the struct type so field
 // access `self.x` lowers to `self->dot_x`.
 pub fn emit_impl_def(d Decl, out CBuilder, depth int) {
-    emit_impl_def_full(d, out, depth, []FnSig{})
+    emit_impl_def_full(d, out, depth, []FnSig{}, []CodegenStructInfo{})
 }
 
 // emit_impl_def_full is the registry-threading form of emit_impl_def
 // (stage 7b: method bodies see the whole program's fn signatures).
-fn emit_impl_def_full(d Decl, out CBuilder, depth int, sigs []FnSig) {
+fn emit_impl_def_full(d Decl, out CBuilder, depth int, sigs []FnSig, structs []CodegenStructInfo) {
     match d {
         Decl.Impl(_, target, methods, _) => {
             recv = impl_recv_name(target)
@@ -212,30 +212,30 @@ fn emit_impl_def_full(d Decl, out CBuilder, depth int, sigs []FnSig) {
                 bwriteln(out, depth, "/* <TODO 5b: impl on unsupported target> */")
                 return
             }
-            emit_impl_defs(recv, methods, 0, out, depth, sigs)
+            emit_impl_defs(recv, methods, 0, out, depth, sigs, structs)
         }
         _ => {}
     }
 }
 
 // emit_fn_def_from renders one free fn with its unpacked fields.
-fn emit_fn_def_from(name string, params []Param, ret_ty Option[TypeNode], body []Stmt, out CBuilder, depth int, sigs []FnSig) {
+fn emit_fn_def_from(name string, params []Param, ret_ty Option[TypeNode], body []Stmt, out CBuilder, depth int, sigs []FnSig, structs []CodegenStructInfo) {
     ret_c = ty_to_c(fn_ret_ty(ret_ty))
     params_c = fn_params_c(params, 0, "")
     bwriteln(out, depth, ret_c + " Dot_" + name + "(" + params_c + ") {{")
     vars = fn_params_vars(params, 0, []VarInfo{})
-    emit_fn_body(body, ret_ty, vars, out, depth + 1, sigs)
+    emit_fn_body(body, ret_ty, vars, out, depth + 1, sigs, structs)
     bwriteln(out, depth, "}}")
     bwriteln(out, depth, "")
 }
 
-fn emit_impl_def_from(target TypeNode, methods []Decl, out CBuilder, depth int, sigs []FnSig) {
+fn emit_impl_def_from(target TypeNode, methods []Decl, out CBuilder, depth int, sigs []FnSig, structs []CodegenStructInfo) {
     recv = impl_recv_name(target)
     if recv.len == 0 {
         bwriteln(out, depth, "/* <TODO 5b: impl on unsupported target> */")
         return
     }
-    emit_impl_defs(recv, methods, 0, out, depth, sigs)
+    emit_impl_defs(recv, methods, 0, out, depth, sigs, structs)
 }
 
 // [РЕШЕНИЕ] Body emission: the self-hosted AST has no ExprBody — the parser
@@ -247,9 +247,9 @@ fn emit_impl_def_from(target TypeNode, methods []Decl, out CBuilder, depth int, 
 // FIRST so their Lets land in vars — the tail's infer_type must see local
 // variables, not just parameters (bug c262). Everything else is emitted
 // statement by statement; an empty body renders as an empty C block.
-fn emit_fn_body(body []Stmt, ret_ty Option[TypeNode], vars []VarInfo, out CBuilder, depth int, sigs []FnSig) {
+fn emit_fn_body(body []Stmt, ret_ty Option[TypeNode], vars []VarInfo, out CBuilder, depth int, sigs []FnSig, structs []CodegenStructInfo) {
     r_ty = fn_ret_ty(ret_ty)
-    ctx0 = StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: r_ty, sigs }
+    ctx0 = StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: r_ty, sigs, structs }
     if body.len == 0 {
         emit_stmts_ctx(body, 0, ctx0, out, depth)
         return
@@ -285,7 +285,7 @@ fn fn_body_tail(last Stmt, ctx StmtCtx, out CBuilder, depth int) -> bool {
             if is_assign_expr(e) {
                 return false
             }
-            vt = infer_type_full(e, ctx.vars, ctx.sigs)
+            vt = infer_type_full(e, ctx.vars, ctx.sigs, ctx.structs)
             if is_unknown_ty(vt) or is_void_ty(vt) {
                 return false
             }
@@ -296,7 +296,7 @@ fn fn_body_tail(last Stmt, ctx StmtCtx, out CBuilder, depth int) -> bool {
             // unusedIdx counter: two tail temps can never share one C scope
             // (one tail per fn body), and depth keeps them unique there.
             tmp = "_dot_ret_tail_" + int_to_str(depth)
-            bwriteln(out, depth, ty_to_c(vt) + " " + tmp + " = " + emit_expr_full(e, ctx.vars, ctx.sigs) + ";")
+            bwriteln(out, depth, ty_to_c(vt) + " " + tmp + " = " + emit_expr_full(e, ctx.vars, ctx.sigs, ctx.structs) + ";")
             emit_return_releases(ctx.heap, skip, out, depth)
             bwriteln(out, depth, "return " + tmp + ";")
             return true
@@ -323,12 +323,12 @@ fn emit_impl_decls(recv string, methods []Decl, i int, out CBuilder, depth int) 
     emit_impl_decls(recv, methods, i + 1, out, depth)
 }
 
-fn emit_impl_defs(recv string, methods []Decl, i int, out CBuilder, depth int, sigs []FnSig) {
+fn emit_impl_defs(recv string, methods []Decl, i int, out CBuilder, depth int, sigs []FnSig, structs []CodegenStructInfo) {
     if i >= methods.len {
         return
     }
-    emit_method_def(recv, methods[i], out, depth, sigs)
-    emit_impl_defs(recv, methods, i + 1, out, depth, sigs)
+    emit_method_def(recv, methods[i], out, depth, sigs, structs)
+    emit_impl_defs(recv, methods, i + 1, out, depth, sigs, structs)
 }
 
 fn emit_method_decl(recv string, m Decl, out CBuilder, depth int) {
@@ -341,13 +341,13 @@ fn emit_method_decl(recv string, m Decl, out CBuilder, depth int) {
     }
 }
 
-fn emit_method_def(recv string, m Decl, out CBuilder, depth int, sigs []FnSig) {
+fn emit_method_def(recv string, m Decl, out CBuilder, depth int, sigs []FnSig, structs []CodegenStructInfo) {
     match m {
         Decl.Fn(name, params, _, ret_ty, body, _) => {
             ret_c = ty_to_c(fn_ret_ty(ret_ty))
             bwriteln(out, depth, ret_c + " Dot_" + recv + "_" + name + "(" + method_params_c(recv, params) + ") {{")
             vars = method_body_vars(recv, params)
-            emit_fn_body(body, ret_ty, vars, out, depth + 1, sigs)
+            emit_fn_body(body, ret_ty, vars, out, depth + 1, sigs, structs)
             bwriteln(out, depth, "}}")
             bwriteln(out, depth, "")
         }
@@ -497,7 +497,8 @@ pub fn emit_program(decls []Decl) -> string {
     emit_type_fwds(decls, out)
     emit_type_defs(decls, out)
     emit_fn_decls(decls, out)
-    emit_fn_defs(decls, out, collect_sigs(decls))
+    structs = collect_structs(decls)
+    emit_fn_defs(decls, out, collect_sigs(decls), structs)
     emit_main_driver(decls, out)
     return bfinish(out)
 }
@@ -546,6 +547,39 @@ fn impl_sigs_from(methods []Decl, i int, recv string, sigs []FnSig) -> []FnSig {
     return impl_sigs_from(methods, i + 1, recv, next)
 }
 
+// collect_structs builds the struct field registry (stage 7d-C): every
+// Decl.Struct contributes CodegenStructInfo { name, fields } with field
+// types resolved through tynode_to_ty (the same resolver fn params use).
+// Enums are NOT included: the checker folds them into Type.Struct, but
+// their payload fields live in variant-specific unions, not plain fields.
+fn collect_structs(decls []Decl) -> []CodegenStructInfo {
+    return collect_structs_from(decls, 0, []CodegenStructInfo{})
+}
+
+fn collect_structs_from(decls []Decl, i int, acc []CodegenStructInfo) -> []CodegenStructInfo {
+    if i >= decls.len {
+        return acc
+    }
+    next = match decls[i] {
+        Decl.Struct(name, fields, _) => struct_info_list(acc, name, fields)
+        _ => acc
+    }
+    return collect_structs_from(decls, i + 1, next)
+}
+
+fn struct_info_list(acc []CodegenStructInfo, name string, fields []FieldDef) -> []CodegenStructInfo {
+    acc.push(CodegenStructInfo { name, fields: struct_field_infos(fields, 0, []StructFieldInfo{}) })
+    return acc
+}
+
+fn struct_field_infos(fields []FieldDef, i int, acc []StructFieldInfo) -> []StructFieldInfo {
+    if i >= fields.len {
+        return acc
+    }
+    acc.push(StructFieldInfo { name: fields[i].name, ty: tynode_to_ty(fields[i].ty) })
+    return struct_field_infos(fields, i + 1, acc)
+}
+
 // Phase 1: forward typedefs for every named struct/enum so pointer fields
 // and signatures can reference types defined later (Go emitStructFwd /
 // emitEnumFwd — identical forms, grouped before all definitions).
@@ -583,10 +617,10 @@ fn emit_fn_decls(decls []Decl, out CBuilder) {
 
 // Phase 4: definitions of every free fn and impl method. sigs threads the
 // program-wide fn signature registry into the body emitters (stage 7b).
-fn emit_fn_defs(decls []Decl, out CBuilder, sigs []FnSig) {
+fn emit_fn_defs(decls []Decl, out CBuilder, sigs []FnSig, structs []CodegenStructInfo) {
     for d in decls {
-        emit_fn_def_full(d, out, 0, sigs)
-        emit_impl_def_full(d, out, 0, sigs)
+        emit_fn_def_full(d, out, 0, sigs, structs)
+        emit_impl_def_full(d, out, 0, sigs, structs)
     }
 }
 
