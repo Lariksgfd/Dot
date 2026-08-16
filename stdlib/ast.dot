@@ -32,6 +32,8 @@ pub enum Expr {
     
     If(condition []Expr, then_branch []Stmt, else_branch []Expr, span Span)
     Match(value []Expr, arms []MatchArm, span Span)
+    // Block expression in match-arm position: `pat => { ... }`.
+    Block(body []Stmt, span Span)
     
     Assign(left []Expr, op TokenType, right []Expr, span Span)
 

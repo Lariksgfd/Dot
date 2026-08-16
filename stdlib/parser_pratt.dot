@@ -41,6 +41,7 @@ impl Expr {
             TupleLit(_, span) => span
             If(_, _, _, span) => span
             Match(_, _, span) => span
+            Block(_, span) => span
             Assign(_, _, _, span) => span
             FnLit(_, _, _, span) => span
             StructLit(_, _, span) => span
@@ -493,13 +494,15 @@ fn parse_array_elements(mut self, end_tok TokenType) -> []Expr {
 
         self.next_token() // cur = arm body
 
-        // Block-bodied arms cannot be represented: MatchArm.body is an Expr
-        // and ast.dot has no block expression. The block is parsed and
-        // skipped, the arm is dropped.
+        // Block-bodied arm `pat => { ... }` -> Expr.Block. Newlines are
+        // skipped by next_token, so a `{` on the next line is cur == LBrace
+        // here as well. peek_after_newline_is is deliberately not used: it
+        // would misfire on struct-literal bodies (`pat => Foo { x: 1 }`,
+        // peek == LBrace).
         if self.cur_token_is(TokenType.LBrace) {
-            self.parse_block_stmt()
-            self.errors.push("match arm block bodies are not supported yet")
-            return None
+            block_start = self.cur_tok.pos
+            stmts = self.parse_block_stmt()
+            return Some(MatchArm { pattern: pat.unwrap(), guard, body: Expr.Block(stmts, Span.new(block_start, self.cur_tok.end)) })
         }
 
         body = self.parse_expr(PREC_LOWEST)
@@ -528,6 +531,16 @@ fn parse_array_elements(mut self, end_tok TokenType) -> []Expr {
             return Some(Pattern.IntLit(str_to_int(self.cur_tok.lexeme)))
         }
         if self.cur_token_is(TokenType.Ident) {
+            // The self-lexer produces no Underscore token: a standalone `_`
+            // arrives as Ident("_") (lexer.is_letter includes '_'). `_` is
+            // the wildcard pattern everywhere (SPEC: match wildcard, discard
+            // target), never a real variable name, so it must become
+            // CatchAll here — otherwise match_arm_body would substitute the
+            // binding "_" into every underscore of the emitted body
+            // (dot_print -> dot( )print, int64_t -> int64(x)t).
+            if self.cur_tok.lexeme == "_" {
+                return Some(Pattern.CatchAll)
+            }
             path = self.parse_pattern_path(self.cur_tok.lexeme)
             // Payload bindings `Shape.Circle(r) => r` / `Type.Func(a, b) => a`. Without
             // parentheses the path stays a plain name (Enum.Variant folded

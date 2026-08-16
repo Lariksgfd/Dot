@@ -2727,4 +2727,277 @@ pub fn main() {
     } else {
         print("ERR: escape plain regression len2: " + c317)
     }
+
+    // --- match block arms (Expr.Block arm bodies): parser + checker ---
+
+    c318 = Compiler.new()
+    c318.compile("fn m() -> int {{\n    n = 5\n    x = match n {{\n        0 => {{\n            a = 1\n            a + 1\n        }},\n        _ => 42\n    }}\n    return x\n}}\n")
+    if c318.errors.len == 0 {
+        print("OK: match block arm value")
+    } else {
+        print("ERR: match block arm value: " + c318.errors[0])
+    }
+
+    c319 = Compiler.new()
+    c319.compile("fn m() {{\n    n = 5\n    match n {{\n        1 => {{\n            b = 7\n            print(b)\n        }},\n        _ => {{\n            print(0)\n        }}\n    }}\n}}\n")
+    if c319.errors.len == 0 {
+        print("OK: match block arm statement")
+    } else {
+        print("ERR: match block arm statement: " + c319.errors[0])
+    }
+
+    c320 = Compiler.new()
+    c320.compile("fn m() -> int {{\n    n = 5\n    x = match n {{\n        v => {{\n            w = v * 2\n            w\n        }},\n        _ => 0\n    }}\n    return x\n}}\n")
+    if c320.errors.len == 0 {
+        print("OK: match block arm binding")
+    } else {
+        print("ERR: match block arm binding: " + c320.errors[0])
+    }
+
+    c321 = Compiler.new()
+    c321.compile("fn m() -> int {{\n    n = 5\n    x = match n {{\n        _ => {{\n            c = 3\n            c + 1\n        }}\n    }}\n    return x\n}}\n")
+    if c321.errors.len == 0 {
+        print("OK: match block arm catch all")
+    } else {
+        print("ERR: match block arm catch all: " + c321.errors[0])
+    }
+
+    c322 = Compiler.new()
+    c322.compile("fn m() -> int {{\n    n = 5\n    x = match n {{\n        v if v > 0 => {{\n            d = v + 1\n            d\n        }},\n        _ => 0\n    }}\n    return x\n}}\n")
+    if c322.errors.len == 0 {
+        print("OK: match block arm guard")
+    } else {
+        print("ERR: match block arm guard: " + c322.errors[0])
+    }
+
+    c323 = Compiler.new()
+    c323.compile("fn m() -> int {{\n    n = 5\n    x = match n {{\n        0 => {{\n            e = 10\n            e\n        }},\n        5 => 20,\n        _ => 30\n    }}\n    return x\n}}\n")
+    if c323.errors.len == 0 {
+        print("OK: match block arm mixed")
+    } else {
+        print("ERR: match block arm mixed: " + c323.errors[0])
+    }
+
+    c324 = Compiler.new()
+    c324.compile("fn m() -> int {{\n    n = 5\n    x = match n {{\n        _ => {{\n            y = match n {{\n                0 => 1,\n                _ => 2\n            }}\n            y + 1\n        }}\n    }}\n    return x\n}}\n")
+    if c324.errors.len == 0 {
+        print("OK: match block arm nested")
+    } else {
+        print("ERR: match block arm nested: " + c324.errors[0])
+    }
+
+    c325 = Compiler.new()
+    c325.compile("struct Point {{ x int }}\nfn m() -> int {{\n    p = match 5 {{\n        _ => Point {{ x: 1 }}\n    }}\n    return 1\n}}\n")
+    if c325.errors.len == 0 {
+        print("OK: match arm struct lit not block")
+    } else {
+        print("ERR: match arm struct lit not block: " + c325.errors[0])
+    }
+
+    // Unclosed brace of a block arm: the arm swallows the rest of the arms
+    // as statements, the parser must report errors (and not hang/panic).
+    c326 = Compiler.new()
+    c326.compile("fn m() -> int {{\n    n = 5\n    x = match n {{\n        0 => {{\n            a = 1\n        _ => 42\n    }}\n    return x\n}}\n")
+    if c326.errors.len > 0 {
+        print("OK: match block arm unclosed brace")
+    } else {
+        print("ERR: match block arm unclosed brace")
+    }
+
+    // Syntax error inside a block arm: the bad token is skipped, the block
+    // closes and the next arms still parse (single error, no cascade).
+    c327 = Compiler.new()
+    c327.compile("fn m() -> int {{\n    n = 5\n    x = match n {{\n        0 => {{\n            a = 1\n            @@\n        }},\n        _ => 42\n    }}\n    return x\n}}\n")
+    if c327.errors.len > 0 {
+        print("OK: match block arm syntax error recovered")
+    } else {
+        print("ERR: match block arm syntax error recovered")
+    }
+
+    c328 = Compiler.new()
+    c328.compile("fn m() {{\n    n = 5\n    x = match n {{\n        _ => {{}}\n    }}\n}}\n")
+    if c328.errors.len == 0 {
+        print("OK: match block arm empty")
+    } else {
+        print("ERR: match block arm empty: " + c328.errors[0])
+    }
+
+    // --- codegen_expr / codegen_stmt: Expr.Block in match-arm position ---
+
+    mb_body = []Stmt{}
+    mb_body.push(Stmt.Let("a", None, mki(1), false, s0()))
+    mb_body.push(Stmt.ExprStmt(mkbin(mkid("a"), TokenType.Plus, mki(1)), s0()))
+    mb_arms = []MatchArm{}
+    mb_arms.push(MatchArm { pattern: Pattern.IntLit(0), guard: None, body: Expr.Block(mb_body, s0()) })
+    mb_arms.push(MatchArm { pattern: Pattern.CatchAll, guard: None, body: mki(42) })
+    c329 = emit_expr(Expr.Match([mki(0)], mb_arms, s0()), []VarInfo{})
+    if str_eq(c329, "(((0 == 0)) ? (({{ int64_t a = 1;\nint64_t blktmp = (a + 1);\n blktmp; }})) : (42))") {
+        print("OK: emit match block arm value")
+    } else {
+        print("ERR: emit match block arm value: " + c329)
+    }
+
+    vb_body = []Stmt{}
+    vb_body.push(Stmt.Let("w", None, mkbin(mkid("v"), TokenType.Star, mki(2)), false, s0()))
+    vb_body.push(Stmt.ExprStmt(mkid("w"), s0()))
+    vb_arms = []MatchArm{}
+    vb_arms.push(MatchArm { pattern: Pattern.Ident("v"), guard: None, body: Expr.Block(vb_body, s0()) })
+    c330 = emit_expr(Expr.Match([mki(5)], vb_arms, s0()), []VarInfo{})
+    if str_eq(c330, "((true) ? (({{ double w = ((5) * 2);\ndouble blktmp = w;\n blktmp; }})) : (0))") {
+        print("OK: emit match block arm binding")
+    } else {
+        print("ERR: emit match block arm binding: " + c330)
+    }
+
+    // CatchAll `_` must NOT be substituted into the body: with the old
+    // Ident("_") bug every underscore of the emitted body would be replaced
+    // by "(1)" (my_var -> my_(1)var). CatchAll arms substitute nothing.
+    ca_body = []Stmt{}
+    ca_body.push(Stmt.ExprStmt(mkid("my_var"), s0()))
+    ca_arms = []MatchArm{}
+    ca_arms.push(MatchArm { pattern: Pattern.CatchAll, guard: None, body: Expr.Block(ca_body, s0()) })
+    c331 = emit_expr(Expr.Match([mki(1)], ca_arms, s0()), []VarInfo{})
+    if str_eq(c331, "({{ my_var;\n (void)0; }})") {
+        print("OK: emit match block arm catch all")
+    } else {
+        print("ERR: emit match block arm catch all: " + c331)
+    }
+
+    // Empty block `=> {}`: no tail value -> (void)0 statement expression.
+    c332 = emit_expr(Expr.Block([]Stmt{}, s0()), []VarInfo{})
+    if str_eq(c332, "({{ (void)0; }})") {
+        print("OK: emit match block arm empty")
+    } else {
+        print("ERR: emit match block arm empty: " + c332)
+    }
+
+    gb_body = []Stmt{}
+    gb_body.push(Stmt.ExprStmt(mki(7), s0()))
+    gb_arms = []MatchArm{}
+    gb_arms.push(MatchArm { pattern: Pattern.IntLit(0), guard: Some(mkbin(mki(0), TokenType.Gt, mki(-1))), body: Expr.Block(gb_body, s0()) })
+    gb_arms.push(MatchArm { pattern: Pattern.CatchAll, guard: None, body: mki(9) })
+    c333 = emit_expr(Expr.Match([mki(0)], gb_arms, s0()), []VarInfo{})
+    if str_contains(c333, "((0 == 0) && ((0 > -1)))") and str_contains(c333, "int64_t blktmp = 7;") and str_contains(c333, " : (9))") {
+        print("OK: emit match block arm guard")
+    } else {
+        print("ERR: emit match block arm guard: " + c333)
+    }
+
+    mix_body = []Stmt{}
+    mix_body.push(Stmt.ExprStmt(mki(22), s0()))
+    mix_arms = []MatchArm{}
+    mix_arms.push(MatchArm { pattern: Pattern.IntLit(1), guard: None, body: mki(11) })
+    mix_arms.push(MatchArm { pattern: Pattern.IntLit(2), guard: None, body: Expr.Block(mix_body, s0()) })
+    mix_arms.push(MatchArm { pattern: Pattern.CatchAll, guard: None, body: Expr.Block([]Stmt{}, s0()) })
+    c334 = emit_expr(Expr.Match([mki(5)], mix_arms, s0()), []VarInfo{})
+    if str_contains(c334, "(((5 == 1)) ? (11)") and str_contains(c334, "int64_t blktmp = 22;") and str_contains(c334, " (void)0; }}))") {
+        print("OK: emit match block arm mixed")
+    } else {
+        print("ERR: emit match block arm mixed: " + c334)
+    }
+
+    nst_inner = []MatchArm{}
+    nst_inner.push(MatchArm { pattern: Pattern.IntLit(0), guard: None, body: mki(1) })
+    nst_inner.push(MatchArm { pattern: Pattern.CatchAll, guard: None, body: mki(2) })
+    nst_body = []Stmt{}
+    nst_body.push(Stmt.Let("y", None, Expr.Match([mki(0)], nst_inner, s0()), false, s0()))
+    nst_body.push(Stmt.ExprStmt(mkbin(mkid("y"), TokenType.Plus, mki(1)), s0()))
+    nst_arms = []MatchArm{}
+    nst_arms.push(MatchArm { pattern: Pattern.CatchAll, guard: None, body: Expr.Block(nst_body, s0()) })
+    c335 = emit_expr(Expr.Match([mki(9)], nst_arms, s0()), []VarInfo{})
+    if str_eq(c335, "({{ int64_t y = (((0 == 0)) ? (1) : (2));\nint64_t blktmp = (y + 1);\n blktmp; }})") {
+        print("OK: emit match block arm nested")
+    } else {
+        print("ERR: emit match block arm nested: " + c335)
+    }
+
+    b_mb = new_builder()
+    emit_stmts([Stmt.ExprStmt(Expr.Match([mki(1)], mix_arms, s0()), s0())], []VarInfo{}, b_mb, 0)
+    c336 = bfinish(b_mb)
+    if str_contains(c336, "(((1 == 1)) ? (11)") and str_contains(c336, " (void)0; }})") and str_contains(c336, ";\n") {
+        print("OK: emit match block arm statement")
+    } else {
+        print("ERR: emit match block arm statement: " + c336)
+    }
+
+    if Type.Int.equals(infer_type(Expr.Match([mki(0)], mb_arms, s0()), []VarInfo{})) {
+        print("OK: infer match block arm")
+    } else {
+        print("ERR: infer match block arm")
+    }
+
+    if Type.Int.equals(infer_type(Expr.Block(mb_body, s0()), []VarInfo{})) {
+        print("OK: infer block tail local")
+    } else {
+        print("ERR: infer block tail local")
+    }
+
+    eb_ty = infer_type(Expr.Block([]Stmt{}, s0()), []VarInfo{})
+    is_eb_unknown = match eb_ty { Type.Unknown => true, _ => false }
+    if is_eb_unknown {
+        print("OK: infer block empty unknown")
+    } else {
+        print("ERR: infer block empty unknown")
+    }
+
+    // A1 regression end to end: `_ => Point { x: 1 }` must parse the body as
+    // a struct literal (not a block); `_` is CatchAll, so no "_" substitution
+    // corrupts the emitted ".dot_x" (old bug: ".dot(5)x").
+    src_sl = "struct Point {{ x int }}\nfn m() -> int {{\n    p = match 5 {{\n        _ => Point {{ x: 1 }}\n    }}\n    return 1\n}}\n"
+    c337 = compile_to_c(src_sl)
+    if str_contains(c337, "dot_box_payload(dot_box_struct(sizeof(DotPoint)") and str_contains(c337, ".dot_x") and not str_contains(c337, ".dot(5)x") {
+        print("OK: match arm struct lit codegen")
+    } else {
+        print("ERR: match arm struct lit codegen: " + c337)
+    }
+
+    src_st = "fn m() {{\n    n = 5\n    match n {{\n        1 => {{\n            b = 7\n            print(b)\n        }},\n        _ => {{\n            print(0)\n        }}\n    }}\n}}\n"
+    c338 = compile_to_c(src_st)
+    if c338.len > 0 and str_contains(c338, "int64_t b = 7;") and str_contains(c338, " (void)0;") {
+        print("OK: match block arm statement codegen")
+    } else {
+        print("ERR: match block arm statement codegen: " + c338)
+    }
+
+    // Binding arm with a void-tailed block in statement position: the
+    // binding substitution must NOT corrupt `(void)0` / `int64_t` / `void*`
+    // (str_replace_ident regression, previously `(n)oid`).
+    src_bind_st = "fn m() {{\n    n = 5\n    match n {{\n        v => {{\n            print(v)\n        }},\n        _ => {{\n            print(0)\n        }}\n    }}\n}}\n"
+    c339 = Compiler.new()
+    c339.compile(src_bind_st)
+    if c339.errors.len == 0 {
+        print("OK: match block arm binding statement")
+    } else {
+        print("ERR: match block arm binding statement: " + c339.errors[0])
+    }
+
+    c340 = Compiler.new()
+    c340.compile("fn m() {{\n    n = 5\n    match n {{\n        v if v > 0 => {{\n            print(v)\n        }},\n        _ => {{\n            print(0)\n        }}\n    }}\n}}\n")
+    if c340.errors.len == 0 {
+        print("OK: match block arm binding guard")
+    } else {
+        print("ERR: match block arm binding guard: " + c340.errors[0])
+    }
+
+    c341 = compile_to_c(src_bind_st)
+    if c341.len > 0 and str_contains(c341, "((true) ?") and str_contains(c341, "(intptr_t)((n))") and str_contains(c341, " (void)0;") and not str_contains(c341, "(n)oid") and not str_contains(c341, "int64(n)t") {
+        print("OK: match block arm binding codegen")
+    } else {
+        print("ERR: match block arm binding codegen: " + c341)
+    }
+
+    // Unit-level: Ident-pattern guard gets the subject substitution (D53
+    // fix in match_guard_cond) and the block body is substituted with
+    // identifier boundaries.
+    gb2_body = []Stmt{}
+    gb2_body.push(Stmt.ExprStmt(Expr.Call([mkid("print")], [mkid("v")], s0()), s0()))
+    gb2_arms = []MatchArm{}
+    gb2_arms.push(MatchArm { pattern: Pattern.Ident("v"), guard: Some(mkbin(mkid("v"), TokenType.Gt, mki(0))), body: Expr.Block(gb2_body, s0()) })
+    gb2_arms.push(MatchArm { pattern: Pattern.CatchAll, guard: None, body: mki(0) })
+    c342 = emit_expr(Expr.Match([mki(5)], gb2_arms, s0()), []VarInfo{})
+    if str_eq(c342, "((true && (((5) > 0))) ? (({{ dot_print(dot_slice_pack(1, (DotAny[]){{(DotAny)(intptr_t)((5))}}));\n (void)0; }})) : (0))") {
+        print("OK: emit match block arm binding guard")
+    } else {
+        print("ERR: emit match block arm binding guard: " + c342)
+    }
 }

@@ -21,6 +21,7 @@ import ast
 import types
 import codegen
 import codegen_types
+import codegen_stmt
 
 pub struct VarInfo {
     name string
@@ -65,6 +66,9 @@ fn infer_type_full(e Expr, vars []VarInfo, sigs []FnSig) -> Type {
         Expr.ArrayLit(elements, _) => Type.Array([]Type{array_lit_elem_ty(elements, 0, Type.Unknown, vars, sigs)})
         Expr.TupleLit(elements, _) => tuple_lit_ty(elements, vars, sigs)
         Expr.Match(_, arms, _) => match_first_arm_ty(arms, vars, sigs)
+        // Block in match-arm position: the value is the tail expression's
+        // type (checker.check_fn_body_tail rule, A1/A2).
+        Expr.Block(body, _) => infer_block_ty(body, 0, Type.Unknown, vars, sigs)
         Expr.Assign(_, _, right, _) => assign_value_ty(right, vars, sigs)
         Expr.StructLit(name, _, _) => Type.Struct(name)
         Expr.MapLit(entries, _) => map_lit_ty(entries, vars, sigs)
@@ -227,6 +231,27 @@ fn if_then_type(stmts []Stmt, i int, acc Type, vars []VarInfo, sigs []FnSig) -> 
     }
 }
 
+// infer_block_ty computes the value type of an Expr.Block: the walk threads
+// Lets into vars (the emit path does the same via emit_stmts_ctx), and the
+// type of the LAST expression statement wins (checker.check_fn_body_tail
+// rule; Lets contribute nothing themselves). A tail reading a block-local
+// Let therefore resolves, e.g. `0 => { y = x + 1\ny + 10 }` types as Int.
+fn infer_block_ty(stmts []Stmt, i int, acc Type, vars []VarInfo, sigs []FnSig) -> Type {
+    if i >= stmts.len {
+        return acc
+    }
+    match stmts[i] {
+        Stmt.ExprStmt(e, _) => { return infer_block_ty(stmts, i + 1, infer_type_full(e, vars, sigs), vars, sigs) }
+        Stmt.Let(name, _, value, _, _) => {
+            v_ty = infer_type_full(value, vars, sigs)
+            next_vars = vars
+            next_vars.push(VarInfo { name, ty: v_ty })
+            return infer_block_ty(stmts, i + 1, acc, next_vars, sigs)
+        }
+        _ => { return infer_block_ty(stmts, i + 1, acc, vars, sigs) }
+    }
+}
+
 // emit_expr is the public wrapper (no fn registry) around emit_expr_full.
 pub fn emit_expr(e Expr, vars []VarInfo) -> string {
     return emit_expr_full(e, vars, []FnSig{})
@@ -254,6 +279,7 @@ fn emit_expr_full(e Expr, vars []VarInfo, sigs []FnSig) -> string {
         Expr.Index(left, index, _) => emit_index(left, index, vars, sigs)
         Expr.Field(left, name, _) => emit_field(left, name, vars, sigs)
         Expr.Match(value, arms, _) => emit_match(value, arms, vars, sigs)
+        Expr.Block(body, _) => emit_block_expr(body, vars, sigs)
         Expr.ArrayLit(elements, _) => emit_array_lit(elements, vars, sigs)
         // [РЕШЕНИЕ]: TupleLit stays "<TODO>": the self-hosted checker has no
         // Type.Tuple (tuple_type is a placeholder returning the first
@@ -781,7 +807,7 @@ fn match_arm_cond(arm MatchArm, subj string, subj_ty string) -> string {
 fn match_arm_body(arm MatchArm, subj string, vars []VarInfo, sigs []FnSig) -> string {
     body = emit_expr_full(arm.body, vars, sigs)
     if is_ident_pattern(arm.pattern) {
-        return str_replace_all(body, ident_pattern_name(arm.pattern), "(" + subj + ")")
+        return str_replace_ident(body, ident_pattern_name(arm.pattern), "(" + subj + ")")
     }
     if is_variant_pattern(arm.pattern) {
         return "/* <TODO variant match> */ 0"
@@ -827,10 +853,11 @@ fn match_guard_cond(cond string, arm MatchArm, subj string, vars []VarInfo, sigs
     if not arm.guard.is_some() {
         return cond
     }
-    g = emit_expr_full(arm.guard.unwrap(), vars, sigs)
-    if is_ident_pattern(arm.pattern) {
-        g = str_replace_all(g, ident_pattern_name(arm.pattern), "(" + subj + ")")
-    }
+    guard_e = emit_expr_full(arm.guard.unwrap(), vars, sigs)
+    // [РЕШЕНИЕ] D53: `g = ...` inside the if-block below would SHADOW the
+    // outer local, and the unsubstituted guard would leak into the cond —
+    // the substitution lives in an if-expression at fn top level instead.
+    g = if is_ident_pattern(arm.pattern) { str_replace_ident(guard_e, ident_pattern_name(arm.pattern), "(" + subj + ")") } else { guard_e }
     if cond.len == 0 {
         return "(" + g + ")"
     }
@@ -854,6 +881,46 @@ fn str_replace_all(s string, old string, new string) -> string {
         }
     }
     return bfinish(b)
+}
+
+// str_replace_ident is str_replace_all with identifier boundaries: name is
+// replaced only where the characters before and after the match are NOT
+// identifier chars (a-z A-Z 0-9 _). The naive str_replace_all corrupted
+// generated code for short pattern bindings: `v => { print(v) }` turned
+// `(void)0` into `((n)oid)0` and would mangle `void*`, `int64_t`,
+// `dot_print` too. The replaced text is wrapped in parentheses by the
+// callers, and since name itself never contains parens, nested `((subj))`
+// cannot form.
+fn str_replace_ident(s string, name string, new string) -> string {
+    if name.len == 0 {
+        return s
+    }
+    b = new_builder()
+    str_replace_ident_into(b, s, name, new, 0)
+    return bfinish(b)
+}
+
+fn str_replace_ident_into(b CBuilder, s string, name string, new string, i int) {
+    if i >= s.len {
+        return
+    }
+    if str_match_at(s, name, i) and not is_ident_char_at(s, i - 1) and not is_ident_char_at(s, i + name.len) {
+        bwrite(b, new)
+        return str_replace_ident_into(b, s, name, new, i + name.len)
+    }
+    b.buf.push(s[i] as uint8)
+    return str_replace_ident_into(b, s, name, new, i + 1)
+}
+
+// is_ident_char_at reports whether the byte at idx of s is an identifier
+// char (a-z A-Z 0-9 _). Indices outside the string are false (the boundary
+// before index 0 and after the last byte is never an identifier char).
+fn is_ident_char_at(s string, idx int) -> bool {
+    if idx < 0 or idx >= s.len {
+        return false
+    }
+    ch = s[idx]
+    return (ch >= 97 and ch <= 122) or (ch >= 65 and ch <= 90) or (ch >= 48 and ch <= 57) or ch == 95
 }
 
 // [РЕШЕНИЕ]: array literals reuse the emit_variadic_pack slot rule: heap

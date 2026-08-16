@@ -334,6 +334,79 @@ fn emit_heap_releases_from(heap []string, start int, out CBuilder, depth int) {
     }
 }
 
+// emit_block_expr renders an Expr.Block (block-bodied match arm) as a GCC
+// statement expression `({ ...; <value>; })` through the full statement
+// machinery (port of Go emitBlockExprAs). The trailing expression statement
+// is the block's value: it is materialised into a temp BEFORE the scope
+// releases run (the value may read locals), and a trailing bare ident is
+// moved out — its release is skipped, like fn_body_tail/emit_return_stmt
+// (Go captures the moved set before the cleanup). A block whose last
+// statement is not a value (empty body, return, assign, void/unknown-typed
+// expr) emits every statement and yields (void)0 so the statement
+// expression stays valid in void ternary chains.
+// [РЕШЕНИЕ] The temp is the bare word `blktmp`, NOT Go's `_dot_block_N`:
+// the expression emitter threads no unused counter, but more importantly
+// match_arm_body textually substitutes Ident-pattern bindings into the
+// emitted body. The self-lexer tokenises a standalone `_` as Ident("_")
+// (is_letter includes '_', no Underscore token is ever produced), so every
+// catch-all arm substitutes "_" and would corrupt ANY underscore-bearing
+// generated name (`_dot_block_N`, `int64_t`, ...). `blktmp` has no
+// underscore (immune to the catch-all case) and no common single-letter
+// binding (b/l/k/t/m/p only); every statement expression opens its own C
+// scope, so nested/sibling temps cannot collide.
+pub fn emit_block_expr(body []Stmt, vars []VarInfo, sigs []FnSig) -> string {
+    b = new_builder()
+    ctx0 = StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: Type.Unknown, sigs }
+    n = body.len
+    if n == 0 {
+        return "({{ (void)0; }})"
+    }
+    last = body[n - 1]
+    init = emit_stmts_ctx(body[0..n - 1], 0, ctx0, b, 0)
+    if tail_e = block_tail_expr(last, init.vars, init.sigs) {
+        vt = infer_type_full(tail_e, init.vars, init.sigs)
+        skip = if is_ident_expr(tail_e) { ident_name_of(tail_e) } else { "" }
+        bwriteln(b, 0, ty_to_c(vt) + " blktmp = " + emit_expr_full(tail_e, init.vars, init.sigs) + ";")
+        emit_return_releases(init.heap, skip, b, 0)
+        return "({{ " + bfinish(b) + " blktmp; }})"
+    }
+    last_ctx = emit_stmt_ctx(last, init, b, 0)
+    pop_block_heap(last_ctx.heap, 0, b, 0)
+    return "({{ " + bfinish(b) + " (void)0; }})"
+}
+
+// block_tail_expr picks the trailing value of a block: the last statement
+// must be a plain expression statement (not an assignment, mirroring Go's
+// emitBodyStmts/emitBlockExprAs rule) whose inferred type is known and not
+// void. The type is inferred against the init-threaded vars, so a tail that
+// reads a block-local Let still qualifies.
+fn block_tail_expr(last Stmt, vars []VarInfo, sigs []FnSig) -> Option[Expr] {
+    match last {
+        Stmt.ExprStmt(e, _) => {
+            if not is_assign_expr(e) {
+                vt = infer_type_full(e, vars, sigs)
+                if is_block_tail_ty(vt) {
+                    return Some(e)
+                }
+            }
+        }
+        _ => {}
+    }
+    return None
+}
+
+// is_block_tail_ty reports whether a trailing block expression has a value
+// that can be materialised into the result temp: known and not void.
+fn is_block_tail_ty(t Type) -> bool {
+    if is_unknown_ty(t) {
+        return false
+    }
+    return match t {
+        Type.Void => false
+        _ => true
+    }
+}
+
 // --- Stage 4b: While / For / Break / Continue ---
 
 // emit_while_stmt renders `while (<cond>) { <body> }` (Go emitForStmt Kind

@@ -107,6 +107,12 @@ impl Checker {
             Expr.Match(value, arms, span) => {
                 return self.check_match_expr(value, arms, span)
             }
+            Expr.Block(body, span) => {
+                self.push_scope()
+                t = self.check_fn_body_tail(body, 0, Type.Unknown)
+                self.pop_scope()
+                return t
+            }
             Expr.Assign(left, op, right, span) => {
                 if left.len == 0 or right.len == 0 {
                     return Type.Error
