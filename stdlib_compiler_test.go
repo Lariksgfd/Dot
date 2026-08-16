@@ -255,6 +255,16 @@ func TestStdlibCompiler(t *testing.T) {
 			"OK: stmt break todo",
 			"OK: stmt continue todo",
 			"OK: stmt emit stmts",
+			"OK: stmt while body",
+			"OK: stmt for infinite",
+			"OK: stmt for infinite body",
+			"OK: stmt for range excl",
+			"OK: stmt for range incl",
+			"OK: stmt for in slice",
+			"OK: stmt for in map",
+			"OK: stmt break indent",
+			"OK: stmt continue indent",
+			"OK: stmt nested for",
 		} {
 				if !strings.Contains(out, want) {
 					t.Errorf("expected %q in output, got: %s", want, out)

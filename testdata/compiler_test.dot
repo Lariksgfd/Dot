@@ -1802,9 +1802,11 @@ pub fn main() {
     }
 
     b_st12 = new_builder()
-    emit_stmt(Stmt.For(Pattern.Ident("i"), mki(1), []Stmt{}, s0()), []VarInfo{}, b_st12, 0)
+    body_12 = []Stmt{}
+    body_12.push(Stmt.Break(None, s0()))
+    emit_stmt(Stmt.For(Pattern.Ident("i"), mkbin(mki(0), TokenType.DotDot, mki(3)), body_12, s0()), []VarInfo{}, b_st12, 0)
     c235 = bfinish(b_st12)
-    if str_eq(c235, "/* <TODO 4b: for> */\n") {
+    if str_eq(c235, "for (int64_t _dot_range_0 = 0; _dot_range_0 < 3; _dot_range_0++) {{\n    int64_t i = _dot_range_0;\n    break;\n}}\n") {
         print("OK: stmt for todo")
     } else {
         print("ERR: stmt for todo: " + c235)
@@ -1813,7 +1815,7 @@ pub fn main() {
     b_st13 = new_builder()
     emit_stmt(Stmt.While(mkb(true), []Stmt{}, s0()), []VarInfo{}, b_st13, 0)
     c236 = bfinish(b_st13)
-    if str_eq(c236, "/* <TODO 4b: while> */\n") {
+    if str_eq(c236, "while (true) {{\n}}\n") {
         print("OK: stmt while todo")
     } else {
         print("ERR: stmt while todo: " + c236)
@@ -1822,7 +1824,7 @@ pub fn main() {
     b_st14 = new_builder()
     emit_stmt(Stmt.Break(None, s0()), []VarInfo{}, b_st14, 0)
     c237 = bfinish(b_st14)
-    if str_eq(c237, "/* <TODO 4b: break> */\n") {
+    if str_eq(c237, "break;\n") {
         print("OK: stmt break todo")
     } else {
         print("ERR: stmt break todo: " + c237)
@@ -1831,7 +1833,7 @@ pub fn main() {
     b_st15 = new_builder()
     emit_stmt(Stmt.Continue(None, s0()), []VarInfo{}, b_st15, 0)
     c238 = bfinish(b_st15)
-    if str_eq(c238, "/* <TODO 4b: continue> */\n") {
+    if str_eq(c238, "continue;\n") {
         print("OK: stmt continue todo")
     } else {
         print("ERR: stmt continue todo: " + c238)
@@ -1847,5 +1849,116 @@ pub fn main() {
         print("OK: stmt emit stmts")
     } else {
         print("ERR: stmt emit stmts: " + c239)
+    }
+
+    b_st17 = new_builder()
+    body_17 = []Stmt{}
+    body_17.push(Stmt.Let("y", Some(TypeNode.Named("int", s0())), mkbin(mkid("x"), TokenType.Plus, mki(1)), false, s0()))
+    emit_stmt(Stmt.While(mkbin(mkid("x"), TokenType.Lt, mki(10)), body_17, s0()), []VarInfo{}, b_st17, 0)
+    c240 = bfinish(b_st17)
+    if str_eq(c240, "while ((x < 10)) {{\n    int64_t y = (x + 1);\n}}\n") {
+        print("OK: stmt while body")
+    } else {
+        print("ERR: stmt while body: " + c240)
+    }
+
+    b_st18 = new_builder()
+    emit_stmt(Stmt.For(Pattern.CatchAll, mkb(true), []Stmt{}, s0()), []VarInfo{}, b_st18, 0)
+    c241 = bfinish(b_st18)
+    if str_eq(c241, "for (;;) {{\n}}\n") {
+        print("OK: stmt for infinite")
+    } else {
+        print("ERR: stmt for infinite: " + c241)
+    }
+
+    b_st19 = new_builder()
+    body_19 = []Stmt{}
+    body_19.push(Stmt.ExprStmt(Expr.Call([mkid("print")], [mki(42)], s0()), s0()))
+    emit_stmt(Stmt.For(Pattern.CatchAll, mkb(true), body_19, s0()), []VarInfo{}, b_st19, 0)
+    c242 = bfinish(b_st19)
+    if str_eq(c242, "for (;;) {{\n    dot_print(dot_slice_pack(1, (DotAny[]){{(DotAny)(intptr_t)(42)}}));\n}}\n") {
+        print("OK: stmt for infinite body")
+    } else {
+        print("ERR: stmt for infinite body: " + c242)
+    }
+
+    b_st20 = new_builder()
+    body_20 = []Stmt{}
+    body_20.push(Stmt.ExprStmt(Expr.Call([mkid("print")], [mkid("i")], s0()), s0()))
+    emit_stmt(Stmt.For(Pattern.Ident("i"), mkbin(mki(0), TokenType.DotDot, mki(10)), body_20, s0()), []VarInfo{}, b_st20, 0)
+    c243 = bfinish(b_st20)
+    if str_eq(c243, "for (int64_t _dot_range_0 = 0; _dot_range_0 < 10; _dot_range_0++) {{\n    int64_t i = _dot_range_0;\n    dot_print(dot_slice_pack(1, (DotAny[]){{(DotAny)(intptr_t)(i)}}));\n}}\n") {
+        print("OK: stmt for range excl")
+    } else {
+        print("ERR: stmt for range excl: " + c243)
+    }
+
+    b_st21 = new_builder()
+    emit_stmt(Stmt.For(Pattern.Ident("i"), mkbin(mki(1), TokenType.DotDotEq, mki(5)), []Stmt{}, s0()), []VarInfo{}, b_st21, 0)
+    c244 = bfinish(b_st21)
+    if str_eq(c244, "for (int64_t _dot_range_0 = 1; _dot_range_0 <= 5; _dot_range_0++) {{\n    int64_t i = _dot_range_0;\n}}\n") {
+        print("OK: stmt for range incl")
+    } else {
+        print("ERR: stmt for range incl: " + c244)
+    }
+
+    b_st22 = new_builder()
+    vars_22 = []VarInfo{}
+    vars_22.push(VarInfo { name: "arr", ty: Type.Slice([]Type{Type.Int}) })
+    body_22 = []Stmt{}
+    body_22.push(Stmt.ExprStmt(Expr.Call([mkid("print")], [mkid("v")], s0()), s0()))
+    emit_stmt(Stmt.For(Pattern.Ident("v"), mkid("arr"), body_22, s0()), vars_22, b_st22, 0)
+    c245 = bfinish(b_st22)
+    if str_eq(c245, "{{\n    DotIter _dot_it_0 = dot_iter_slice(arr);\n    DotAny _dot_iv_0 = NULL;\n    while (dot_iter_next(&_dot_it_0, NULL, &_dot_iv_0)) {{\n        int64_t v = (int64_t)_dot_iv_0;\n        dot_print(dot_slice_pack(1, (DotAny[]){{(DotAny)(intptr_t)(v)}}));\n    }}\n}}\n") {
+        print("OK: stmt for in slice")
+    } else {
+        print("ERR: stmt for in slice: " + c245)
+    }
+
+    b_st23 = new_builder()
+    vars_23 = []VarInfo{}
+    vars_23.push(VarInfo { name: "m", ty: Type.Map([]Type{Type.String}, []Type{Type.Int}) })
+    body_23 = []Stmt{}
+    body_23.push(Stmt.ExprStmt(Expr.Call([mkid("print")], [mkid("k")], s0()), s0()))
+    emit_stmt(Stmt.For(Pattern.Ident("k"), mkid("m"), body_23, s0()), vars_23, b_st23, 0)
+    c246 = bfinish(b_st23)
+    if str_eq(c246, "{{\n    DotIter _dot_it_0 = dot_iter_map(m);\n    DotString* k = NULL;\n    DotAny _dot_iv_0 = NULL;\n    while (dot_iter_next(&_dot_it_0, &k, &_dot_iv_0)) {{\n        dot_print(dot_slice_pack(1, (DotAny[]){{k}}));\n    }}\n}}\n") {
+        print("OK: stmt for in map")
+    } else {
+        print("ERR: stmt for in map: " + c246)
+    }
+
+    b_st24 = new_builder()
+    body_24 = []Stmt{}
+    body_24.push(Stmt.Break(None, s0()))
+    emit_stmt(Stmt.While(mkb(true), body_24, s0()), []VarInfo{}, b_st24, 0)
+    c247 = bfinish(b_st24)
+    if str_eq(c247, "while (true) {{\n    break;\n}}\n") {
+        print("OK: stmt break indent")
+    } else {
+        print("ERR: stmt break indent: " + c247)
+    }
+
+    b_st25 = new_builder()
+    body_25 = []Stmt{}
+    body_25.push(Stmt.Continue(None, s0()))
+    emit_stmt(Stmt.While(mkb(true), body_25, s0()), []VarInfo{}, b_st25, 0)
+    c248 = bfinish(b_st25)
+    if str_eq(c248, "while (true) {{\n    continue;\n}}\n") {
+        print("OK: stmt continue indent")
+    } else {
+        print("ERR: stmt continue indent: " + c248)
+    }
+
+    b_st26 = new_builder()
+    body_inner_26 = []Stmt{}
+    body_outer_26 = []Stmt{}
+    body_outer_26.push(Stmt.For(Pattern.Ident("j"), mkbin(mki(0), TokenType.DotDot, mki(2)), body_inner_26, s0()))
+    emit_stmt(Stmt.For(Pattern.Ident("i"), mkbin(mki(0), TokenType.DotDot, mki(3)), body_outer_26, s0()), []VarInfo{}, b_st26, 0)
+    c249 = bfinish(b_st26)
+    if str_eq(c249, "for (int64_t _dot_range_0 = 0; _dot_range_0 < 3; _dot_range_0++) {{\n    int64_t i = _dot_range_0;\n    for (int64_t _dot_range_1 = 0; _dot_range_1 < 2; _dot_range_1++) {{\n        int64_t j = _dot_range_1;\n    }}\n}}\n") {
+        print("OK: stmt nested for")
+    } else {
+        print("ERR: stmt nested for: " + c249)
     }
 }

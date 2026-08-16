@@ -1,9 +1,11 @@
-// stdlib/codegen_stmt.dot - T-051 stage 4a: statement emitter for the
+// stdlib/codegen_stmt.dot - T-051 stage 4: statement emitter for the
 // self-hosted C codegen. Port of Go codegen/emit_stmt.go (emitStmt,
 // emitVarDecl, emitAssignStmt, emitExprStmt) and codegen/emit_stmt_extra.go
-// (emitReturnStmt, emitBlockStmt). Covered: ExprStmt, Let (var decl),
-// Assign in statement position, Return, Block. For/While/Break/Continue
-// are stage 4b and emit a TODO comment.
+// (emitReturnStmt, emitBlockStmt, emitForStmt, emitForRange, emitForIterator,
+// emitBreakStmt, emitContinueStmt). Covered: ExprStmt, Let (var decl),
+// Assign in statement position, Return, Block (stage 4a); While, For in
+// three forms (infinite / counted range / for-in over slice+array+map),
+// Break, Continue (stage 4b).
 //
 // NOTE: ast.dot has no If/Match STATEMENT nodes — Expr.If/Expr.Match used
 // in statement position fall through the generic ExprStmt path and render
@@ -36,10 +38,10 @@ pub fn emit_stmt(st Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo 
         Stmt.Let(name, ty_opt, value, _, _) => emit_let(name, ty_opt, value, vars, out, depth)
         Stmt.Return(v_opt, _) => emit_return_stmt(v_opt, vars, out, depth)
         Stmt.Block(stmts, _) => emit_block(stmts, vars, out, depth)
-        Stmt.For(_, _, _, _) => emit_stmt_todo(out, depth, "for", vars)
-        Stmt.While(_, _, _) => emit_stmt_todo(out, depth, "while", vars)
-        Stmt.Break(_, _) => emit_stmt_todo(out, depth, "break", vars)
-        Stmt.Continue(_, _) => emit_stmt_todo(out, depth, "continue", vars)
+        Stmt.For(pattern, iterable, body, _) => emit_for_stmt(pattern, iterable, body, vars, out, depth)
+        Stmt.While(condition, body, _) => emit_while_stmt(condition, body, vars, out, depth)
+        Stmt.Break(label_opt, _) => emit_break_stmt(label_opt, vars, out, depth)
+        Stmt.Continue(label_opt, _) => emit_continue_stmt(label_opt, vars, out, depth)
     }
 }
 
@@ -150,9 +152,215 @@ fn emit_block(stmts []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInf
     return inner_vars
 }
 
-// emit_stmt_todo writes the stage-4b placeholder and passes vars through.
-fn emit_stmt_todo(out CBuilder, depth int, what string, vars []VarInfo) -> []VarInfo {
-    bwriteln(out, depth, "/* <TODO 4b: " + what + "> */")
+// --- Stage 4b: While / For / Break / Continue ---
+
+// emit_while_stmt renders `while (<cond>) { <body> }` (Go emitForStmt Kind
+// ForCond). ast.dot has a dedicated Stmt.While because the self-hosted
+// parser folds `for cond {...}` into it (parser.dot parse_for_stmt).
+fn emit_while_stmt(condition Expr, body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    cond = emit_expr(condition, vars)
+    bwriteln(out, depth, "while (" + cond + ") {{")
+    inner_vars = emit_stmts(body, vars, out, depth + 1)
+    bwriteln(out, depth, "}}")
+    return inner_vars
+}
+
+// emit_for_stmt dispatches the two For shapes the self-hosted parser
+// builds: Pattern.CatchAll is the infinite loop `for {}` (parse_for_stmt
+// writes CatchAll + BoolLit(true)), Pattern.Ident is `for name in iterable`.
+fn emit_for_stmt(pattern Pattern, iterable Expr, body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    match pattern {
+        Pattern.CatchAll => { return emit_for_infinite(body, vars, out, depth) }
+        Pattern.Ident(name) => { return emit_for_in(name, iterable, body, vars, out, depth) }
+        _ => {}
+    }
+    bwriteln(out, depth, "/* <TODO 4b: for with unsupported pattern> */")
+    return vars
+}
+
+// emit_for_infinite renders `for (;;) { <body> }` (Go emitForStmt Kind
+// ForInfinite).
+fn emit_for_infinite(body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    bwriteln(out, depth, "for (;;) {{")
+    inner_vars = emit_stmts(body, vars, out, depth + 1)
+    bwriteln(out, depth, "}}")
+    return inner_vars
+}
+
+// emit_for_in picks the for-in form from the iterable: a Binary with
+// DotDot/DotDotEq is the range `for x in lo..hi` (counted loop), slices
+// and arrays go through dot_iter_slice, maps through dot_iter_map. Strings
+// have no iterator runtime helper ([РЕШЕНИЕ]: dot_iter_slice takes
+// DotSlice* only and DotString* has a different layout) — the stdlib never
+// iterates strings, so the TODO covers it.
+fn emit_for_in(name string, iterable Expr, body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    if for_is_range_expr(iterable) {
+        return emit_for_range(name, iterable, body, vars, out, depth)
+    }
+    iter_ty = infer_type(iterable, vars)
+    match iter_ty {
+        Type.Slice(_) => { return emit_for_iter(name, iterable, iter_ty, body, vars, out, depth) }
+        Type.Array(_) => { return emit_for_iter(name, iterable, iter_ty, body, vars, out, depth) }
+        Type.Map(_, _) => { return emit_for_map(name, iterable, iter_ty, body, vars, out, depth) }
+        _ => {}
+    }
+    bwriteln(out, depth, "/* <TODO 4b: for-in over unsupported iterable> */")
+    return vars
+}
+
+// emit_for_range renders `for x in lo..hi` (DotDot) / `lo..=hi` (DotDotEq)
+// as a counted C for loop with a private counter (Go emitForRange). The
+// loop variable is a fresh declaration per iteration, so reassigning it in
+// the body does not affect iteration (D63). Counter names embed depth, so
+// nested and sibling loops cannot collide in C scope.
+fn emit_for_range(name string, range_e Expr, body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    parts = for_range_parts(range_e, vars)
+    counter = "_dot_range_" + int_to_str(depth)
+    bwriteln(out, depth, "for (int64_t " + counter + " = " + parts[0] + "; " + counter + " " + parts[1] + " " + parts[2] + "; " + counter + "++) {{")
+    bwriteln(out, depth + 1, "int64_t " + name + " = " + counter + ";")
+    inner_vars = vars
+    inner_vars.push(VarInfo { name, ty: Type.Int })
+    inner = emit_stmts(body, inner_vars, out, depth + 1)
+    bwriteln(out, depth, "}}")
+    return inner
+}
+
+// for_range_parts extracts [lo, cmp, hi] from the DotDot binary. cmp is
+// "<=" for inclusive ranges (DotDotEq), "<" otherwise. Missing bounds
+// default to 0 (the parser always builds a full binary, so this is only a
+// safety net).
+fn for_range_parts(range_e Expr, vars []VarInfo) -> []string {
+    match range_e {
+        Expr.Binary(lo, op, hi, _) => {
+            if for_is_inclusive_op(op) {
+                return []string{for_range_bound(lo, vars), "<=", for_range_bound(hi, vars)}
+            }
+            return []string{for_range_bound(lo, vars), "<", for_range_bound(hi, vars)}
+        }
+        _ => {}
+    }
+    return []string{"0", "<", "0"}
+}
+
+fn for_range_bound(es []Expr, vars []VarInfo) -> string {
+    if es.len > 0 {
+        return emit_expr(es[0], vars)
+    }
+    return "0"
+}
+
+fn for_is_range_expr(e Expr) -> bool {
+    match e {
+        Expr.Binary(_, op, _, _) => { return for_is_range_op(op) }
+        _ => {}
+    }
+    return false
+}
+
+fn for_is_range_op(op TokenType) -> bool {
+    match op {
+        TokenType.DotDot => { return true }
+        TokenType.DotDotEq => { return true }
+        _ => {}
+    }
+    return false
+}
+
+fn for_is_inclusive_op(op TokenType) -> bool {
+    match op {
+        TokenType.DotDotEq => { return true }
+        _ => {}
+    }
+    return false
+}
+
+// emit_for_iter renders `for x in xs` for slice/array iterables as the Go
+// emitForIterator runtime loop: a DotIter over dot_iter_slice and a
+// while (dot_iter_next(...)) that copies each DotAny slot into the loop
+// variable with a C cast. The whole thing is wrapped in a block so the
+// iterator names cannot clash across sibling loops.
+// [РЕШЕНИЕ] struct elements are NOT boxed on this MVP (no dot_box on
+// slice stores yet — see emit_array_lit), so the Go dot_box_payload
+// dereference branch is not needed; every element is a plain cast.
+fn emit_for_iter(name string, iterable Expr, iter_ty Type, body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    elem = for_elem_ty(iter_ty)
+    it = "_dot_it_" + int_to_str(depth)
+    iv = "_dot_iv_" + int_to_str(depth)
+    src = emit_expr(iterable, vars)
+    bwriteln(out, depth, "{{")
+    bwriteln(out, depth + 1, "DotIter " + it + " = dot_iter_slice(" + src + ");")
+    bwriteln(out, depth + 1, "DotAny " + iv + " = NULL;")
+    bwriteln(out, depth + 1, "while (dot_iter_next(&" + it + ", NULL, &" + iv + ")) {{")
+    bwriteln(out, depth + 2, ty_to_c(elem) + " " + name + " = (" + ty_to_c(elem) + ")" + iv + ";")
+    inner_vars = vars
+    inner_vars.push(VarInfo { name, ty: elem })
+    inner = emit_stmts(body, inner_vars, out, depth + 2)
+    bwriteln(out, depth + 1, "}}")
+    bwriteln(out, depth, "}}")
+    return inner
+}
+
+// emit_for_map renders `for k, v in m` as a map iterator loop. ast.dot has
+// a single pattern slot, and parse_for_stmt folds `for k, v in m` down to
+// the FIRST binding (k), so the loop variable binds the map KEY
+// ([РЕШЕНИЕ]: Go's single-variable form would bind the value, but the AST
+// cannot tell the two spellings apart). The value lands in the DotAny slot
+// and is discarded.
+fn emit_for_map(name string, iterable Expr, iter_ty Type, body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    key_ty = for_map_key_ty(iter_ty)
+    it = "_dot_it_" + int_to_str(depth)
+    iv = "_dot_iv_" + int_to_str(depth)
+    src = emit_expr(iterable, vars)
+    bwriteln(out, depth, "{{")
+    bwriteln(out, depth + 1, "DotIter " + it + " = dot_iter_map(" + src + ");")
+    bwriteln(out, depth + 1, ty_to_c(key_ty) + " " + name + " = " + zero_c_value(key_ty) + ";")
+    bwriteln(out, depth + 1, "DotAny " + iv + " = NULL;")
+    bwriteln(out, depth + 1, "while (dot_iter_next(&" + it + ", &" + name + ", &" + iv + ")) {{")
+    inner_vars = vars
+    inner_vars.push(VarInfo { name, ty: key_ty })
+    inner = emit_stmts(body, inner_vars, out, depth + 2)
+    bwriteln(out, depth + 1, "}}")
+    bwriteln(out, depth, "}}")
+    return inner
+}
+
+fn for_elem_ty(t Type) -> Type {
+    match t {
+        Type.Array(elem) => { return for_first_ty(elem) }
+        Type.Slice(elem) => { return for_first_ty(elem) }
+        _ => {}
+    }
+    return Type.Unknown
+}
+
+fn for_map_key_ty(t Type) -> Type {
+    match t {
+        Type.Map(key, _) => { return for_first_ty(key) }
+        _ => {}
+    }
+    return Type.Unknown
+}
+
+fn for_first_ty(es []Type) -> Type {
+    if es.len > 0 {
+        return es[0]
+    }
+    return Type.Unknown
+}
+
+// emit_break_stmt renders `break;`. Labels are ignored: the self-hosted
+// parser drops the loop label itself (parse_stmt consumes `@label` but
+// stores nothing), so there is no C label a labeled break could goto —
+// plain break is the only sound form ([РЕШЕНИЕ]; revisit if labels ever
+// land in ast.dot).
+fn emit_break_stmt(label_opt Option[string], vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    bwriteln(out, depth, "break;")
+    return vars
+}
+
+// emit_continue_stmt renders `continue;`, labels ignored like break above.
+fn emit_continue_stmt(label_opt Option[string], vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    bwriteln(out, depth, "continue;")
     return vars
 }
 
