@@ -1,0 +1,342 @@
+// stdlib/codegen_expr.dot - T-051 stage 3a: expression emitter for the
+// self-hosted C codegen. Port of Go codegen/emit_expr.go restricted to the
+// nodes this stage covers: literals, ident, unary, binary and if-expr.
+// Call/Index/Field/ArrayLit/TupleLit/Match/Assign/FnLit/StructLit/MapLit
+// land in stages 3b/3c and emit a "<TODO>" marker for now.
+//
+// NOTE [РЕШЕНИЕ]: vars is a []VarInfo of name/type pairs, NOT map[string]Type.
+// The stdlib stays map-free so the self-hosted codegen never has to emit map
+// operations (T-052 self-compile); types.dot Scope emulates a map with a
+// []Symbol the same way. Linear lookup is fine for an MVP.
+import ast
+import types
+import codegen
+
+pub struct VarInfo {
+    name string
+    ty   Type
+}
+
+// infer_type is minimal expression type inference. The self-hosted codegen
+// has no checker side-table, so operand types are recomputed on demand
+// (T-051 design decision). Unknown propagates where a rule gives no answer.
+pub fn infer_type(e Expr, vars []VarInfo) -> Type {
+    return match e {
+        Expr.IntLit(_, _) => Type.Int
+        Expr.FloatLit(_, _) => Type.Float
+        Expr.StringLit(_, _) => Type.String
+        Expr.BoolLit(_, _) => Type.Bool
+        Expr.NilLit(_) => Type.Nil
+        Expr.Ident(name, _) => var_type(vars, name)
+        Expr.Unary(op, right, _) => infer_unary_type(right, op, vars)
+        Expr.Binary(left, op, right, _) => infer_binary_type(left, op, right, vars)
+        Expr.If(_, then_branch, _, _) => infer_if_type(then_branch, vars)
+        _ => Type.Unknown
+    }
+}
+
+// var_type returns the inferred type of name, or Type.Unknown when the
+// name is not in vars.
+fn var_type(vars []VarInfo, name string) -> Type {
+    i = 0
+    for i < vars.len {
+        if vars[i].name == name {
+            return vars[i].ty
+        }
+        i += 1
+    }
+    return Type.Unknown
+}
+
+fn infer_unary_type(right []Expr, op TokenType, vars []VarInfo) -> Type {
+    if right.len == 0 {
+        return Type.Unknown
+    }
+    return match op {
+        TokenType.Not => Type.Bool
+        TokenType.Minus => infer_type(right[0], vars)
+        _ => infer_type(right[0], vars)
+    }
+}
+
+fn infer_binary_type(left []Expr, op TokenType, right []Expr, vars []VarInfo) -> Type {
+    if left.len == 0 or right.len == 0 {
+        return Type.Unknown
+    }
+    l_ty = infer_type(left[0], vars)
+    r_ty = infer_type(right[0], vars)
+    return match op {
+        TokenType.EqEq => Type.Bool
+        TokenType.BangEq => Type.Bool
+        TokenType.Lt => Type.Bool
+        TokenType.Gt => Type.Bool
+        TokenType.LtEq => Type.Bool
+        TokenType.GtEq => Type.Bool
+        TokenType.And => Type.Bool
+        TokenType.Or => Type.Bool
+        TokenType.Plus => {
+            if is_string_ty(l_ty) or is_string_ty(r_ty) {
+                return Type.String
+            }
+            return l_ty
+        }
+        TokenType.Minus => num_ty(l_ty, r_ty)
+        TokenType.Star => num_ty(l_ty, r_ty)
+        TokenType.Slash => num_ty(l_ty, r_ty)
+        TokenType.Percent => num_ty(l_ty, r_ty)
+        TokenType.StarStar => num_ty(l_ty, r_ty)
+        TokenType.Amp => Type.Int
+        TokenType.Pipe => Type.Int
+        TokenType.Caret => Type.Int
+        TokenType.Shl => Type.Int
+        TokenType.Shr => Type.Int
+        _ => Type.Unknown
+    }
+}
+
+// num_ty: arithmetic result is Int only when both operands are Int, Float
+// otherwise (mirrors the T-051 rule for -,*,/,**,%).
+fn num_ty(l_ty Type, r_ty Type) -> Type {
+    if is_int_ty(l_ty) and is_int_ty(r_ty) {
+        return Type.Int
+    }
+    return Type.Float
+}
+
+fn is_string_ty(t Type) -> bool {
+    return match t {
+        Type.String => true
+        _ => false
+    }
+}
+
+fn is_int_ty(t Type) -> bool {
+    return match t {
+        Type.Int => true
+        _ => false
+    }
+}
+
+// The value type of an if-expr is the type of the then-branch's last
+// expression statement (same rule as checker.check_if_then).
+fn infer_if_type(then_branch []Stmt, vars []VarInfo) -> Type {
+    return if_then_type(then_branch, 0, Type.Unknown, vars)
+}
+
+fn if_then_type(stmts []Stmt, i int, acc Type, vars []VarInfo) -> Type {
+    if i >= stmts.len {
+        return acc
+    }
+    return match stmts[i] {
+        Stmt.ExprStmt(e, _) => if_then_type(stmts, i + 1, infer_type(e, vars), vars)
+        _ => if_then_type(stmts, i + 1, acc, vars)
+    }
+}
+
+// emit_expr renders a Dot expression as a C expression string. Unsupported
+// nodes (stages 3b/3c) yield a "<TODO>" marker.
+pub fn emit_expr(e Expr, vars []VarInfo) -> string {
+    return match e {
+        Expr.IntLit(value, _) => int_to_str(value)
+        Expr.FloatLit(value, _) => float_to_str(value)
+        Expr.StringLit(value, _) => literal_to_c(value, "string")
+        Expr.BoolLit(value, _) => {
+            if value {
+                return "true"
+            }
+            return "false"
+        }
+        Expr.NilLit(_) => "NULL"
+        Expr.Ident(name, _) => name
+        Expr.Unary(op, right, _) => emit_unary(right, op, vars)
+        Expr.Binary(left, op, right, _) => emit_binary(left, op, right, vars)
+        Expr.If(condition, then_branch, else_branch, _) => emit_if_expr(condition, then_branch, else_branch, vars)
+        _ => "<TODO>"
+    }
+}
+
+fn emit_unary(right []Expr, op TokenType, vars []VarInfo) -> string {
+    if right.len == 0 {
+        return "<TODO>"
+    }
+    inner = emit_expr(right[0], vars)
+    return match op {
+        TokenType.Not => "!(" + inner + ")"
+        TokenType.Minus => "-(" + inner + ")"
+        _ => "<TODO>"
+    }
+}
+
+// emit_binary reuses the стаб's binop_typed_to_c: it already picks the
+// right C for string concat/eq and pow_int/pow_float from the operand
+// type tags, so no operator logic is duplicated here.
+fn emit_binary(left []Expr, op TokenType, right []Expr, vars []VarInfo) -> string {
+    if left.len == 0 or right.len == 0 {
+        return "<TODO>"
+    }
+    lhs = emit_expr(left[0], vars)
+    rhs = emit_expr(right[0], vars)
+    l_ty = infer_type(left[0], vars)
+    r_ty = infer_type(right[0], vars)
+    op_str = binop_str(op)
+    if op_str.len == 0 {
+        return "<TODO>"
+    }
+    return binop_typed_to_c(op_str, lhs, rhs, ty_tag(l_ty), ty_tag(r_ty))
+}
+
+// binop_str maps a TokenType operator to the string the стаб understands.
+fn binop_str(op TokenType) -> string {
+    return match op {
+        TokenType.Plus => "+"
+        TokenType.Minus => "-"
+        TokenType.Star => "*"
+        TokenType.Slash => "/"
+        TokenType.Percent => "%"
+        TokenType.StarStar => "**"
+        TokenType.EqEq => "=="
+        TokenType.BangEq => "!="
+        TokenType.Lt => "<"
+        TokenType.Gt => ">"
+        TokenType.LtEq => "<="
+        TokenType.GtEq => ">="
+        TokenType.And => "and"
+        TokenType.Or => "or"
+        TokenType.Amp => "&"
+        TokenType.Pipe => "|"
+        TokenType.Caret => "^"
+        TokenType.Shl => "<<"
+        TokenType.Shr => ">>"
+        _ => ""
+    }
+}
+
+// ty_tag renders a checker Type as the small tag that the стаб's
+// binop_typed_to_c understands: "string", "float", "int", "" otherwise.
+fn ty_tag(t Type) -> string {
+    return match t {
+        Type.Int => "int"
+        Type.Float => "float"
+        Type.String => "string"
+        _ => ""
+    }
+}
+
+// The then-branch value is the last expression statement; the else-branch
+// value is the last element of the else slice (checker.check_else_branch
+// rule). Both fall back to a marker when absent.
+fn emit_if_expr(condition []Expr, then_branch []Stmt, else_branch []Expr, vars []VarInfo) -> string {
+    if condition.len == 0 {
+        return "<TODO>"
+    }
+    cond = emit_expr(condition[0], vars)
+    then_e = then_value(then_branch, vars)
+    else_e = else_value(else_branch, vars)
+    return ifexpr_to_c(cond, then_e, else_e)
+}
+
+fn then_value(stmts []Stmt, vars []VarInfo) -> string {
+    return then_value_of(stmts, 0, "<TODO>", vars)
+}
+
+fn then_value_of(stmts []Stmt, i int, acc string, vars []VarInfo) -> string {
+    if i >= stmts.len {
+        return acc
+    }
+    return match stmts[i] {
+        Stmt.ExprStmt(e, _) => then_value_of(stmts, i + 1, emit_expr(e, vars), vars)
+        _ => then_value_of(stmts, i + 1, acc, vars)
+    }
+}
+
+fn else_value(else_branch []Expr, vars []VarInfo) -> string {
+    if else_branch.len > 0 {
+        return emit_expr(else_branch[else_branch.len - 1], vars)
+    }
+    return "<TODO>"
+}
+
+// float_to_str prints a float64 as the shortest plain decimal C literal:
+// no exponent, trailing fraction zeros stripped, integer values without a
+// dot. Fraction digits are extracted by repeated multiply-by-10 truncation
+// capped at 15 digits, with round-half-up + carry at the cutoff, so a
+// literal like 3.14 prints "3.14", not the raw binary expansion tail.
+fn float_to_str(v float) -> string {
+    if v == 0.0 {
+        return "0"
+    }
+    if v < 0.0 {
+        return "-" + float_to_str(-v)
+    }
+    whole = v as int
+    frac = v - (whole as float)
+    if frac == 0.0 {
+        return int_to_str(whole)
+    }
+    digits = frac_digits(frac)
+    if digits.len == 0 {
+        // The fraction rounded up to 1.0 (all digits carried): the value
+        // prints as the next integer.
+        return int_to_str(whole + 1)
+    }
+    return int_to_str(whole) + "." + digits
+}
+
+fn frac_digits(frac float) -> string {
+    b = new_builder()
+    rem = frac_digits_into(b, frac, 15)
+    if rem >= 0.5 {
+        if not bump_last_digit(b) {
+            return ""
+        }
+    }
+    return trim_trailing_zeros(bfinish(b))
+}
+
+// frac_digits_into pushes the truncated decimal digits of frac
+// (0 < frac < 1), stopping early when the remainder is exactly zero, and
+// returns the remaining fraction after the last pushed digit (0.0 when
+// exhausted). The caller rounds the cutoff digit from this remainder.
+fn frac_digits_into(b CBuilder, frac float, left int) -> float {
+    if left <= 0 {
+        return frac
+    }
+    if frac == 0.0 {
+        return 0.0
+    }
+    next = frac * 10.0
+    d = next as int
+    rem = next - (d as float)
+    b.buf.push((48 + d) as uint8)
+    if rem == 0.0 {
+        return 0.0
+    }
+    return frac_digits_into(b, rem, left - 1)
+}
+
+// bump_last_digit increments the last pushed digit with carry ('9' -> '0'
+// and carry on). Returns false when the carry runs past the first digit
+// (all digits were '9').
+fn bump_last_digit(b CBuilder) -> bool {
+    i = b.buf.len - 1
+    for i >= 0 {
+        if b.buf[i] == 57 {
+            b.buf[i] = 48
+            i -= 1
+        } else {
+            b.buf[i] = b.buf[i] + 1
+            return true
+        }
+    }
+    return false
+}
+
+fn trim_trailing_zeros(s string) -> string {
+    if s.len == 0 {
+        return ""
+    }
+    if s[s.len - 1] == 48 {
+        return trim_trailing_zeros(s[0..s.len - 1])
+    }
+    return s
+}

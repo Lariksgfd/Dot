@@ -1,6 +1,44 @@
 import "../stdlib/compiler.dot"
-import std.codegen
+import "../stdlib/codegen.dot"
 import "../stdlib/codegen_types.dot"
+import "../stdlib/codegen_expr.dot"
+
+fn s0() -> Span {
+    p = Position.new("", 0, 0, 0)
+    return Span.new(p, p)
+}
+
+fn mki(v int) -> Expr {
+    return Expr.IntLit(v, s0())
+}
+
+fn mkf(v float) -> Expr {
+    return Expr.FloatLit(v, s0())
+}
+
+fn mks(v string) -> Expr {
+    return Expr.StringLit(v, s0())
+}
+
+fn mkb(v bool) -> Expr {
+    return Expr.BoolLit(v, s0())
+}
+
+fn mkid(name string) -> Expr {
+    return Expr.Ident(name, s0())
+}
+
+fn mkbin(l Expr, op TokenType, r Expr) -> Expr {
+    return Expr.Binary([l], op, [r], s0())
+}
+
+fn mkun(op TokenType, r Expr) -> Expr {
+    return Expr.Unary(op, [r], s0())
+}
+
+fn mkif(c Expr, t Expr, e Expr) -> Expr {
+    return Expr.If([c], [Stmt.ExprStmt(t, s0())], [e], s0())
+}
 
 pub fn main() {
     c = Compiler.new()
@@ -948,5 +986,306 @@ pub fn main() {
         print("OK: zero_c_value fallthrough typevar")
     } else {
         print("ERR: zero_c_value fallthrough typevar: " + c131)
+    }
+
+    // --- codegen_expr (T-051, stage 3a) ---
+
+    c132 = emit_expr(mki(42), []VarInfo{})
+    if str_eq(c132, "42") {
+        print("OK: emit int lit")
+    } else {
+        print("ERR: emit int lit: " + c132)
+    }
+
+    c133 = emit_expr(mkf(3.5), []VarInfo{})
+    if str_eq(c133, "3.5") {
+        print("OK: emit float lit")
+    } else {
+        print("ERR: emit float lit: " + c133)
+    }
+
+    c134 = emit_expr(mkf(2.0), []VarInfo{})
+    if str_eq(c134, "2") {
+        print("OK: emit float whole")
+    } else {
+        print("ERR: emit float whole: " + c134)
+    }
+
+    c135 = emit_expr(mkf(3.14), []VarInfo{})
+    if str_eq(c135, "3.14") {
+        print("OK: emit float frac")
+    } else {
+        print("ERR: emit float frac: " + c135)
+    }
+
+    c136 = emit_expr(mkb(true), []VarInfo{})
+    if str_eq(c136, "true") {
+        print("OK: emit bool true")
+    } else {
+        print("ERR: emit bool true: " + c136)
+    }
+
+    c137 = emit_expr(mkb(false), []VarInfo{})
+    if str_eq(c137, "false") {
+        print("OK: emit bool false")
+    } else {
+        print("ERR: emit bool false: " + c137)
+    }
+
+    c138 = emit_expr(Expr.NilLit(s0()), []VarInfo{})
+    if str_eq(c138, "NULL") {
+        print("OK: emit nil lit")
+    } else {
+        print("ERR: emit nil lit: " + c138)
+    }
+
+    c139 = emit_expr(mks("hi"), []VarInfo{})
+    if str_eq(c139, "dot_string_from_lit(\"hi\", 2)") {
+        print("OK: emit string lit")
+    } else {
+        print("ERR: emit string lit: " + c139)
+    }
+
+    c140 = emit_expr(mks("a\"b\\c"), []VarInfo{})
+    if str_eq(c140, "dot_string_from_lit(\"a\\\"b\\\\c\", 5)") {
+        print("OK: emit string esc")
+    } else {
+        print("ERR: emit string esc: " + c140)
+    }
+
+    c141 = emit_expr(mkun(TokenType.Not, mkb(true)), []VarInfo{})
+    if str_eq(c141, "!(true)") {
+        print("OK: emit not")
+    } else {
+        print("ERR: emit not: " + c141)
+    }
+
+    c142 = emit_expr(mkun(TokenType.Minus, mki(5)), []VarInfo{})
+    if str_eq(c142, "-(5)") {
+        print("OK: emit neg")
+    } else {
+        print("ERR: emit neg: " + c142)
+    }
+
+    c143 = emit_expr(mkbin(mki(1), TokenType.Plus, mki(2)), []VarInfo{})
+    if str_eq(c143, "(1 + 2)") {
+        print("OK: emit add")
+    } else {
+        print("ERR: emit add: " + c143)
+    }
+
+    c144 = emit_expr(mkbin(mki(2), TokenType.Star, mki(3)), []VarInfo{})
+    if str_eq(c144, "(2 * 3)") {
+        print("OK: emit mul")
+    } else {
+        print("ERR: emit mul: " + c144)
+    }
+
+    c145 = emit_expr(mkbin(mki(10), TokenType.Slash, mki(4)), []VarInfo{})
+    if str_eq(c145, "(10 / 4)") {
+        print("OK: emit div")
+    } else {
+        print("ERR: emit div: " + c145)
+    }
+
+    c146 = emit_expr(mkbin(mki(7), TokenType.Minus, mki(5)), []VarInfo{})
+    if str_eq(c146, "(7 - 5)") {
+        print("OK: emit sub")
+    } else {
+        print("ERR: emit sub: " + c146)
+    }
+
+    c147 = emit_expr(mkbin(mki(2), TokenType.StarStar, mki(3)), []VarInfo{})
+    if str_eq(c147, "dot_pow_int(2, 3)") {
+        print("OK: emit pow int")
+    } else {
+        print("ERR: emit pow int: " + c147)
+    }
+
+    c148 = emit_expr(mkbin(mki(10), TokenType.Percent, mki(3)), []VarInfo{})
+    if str_eq(c148, "(10 % 3)") {
+        print("OK: emit mod")
+    } else {
+        print("ERR: emit mod: " + c148)
+    }
+
+    c149 = emit_expr(mkbin(mkf(1.5), TokenType.Plus, mkf(2.0)), []VarInfo{})
+    if str_eq(c149, "(1.5 + 2)") {
+        print("OK: emit add float")
+    } else {
+        print("ERR: emit add float: " + c149)
+    }
+
+    c150 = emit_expr(mkbin(mki(1), TokenType.Lt, mki(2)), []VarInfo{})
+    if str_eq(c150, "(1 < 2)") {
+        print("OK: emit lt")
+    } else {
+        print("ERR: emit lt: " + c150)
+    }
+
+    c151 = emit_expr(mkbin(mki(3), TokenType.GtEq, mki(3)), []VarInfo{})
+    if str_eq(c151, "(3 >= 3)") {
+        print("OK: emit gte")
+    } else {
+        print("ERR: emit gte: " + c151)
+    }
+
+    c152 = emit_expr(mkbin(mki(1), TokenType.BangEq, mki(2)), []VarInfo{})
+    if str_eq(c152, "(1 != 2)") {
+        print("OK: emit neq")
+    } else {
+        print("ERR: emit neq: " + c152)
+    }
+
+    c153 = emit_expr(mkbin(mkb(true), TokenType.And, mkb(false)), []VarInfo{})
+    if str_eq(c153, "(true && false)") {
+        print("OK: emit and")
+    } else {
+        print("ERR: emit and: " + c153)
+    }
+
+    c154 = emit_expr(mkbin(mks("a"), TokenType.Plus, mks("b")), []VarInfo{})
+    if str_eq(c154, "dot_string_concat(dot_string_from_lit(\"a\", 1), dot_string_from_lit(\"b\", 1))") {
+        print("OK: emit str plus")
+    } else {
+        print("ERR: emit str plus: " + c154)
+    }
+
+    c155 = emit_expr(mkbin(mks("a"), TokenType.EqEq, mks("b")), []VarInfo{})
+    if str_eq(c155, "dot_string_eq(dot_string_from_lit(\"a\", 1), dot_string_from_lit(\"b\", 1))") {
+        print("OK: emit str eq")
+    } else {
+        print("ERR: emit str eq: " + c155)
+    }
+
+    c156 = emit_expr(mkbin(mks("a"), TokenType.BangEq, mks("b")), []VarInfo{})
+    if str_eq(c156, "!dot_string_eq(dot_string_from_lit(\"a\", 1), dot_string_from_lit(\"b\", 1))") {
+        print("OK: emit str neq")
+    } else {
+        print("ERR: emit str neq: " + c156)
+    }
+
+    c157 = emit_expr(mkid("x"), []VarInfo{})
+    if str_eq(c157, "x") {
+        print("OK: emit ident")
+    } else {
+        print("ERR: emit ident: " + c157)
+    }
+
+    vars_x = []VarInfo{}
+    vars_x.push(VarInfo { name: "x", ty: Type.String })
+    c158 = emit_expr(mkbin(mkid("x"), TokenType.Plus, mks("b")), vars_x)
+    if str_eq(c158, "dot_string_concat(x, dot_string_from_lit(\"b\", 1))") {
+        print("OK: emit ident str plus")
+    } else {
+        print("ERR: emit ident str plus: " + c158)
+    }
+
+    c159 = emit_expr(mkif(mkb(true), mki(1), mki(2)), []VarInfo{})
+    if str_eq(c159, "((true) ? (1) : (2))") {
+        print("OK: emit if")
+    } else {
+        print("ERR: emit if: " + c159)
+    }
+
+    c160 = emit_expr(Expr.If([mkb(true)], [Stmt.ExprStmt(mki(1), s0())], []Expr{}, s0()), []VarInfo{})
+    if str_eq(c160, "((true) ? (1) : (<TODO>))") {
+        print("OK: emit if no else")
+    } else {
+        print("ERR: emit if no else: " + c160)
+    }
+
+    c161 = emit_expr(Expr.Call([mkid("f")], []Expr{}, s0()), []VarInfo{})
+    if str_eq(c161, "<TODO>") {
+        print("OK: emit call todo")
+    } else {
+        print("ERR: emit call todo: " + c161)
+    }
+
+    c162 = emit_expr(Expr.Match([mki(1)], []MatchArm{}, s0()), []VarInfo{})
+    if str_eq(c162, "<TODO>") {
+        print("OK: emit match todo")
+    } else {
+        print("ERR: emit match todo: " + c162)
+    }
+
+    if Type.Int.equals(infer_type(mki(42), []VarInfo{})) {
+        print("OK: infer int lit")
+    } else {
+        print("ERR: infer int lit")
+    }
+
+    if Type.Float.equals(infer_type(mkf(3.5), []VarInfo{})) {
+        print("OK: infer float lit")
+    } else {
+        print("ERR: infer float lit")
+    }
+
+    if Type.String.equals(infer_type(mks("hi"), []VarInfo{})) {
+        print("OK: infer string lit")
+    } else {
+        print("ERR: infer string lit")
+    }
+
+    if Type.Bool.equals(infer_type(mkb(true), []VarInfo{})) {
+        print("OK: infer bool lit")
+    } else {
+        print("ERR: infer bool lit")
+    }
+
+    if Type.Nil.equals(infer_type(Expr.NilLit(s0()), []VarInfo{})) {
+        print("OK: infer nil lit")
+    } else {
+        print("ERR: infer nil lit")
+    }
+
+    if Type.Int.equals(infer_type(mkbin(mki(1), TokenType.Plus, mki(2)), []VarInfo{})) {
+        print("OK: infer add int")
+    } else {
+        print("ERR: infer add int")
+    }
+
+    if Type.Bool.equals(infer_type(mkbin(mki(1), TokenType.Lt, mki(2)), []VarInfo{})) {
+        print("OK: infer cmp bool")
+    } else {
+        print("ERR: infer cmp bool")
+    }
+
+    if Type.String.equals(infer_type(mkbin(mks("a"), TokenType.Plus, mks("b")), []VarInfo{})) {
+        print("OK: infer str plus")
+    } else {
+        print("ERR: infer str plus")
+    }
+
+    if Type.Bool.equals(infer_type(mkun(TokenType.Not, mkb(true)), []VarInfo{})) {
+        print("OK: infer not bool")
+    } else {
+        print("ERR: infer not bool")
+    }
+
+    if Type.Int.equals(infer_type(mkun(TokenType.Minus, mki(5)), []VarInfo{})) {
+        print("OK: infer neg int")
+    } else {
+        print("ERR: infer neg int")
+    }
+
+    if Type.String.equals(infer_type(mkif(mkb(true), mks("s"), mki(2)), []VarInfo{})) {
+        print("OK: infer if then")
+    } else {
+        print("ERR: infer if then")
+    }
+
+    it_unknown = infer_type(mkid("zz"), []VarInfo{})
+    is_unknown = match it_unknown { Type.Unknown => true, _ => false }
+    if is_unknown {
+        print("OK: infer unknown ident")
+    } else {
+        print("ERR: infer unknown ident")
+    }
+
+    if Type.String.equals(infer_type(mkid("x"), vars_x)) {
+        print("OK: infer known ident")
+    } else {
+        print("ERR: infer known ident")
     }
 }
