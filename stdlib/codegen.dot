@@ -18,6 +18,74 @@ fn str_eq(a string, b string) -> bool {
     return true
 }
 
+fn str_concat(a string, b string) -> string {
+    bld = new_builder()
+    bwrite(bld, a)
+    bwrite(bld, b)
+    return bfinish(bld)
+}
+
+fn str_starts_with(s string, prefix string) -> bool {
+    if prefix.len > s.len {
+        return false
+    }
+    i = 0
+    for i < prefix.len {
+        if s[i] != prefix[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+fn str_ends_with(s string, suffix string) -> bool {
+    if suffix.len > s.len {
+        return false
+    }
+    offset = s.len - suffix.len
+    i = 0
+    for i < suffix.len {
+        if s[offset + i] != suffix[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+fn str_contains(s string, sub string) -> bool {
+    return str_index_of(s, sub) >= 0
+}
+
+fn str_index_of(s string, sub string) -> int {
+    if sub.len == 0 {
+        return 0
+    }
+    if sub.len > s.len {
+        return -1
+    }
+    i = 0
+    for i <= s.len - sub.len {
+        if str_match_at(s, sub, i) {
+            return i
+        }
+        i += 1
+    }
+    return -1
+}
+
+fn str_match_at(s string, sub string, pos int) -> bool {
+    j = 0
+    for j < sub.len {
+        if s[pos + j] != sub[j] {
+            return false
+        }
+        j += 1
+    }
+    return true
+}
+
 fn new_builder() -> CBuilder {
     buf = []byte{}
     return CBuilder { buf }
@@ -59,14 +127,11 @@ fn int_to_str(n int) -> string {
     if n == 0 {
         return "0"
     }
-    neg = false
-    if n < 0 {
-        neg = true
-        n = -n
-    }
     b = new_builder()
-    if neg {
+    if n < 0 {
         bwrite(b, "-")
+        int_digits(b, -n)
+        return bfinish(b)
     }
     int_digits(b, n)
     return bfinish(b)
@@ -93,13 +158,21 @@ fn c_escape_into(b CBuilder, s string) {
             bwrite(b, "\\r")
         } else if c == 9 {
             bwrite(b, "\\t")
-        } else if c == 0 {
-            bwrite(b, "\\0")
+        } else if c < 32 or c > 126 {
+            c_escape_octal(b, c as uint8)
         } else {
             b.buf.push(c as uint8)
         }
         i += 1
     }
+}
+
+fn c_escape_octal(b CBuilder, c uint8) {
+    n = c as int
+    b.buf.push(92 as uint8)
+    b.buf.push((48 + n / 64) as uint8)
+    b.buf.push((48 + (n / 8) % 8) as uint8)
+    b.buf.push((48 + n % 8) as uint8)
 }
 
 fn literal_to_c(lit string, ty string) -> string {

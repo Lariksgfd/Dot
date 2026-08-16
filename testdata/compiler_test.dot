@@ -1,4 +1,5 @@
 import "../stdlib/compiler.dot"
+import std.codegen
 
 pub fn main() {
     c = Compiler.new()
@@ -439,5 +440,264 @@ pub fn main() {
         print("OK: match payload non-enum")
     } else {
         print("ERR: match payload non-enum")
+    }
+
+    c56 = str_concat("hello ", "world")
+    if str_eq(c56, "hello world") {
+        print("OK: str_concat")
+    } else {
+        print("ERR: str_concat")
+    }
+
+    c57 = str_concat("", "abc")
+    if str_eq(c57, "abc") {
+        print("OK: str_concat empty lhs")
+    } else {
+        print("ERR: str_concat empty lhs")
+    }
+
+    c58 = str_concat("abc", "")
+    if str_eq(c58, "abc") {
+        print("OK: str_concat empty rhs")
+    } else {
+        print("ERR: str_concat empty rhs")
+    }
+
+    c59 = str_concat("", "")
+    if str_eq(c59, "") {
+        print("OK: str_concat both empty")
+    } else {
+        print("ERR: str_concat both empty")
+    }
+
+    if str_starts_with("hello", "hel") {
+        print("OK: starts true")
+    } else {
+        print("ERR: starts true")
+    }
+
+    if not str_starts_with("hello", "hex") {
+        print("OK: starts false")
+    } else {
+        print("ERR: starts false")
+    }
+
+    if not str_starts_with("hi", "hello") {
+        print("OK: starts prefix longer")
+    } else {
+        print("ERR: starts prefix longer")
+    }
+
+    if str_starts_with("hi", "") {
+        print("OK: starts empty prefix")
+    } else {
+        print("ERR: starts empty prefix")
+    }
+
+    if str_starts_with("hi", "hi") {
+        print("OK: starts equal")
+    } else {
+        print("ERR: starts equal")
+    }
+
+    if str_ends_with("hello", "llo") {
+        print("OK: ends true")
+    } else {
+        print("ERR: ends true")
+    }
+
+    if not str_ends_with("hello", "oll") {
+        print("OK: ends false")
+    } else {
+        print("ERR: ends false")
+    }
+
+    if not str_ends_with("hi", "hello") {
+        print("OK: ends suffix longer")
+    } else {
+        print("ERR: ends suffix longer")
+    }
+
+    if str_ends_with("hi", "") {
+        print("OK: ends empty suffix")
+    } else {
+        print("ERR: ends empty suffix")
+    }
+
+    if str_ends_with("hi", "hi") {
+        print("OK: ends equal")
+    } else {
+        print("ERR: ends equal")
+    }
+
+    if str_contains("hello", "ell") {
+        print("OK: contains true")
+    } else {
+        print("ERR: contains true")
+    }
+
+    if not str_contains("hello", "xyz") {
+        print("OK: contains false")
+    } else {
+        print("ERR: contains false")
+    }
+
+    if str_contains("hello", "") {
+        print("OK: contains empty sub")
+    } else {
+        print("ERR: contains empty sub")
+    }
+
+    if not str_contains("ab", "abc") {
+        print("OK: contains sub longer")
+    } else {
+        print("ERR: contains sub longer")
+    }
+
+    if str_contains("hello", "o") {
+        print("OK: contains at end")
+    } else {
+        print("ERR: contains at end")
+    }
+
+    if str_index_of("hello", "l") == 2 {
+        print("OK: index_of found")
+    } else {
+        print("ERR: index_of found")
+    }
+
+    if str_index_of("hello", "x") == -1 {
+        print("OK: index_of not found")
+    } else {
+        print("ERR: index_of not found")
+    }
+
+    if str_index_of("hello", "") == 0 {
+        print("OK: index_of empty sub")
+    } else {
+        print("ERR: index_of empty sub")
+    }
+
+    if str_index_of("banana", "na") == 2 {
+        print("OK: index_of second occurrence")
+    } else {
+        print("ERR: index_of second occurrence")
+    }
+
+    if str_index_of("ab", "abc") == -1 {
+        print("OK: index_of sub longer")
+    } else {
+        print("ERR: index_of sub longer")
+    }
+
+    if str_index_of("hello", "o") == 4 {
+        print("OK: index_of at end")
+    } else {
+        print("ERR: index_of at end")
+    }
+
+    if str_index_of("", "") == 0 {
+        print("OK: index_of both empty")
+    } else {
+        print("ERR: index_of both empty")
+    }
+
+    if str_index_of("aaaa", "aa") == 0 {
+        print("OK: index_of first of many")
+    } else {
+        print("ERR: index_of first of many")
+    }
+
+    b_esc = new_builder()
+    c_escape_into(b_esc, "a\"b\\c")
+    esc_q = bfinish(b_esc)
+    if str_eq(esc_q, "a\\\"b\\\\c") {
+        print("OK: escape quote backslash")
+    } else {
+        print("ERR: escape quote backslash")
+    }
+
+    b_esc2 = new_builder()
+    c_escape_into(b_esc2, "a\nb\tc\rd")
+    esc_ws = bfinish(b_esc2)
+    if str_eq(esc_ws, "a\\nb\\tc\\rd") {
+        print("OK: escape ws")
+    } else {
+        print("ERR: escape ws")
+    }
+
+    b_esc3 = new_builder()
+    c_escape_into(b_esc3, "\0")
+    esc_nul = bfinish(b_esc3)
+    if str_eq(esc_nul, "\\000") {
+        print("OK: escape nul")
+    } else {
+        print("ERR: escape nul")
+    }
+
+    b_raw = new_builder()
+    b_raw.buf.push(128 as uint8)
+    raw128 = bfinish(b_raw)
+    b_esc4 = new_builder()
+    c_escape_into(b_esc4, raw128)
+    esc_h80 = bfinish(b_esc4)
+    if str_eq(esc_h80, "\\200") {
+        print("OK: escape byte128")
+    } else {
+        print("ERR: escape byte128")
+    }
+
+    b_esc5 = new_builder()
+    c_escape_into(b_esc5, "\x7f")
+    esc_h7f = bfinish(b_esc5)
+    if str_eq(esc_h7f, "\\177") {
+        print("OK: escape byte127")
+    } else {
+        print("ERR: escape byte127")
+    }
+
+    b_esc6 = new_builder()
+    c_escape_into(b_esc6, "\x01")
+    esc_h01 = bfinish(b_esc6)
+    if str_eq(esc_h01, "\\001") {
+        print("OK: escape byte1")
+    } else {
+        print("ERR: escape byte1")
+    }
+
+    b_esc7 = new_builder()
+    c_escape_into(b_esc7, "\x1f")
+    esc_h1f = bfinish(b_esc7)
+    if str_eq(esc_h1f, "\\037") {
+        print("OK: escape byte31")
+    } else {
+        print("ERR: escape byte31")
+    }
+
+    b_esc8 = new_builder()
+    c_escape_into(b_esc8, "plain")
+    esc_plain = bfinish(b_esc8)
+    if str_eq(esc_plain, "plain") {
+        print("OK: escape plain")
+    } else {
+        print("ERR: escape plain")
+    }
+
+    if str_eq(int_to_str(-123), "-123") {
+        print("OK: int_to_str neg")
+    } else {
+        print("ERR: int_to_str neg")
+    }
+
+    if str_eq(int_to_str(0), "0") {
+        print("OK: int_to_str zero")
+    } else {
+        print("ERR: int_to_str zero")
+    }
+
+    if str_eq(int_to_str(1000), "1000") {
+        print("OK: int_to_str pos")
+    } else {
+        print("ERR: int_to_str pos")
     }
 }
