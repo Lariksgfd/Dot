@@ -1,0 +1,233 @@
+// stdlib/codegen_stmt.dot - T-051 stage 4a: statement emitter for the
+// self-hosted C codegen. Port of Go codegen/emit_stmt.go (emitStmt,
+// emitVarDecl, emitAssignStmt, emitExprStmt) and codegen/emit_stmt_extra.go
+// (emitReturnStmt, emitBlockStmt). Covered: ExprStmt, Let (var decl),
+// Assign in statement position, Return, Block. For/While/Break/Continue
+// are stage 4b and emit a TODO comment.
+//
+// NOTE: ast.dot has no If/Match STATEMENT nodes — Expr.If/Expr.Match used
+// in statement position fall through the generic ExprStmt path and render
+// as the ternary chain of codegen_expr.dot plus ";", like any other
+// expression statement.
+//
+// [РЕШЕНИЕ] Indentation: emit_stmt/emit_stmts thread a depth int (CBuilder
+// has no indent field, and a mutable indent counter would break the
+// functional D53 style). 4 spaces per level, same as Go generator.line().
+//
+// [РЕШЕНИЕ] Scope/vars: declarations APPEND to vars and are never removed
+// on block exit (monotonic growth) — C sees every local for the rest of
+// the function body. Real scope cleanup arrives with ARC on stage 6.
+//
+// [РЕШЕНИЕ] Assign: plain "<target> op <value>;" with NO retain/release
+// (ARC is stage 6). Index targets do not lower to dot_slice_set yet (Go
+// emitAssignStmt does; deferred with the stage-4b statement pass).
+import ast
+import types
+import codegen
+import codegen_types
+import codegen_expr
+
+// emit_stmt renders one statement into out at the given depth and returns
+// the updated vars (Let appends its VarInfo). Functional style: the vars
+// slice flows in and out, nothing is rebound (D53).
+pub fn emit_stmt(st Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    return match st {
+        Stmt.ExprStmt(e, _) => emit_expr_stmt(e, vars, out, depth)
+        Stmt.Let(name, ty_opt, value, _, _) => emit_let(name, ty_opt, value, vars, out, depth)
+        Stmt.Return(v_opt, _) => emit_return_stmt(v_opt, vars, out, depth)
+        Stmt.Block(stmts, _) => emit_block(stmts, vars, out, depth)
+        Stmt.For(_, _, _, _) => emit_stmt_todo(out, depth, "for", vars)
+        Stmt.While(_, _, _) => emit_stmt_todo(out, depth, "while", vars)
+        Stmt.Break(_, _) => emit_stmt_todo(out, depth, "break", vars)
+        Stmt.Continue(_, _) => emit_stmt_todo(out, depth, "continue", vars)
+    }
+}
+
+// emit_stmts renders a list of statements in order, threading vars through.
+pub fn emit_stmts(stmts []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    return emit_stmts_from(stmts, 0, vars, out, depth)
+}
+
+fn emit_stmts_from(stmts []Stmt, i int, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    if i >= stmts.len {
+        return vars
+    }
+    next = emit_stmt(stmts[i], vars, out, depth)
+    return emit_stmts_from(stmts, i + 1, next, out, depth)
+}
+
+// emit_expr_stmt renders an expression in statement position. Assignments
+// take the Go emitAssignStmt form (no parenthesised emit_assign from
+// codegen_expr); every other expression is emit_expr + ";".
+fn emit_expr_stmt(e Expr, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    if is_assign_expr(e) {
+        emit_assign_stmt(e, vars, out, depth)
+        return vars
+    }
+    bwriteln(out, depth, emit_expr(e, vars) + ";")
+    return vars
+}
+
+fn is_assign_expr(e Expr) -> bool {
+    return match e {
+        Expr.Assign(_, _, _, _) => true
+        _ => false
+    }
+}
+
+// [РЕШЕНИЕ]: Go emitAssignStmt guards heap targets with release/retain and
+// lowers slice-index targets to dot_slice_set; the MVP emits the plain C
+// assignment only. Both arrive with ARC (stage 6) / the 4b pass.
+// NOTE: the match is the body tail, NOT `return match` — a value-position
+// match in a void fn makes the Go codegen emit `void _match_res` and marks
+// every initialiser inside as heap-escaping (dot_alloc path), so
+// statement-position dispatch is used like checker_stmt.check_stmt does.
+fn emit_assign_stmt(e Expr, vars []VarInfo, out CBuilder, depth int) {
+    match e {
+        Expr.Assign(left, op, right, _) => {
+            if left.len == 0 or right.len == 0 {
+                bwriteln(out, depth, "/* bad assign */;")
+                return
+            }
+            op_s = assign_op_str(op)
+            if op_s.len == 0 {
+                bwriteln(out, depth, emit_expr(e, vars) + ";")
+                return
+            }
+            bwriteln(out, depth, emit_expr(left[0], vars) + " " + op_s + " " + emit_expr(right[0], vars) + ";")
+        }
+        _ => bwriteln(out, depth, emit_expr(e, vars) + ";")
+    }
+}
+
+// emit_let renders a var declaration. The declared C type is the Let
+// annotation when present (TypeNode -> checker Type -> C), else the
+// inferred value type. Dot's Stmt.Let always carries an initialiser (the
+// parser unwraps the value), so the no-init zero-value path of Go
+// emitVarDecl does not exist here; heap values are plain pointer
+// assignments (DotString* s = <expr>;). Multi-name declarations are not
+// representable either: the parser keeps only the first name and folds the
+// rest into a TupleLit value (parser.dot parse_multi_let).
+fn emit_let(name string, ty_opt Option[TypeNode], value Expr, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    v_ty = let_decl_ty(ty_opt, value, vars)
+    init = emit_expr(value, vars)
+    bwriteln(out, depth, ty_to_c(v_ty) + " " + name + " = " + init + ";")
+    vars.push(VarInfo { name, ty: v_ty })
+    return vars
+}
+
+// let_decl_ty picks the declaration type: the annotation wins when present
+// and resolvable, otherwise the inferred value type.
+fn let_decl_ty(ty_opt Option[TypeNode], value Expr, vars []VarInfo) -> Type {
+    if ty_node = ty_opt {
+        ann_ty = tynode_to_ty(ty_node)
+        if not is_unknown_ty(ann_ty) {
+            return ann_ty
+        }
+    }
+    return infer_type(value, vars)
+}
+
+// [РЕШЕНИЕ]: plain `return <expr>;`. Go emitReturnStmt materialises the
+// value into a temp BEFORE scope cleanup and applies move/retain rules;
+// without ARC (stage 6) there is no cleanup to order against, so the
+// expression is returned in place.
+fn emit_return_stmt(v_opt Option[Expr], vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    if v = v_opt {
+        bwriteln(out, depth, "return " + emit_expr(v, vars) + ";")
+    } else {
+        bwriteln(out, depth, "return;")
+    }
+    return vars
+}
+
+// emit_block renders a brace block with +1 depth. Nested declarations are
+// folded into vars (never removed — see header).
+fn emit_block(stmts []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    bwriteln(out, depth, "{{")
+    inner_vars = emit_stmts(stmts, vars, out, depth + 1)
+    bwriteln(out, depth, "}}")
+    return inner_vars
+}
+
+// emit_stmt_todo writes the stage-4b placeholder and passes vars through.
+fn emit_stmt_todo(out CBuilder, depth int, what string, vars []VarInfo) -> []VarInfo {
+    bwriteln(out, depth, "/* <TODO 4b: " + what + "> */")
+    return vars
+}
+
+// tynode_to_ty maps an AST TypeNode to the checker Type the annotation
+// describes (mirror of Checker.resolve_type without type params; the
+// codegen has no generic context). Pointer stays Unknown, same as the
+// checker.
+fn tynode_to_ty(node TypeNode) -> Type {
+    return match node {
+        TypeNode.Named(name, _) => named_ty(name)
+        TypeNode.Array(elem_ty, _) => {
+            if elem_ty.len > 0 {
+                return Type.Array([]Type{tynode_to_ty(elem_ty[0])})
+            }
+            return Type.Unknown
+        }
+        TypeNode.Slice(elem_ty, _) => {
+            if elem_ty.len > 0 {
+                return Type.Slice([]Type{tynode_to_ty(elem_ty[0])})
+            }
+            return Type.Unknown
+        }
+        TypeNode.Map(key_ty, val_ty, _) => {
+            if key_ty.len > 0 and val_ty.len > 0 {
+                return Type.Map([]Type{tynode_to_ty(key_ty[0])}, []Type{tynode_to_ty(val_ty[0])})
+            }
+            return Type.Unknown
+        }
+        TypeNode.Func(params, ret_ty, _) => node_func_ty(params, ret_ty)
+        TypeNode.Pointer(_, _) => Type.Unknown
+    }
+}
+
+// named_ty resolves a Named TypeNode the way Checker.resolve_type does:
+// builtins map to primitives, everything else is treated as a struct type.
+fn named_ty(name string) -> Type {
+    if str_eq(name, "int") {
+        return Type.Int
+    }
+    if str_eq(name, "float") {
+        return Type.Float
+    }
+    if str_eq(name, "bool") {
+        return Type.Bool
+    }
+    if str_eq(name, "string") {
+        return Type.String
+    }
+    return Type.Struct(name)
+}
+
+fn node_func_ty(params []TypeNode, ret_ty Option[TypeNode]) -> Type {
+    p_types = []Type{}
+    for p in params {
+        p_types.push(tynode_to_ty(p))
+    }
+    r_ty = Type.Void
+    if r = ret_ty {
+        r_ty = tynode_to_ty(r)
+    }
+    return Type.Func(p_types, []Type{r_ty})
+}
+
+// bwrite_indent writes depth * 4 spaces (Go generator.line()).
+fn bwrite_indent(b CBuilder, depth int) {
+    i = 0
+    for i < depth {
+        bwrite(b, "    ")
+        i += 1
+    }
+}
+
+// bwriteln writes an indented line terminated by "\n".
+fn bwriteln(b CBuilder, depth int, s string) {
+    bwrite_indent(b, depth)
+    bwrite(b, s)
+    bwrite(b, "\n")
+}

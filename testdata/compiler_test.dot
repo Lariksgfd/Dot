@@ -2,6 +2,7 @@ import "../stdlib/compiler.dot"
 import "../stdlib/codegen.dot"
 import "../stdlib/codegen_types.dot"
 import "../stdlib/codegen_expr.dot"
+import "../stdlib/codegen_stmt.dot"
 
 fn s0() -> Span {
     p = Position.new("", 0, 0, 0)
@@ -1678,5 +1679,173 @@ pub fn main() {
         print("OK: infer map lit")
     } else {
         print("ERR: infer map lit")
+    }
+
+    // --- codegen_stmt (T-051, stage 4a) ---
+
+    b_st1 = new_builder()
+    v_st1 = emit_stmt(Stmt.Let("x", Some(TypeNode.Named("int", s0())), mki(5), false, s0()), []VarInfo{}, b_st1, 0)
+    c222 = bfinish(b_st1)
+    if str_eq(c222, "int64_t x = 5;\n") {
+        print("OK: stmt let int")
+    } else {
+        print("ERR: stmt let int: " + c222)
+    }
+
+    if Type.Int.equals(infer_type(mkid("x"), v_st1)) {
+        print("OK: stmt vars grow")
+    } else {
+        print("ERR: stmt vars grow")
+    }
+
+    b_st2 = new_builder()
+    emit_stmt(Stmt.Let("s", None, mks("hi"), false, s0()), []VarInfo{}, b_st2, 0)
+    c224 = bfinish(b_st2)
+    if str_eq(c224, "DotString* s = dot_string_from_lit(\"hi\", 2);\n") {
+        print("OK: stmt let infer string")
+    } else {
+        print("ERR: stmt let infer string: " + c224)
+    }
+
+    b_st3 = new_builder()
+    emit_stmt(Stmt.Let("y", Some(TypeNode.Named("int", s0())), mkbin(mki(1), TokenType.Plus, mki(2)), false, s0()), []VarInfo{}, b_st3, 0)
+    c225 = bfinish(b_st3)
+    if str_eq(c225, "int64_t y = (1 + 2);\n") {
+        print("OK: stmt let complex init")
+    } else {
+        print("ERR: stmt let complex init: " + c225)
+    }
+
+    b_st4 = new_builder()
+    emit_stmt(Stmt.ExprStmt(Expr.Call([mkid("print")], [mki(42)], s0()), s0()), []VarInfo{}, b_st4, 0)
+    c226 = bfinish(b_st4)
+    if str_eq(c226, "dot_print(dot_slice_pack(1, (DotAny[]){{(DotAny)(intptr_t)(42)}}));\n") {
+        print("OK: stmt expr print")
+    } else {
+        print("ERR: stmt expr print: " + c226)
+    }
+
+    b_st5 = new_builder()
+    emit_stmt(Stmt.ExprStmt(Expr.Assign([mkid("x")], TokenType.Assign, [mki(5)], s0()), s0()), []VarInfo{}, b_st5, 0)
+    c227 = bfinish(b_st5)
+    if str_eq(c227, "x = 5;\n") {
+        print("OK: stmt assign eq")
+    } else {
+        print("ERR: stmt assign eq: " + c227)
+    }
+
+    b_st6 = new_builder()
+    emit_stmt(Stmt.ExprStmt(Expr.Assign([mkid("x")], TokenType.PlusAssign, [mki(2)], s0()), s0()), []VarInfo{}, b_st6, 0)
+    c228 = bfinish(b_st6)
+    if str_eq(c228, "x += 2;\n") {
+        print("OK: stmt assign plus")
+    } else {
+        print("ERR: stmt assign plus: " + c228)
+    }
+
+    b_st7 = new_builder()
+    emit_stmt(Stmt.Return(None, s0()), []VarInfo{}, b_st7, 0)
+    c229 = bfinish(b_st7)
+    if str_eq(c229, "return;\n") {
+        print("OK: stmt return none")
+    } else {
+        print("ERR: stmt return none: " + c229)
+    }
+
+    b_st8 = new_builder()
+    emit_stmt(Stmt.Return(Some(mkid("x")), s0()), []VarInfo{}, b_st8, 0)
+    c230 = bfinish(b_st8)
+    if str_eq(c230, "return x;\n") {
+        print("OK: stmt return expr")
+    } else {
+        print("ERR: stmt return expr: " + c230)
+    }
+
+    b_st9 = new_builder()
+    emit_stmt(Stmt.Block([]Stmt{}, s0()), []VarInfo{}, b_st9, 0)
+    c231 = bfinish(b_st9)
+    if str_eq(c231, "{{\n}}\n") {
+        print("OK: stmt empty block")
+    } else {
+        print("ERR: stmt empty block: " + c231)
+    }
+
+    b_st10 = new_builder()
+    blk_two = []Stmt{}
+    blk_two.push(Stmt.Let("a", Some(TypeNode.Named("int", s0())), mki(1), false, s0()))
+    blk_two.push(Stmt.Let("b", Some(TypeNode.Named("int", s0())), mki(2), false, s0()))
+    emit_stmt(Stmt.Block(blk_two, s0()), []VarInfo{}, b_st10, 0)
+    c232 = bfinish(b_st10)
+    if str_eq(c232, "{{\n    int64_t a = 1;\n    int64_t b = 2;\n}}\n") {
+        print("OK: stmt block indent")
+    } else {
+        print("ERR: stmt block indent: " + c232)
+    }
+
+    b_st11 = new_builder()
+    blk_inner = []Stmt{}
+    blk_inner.push(Stmt.Let("c", Some(TypeNode.Named("int", s0())), mki(3), false, s0()))
+    blk_outer = []Stmt{}
+    blk_outer.push(Stmt.Block(blk_inner, s0()))
+    v_st11 = emit_stmt(Stmt.Block(blk_outer, s0()), []VarInfo{}, b_st11, 0)
+    c233 = bfinish(b_st11)
+    if str_eq(c233, "{{\n    {{\n        int64_t c = 3;\n    }}\n}}\n") {
+        print("OK: stmt nested block")
+    } else {
+        print("ERR: stmt nested block: " + c233)
+    }
+
+    if Type.Int.equals(infer_type(mkid("c"), v_st11)) {
+        print("OK: stmt block vars")
+    } else {
+        print("ERR: stmt block vars")
+    }
+
+    b_st12 = new_builder()
+    emit_stmt(Stmt.For(Pattern.Ident("i"), mki(1), []Stmt{}, s0()), []VarInfo{}, b_st12, 0)
+    c235 = bfinish(b_st12)
+    if str_eq(c235, "/* <TODO 4b: for> */\n") {
+        print("OK: stmt for todo")
+    } else {
+        print("ERR: stmt for todo: " + c235)
+    }
+
+    b_st13 = new_builder()
+    emit_stmt(Stmt.While(mkb(true), []Stmt{}, s0()), []VarInfo{}, b_st13, 0)
+    c236 = bfinish(b_st13)
+    if str_eq(c236, "/* <TODO 4b: while> */\n") {
+        print("OK: stmt while todo")
+    } else {
+        print("ERR: stmt while todo: " + c236)
+    }
+
+    b_st14 = new_builder()
+    emit_stmt(Stmt.Break(None, s0()), []VarInfo{}, b_st14, 0)
+    c237 = bfinish(b_st14)
+    if str_eq(c237, "/* <TODO 4b: break> */\n") {
+        print("OK: stmt break todo")
+    } else {
+        print("ERR: stmt break todo: " + c237)
+    }
+
+    b_st15 = new_builder()
+    emit_stmt(Stmt.Continue(None, s0()), []VarInfo{}, b_st15, 0)
+    c238 = bfinish(b_st15)
+    if str_eq(c238, "/* <TODO 4b: continue> */\n") {
+        print("OK: stmt continue todo")
+    } else {
+        print("ERR: stmt continue todo: " + c238)
+    }
+
+    b_st16 = new_builder()
+    stmts_16 = []Stmt{}
+    stmts_16.push(Stmt.Let("x", Some(TypeNode.Named("int", s0())), mki(5), false, s0()))
+    stmts_16.push(Stmt.Return(Some(mkid("x")), s0()))
+    emit_stmts(stmts_16, []VarInfo{}, b_st16, 0)
+    c239 = bfinish(b_st16)
+    if str_eq(c239, "int64_t x = 5;\nreturn x;\n") {
+        print("OK: stmt emit stmts")
+    } else {
+        print("ERR: stmt emit stmts: " + c239)
     }
 }
