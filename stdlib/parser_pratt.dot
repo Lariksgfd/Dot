@@ -376,7 +376,11 @@ fn parse_array_elements(mut self, end_tok TokenType) -> []Expr {
         start = self.cur_tok.pos
 
         self.next_token()
+        // A cond like `if name {` must not parse `name {` as a struct
+        // literal: the block brace wins (Go parser D30 noStructLit).
+        self.no_struct_lit = true
         cond = self.parse_expr(PREC_LOWEST)
+        self.no_struct_lit = false
         if cond.is_none() {
             return None
         }

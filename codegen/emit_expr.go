@@ -723,7 +723,19 @@ func writeIfBranch(b *strings.Builder, g *generator, blk *ast.BlockStmt, tmp str
 			}
 			b.WriteString("; ")
 		default:
-			b.WriteString(fmt.Sprintf("/* stmt %T */ ", st))
+			// Control-flow statements are emitted inline (statement
+			// expressions accept arbitrary C statements); everything else
+			// keeps the placeholder. g.emitStmt writes to g.buf, so the
+			// builder is swapped while the statement is emitted.
+			switch st.(type) {
+			case *ast.ForStmt, *ast.BlockStmt, *ast.BreakStmt, *ast.ContinueStmt:
+				old := g.buf
+				g.buf = b
+				g.emitStmt(st)
+				g.buf = old
+			default:
+				b.WriteString(fmt.Sprintf("/* stmt %T */ ", st))
+			}
 		}
 	}
 }

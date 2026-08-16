@@ -34,7 +34,7 @@ impl Parser {
         self.peek_tok = self.peek2_tok
         self.peek2_tok = self.l.next_token()
         // Skip newlines transparently for now, or handle them based on statement rules
-        for self.cur_tok.kind == TokenType.Newline {
+        for self.cur_tok.kind == TokenType.Newline or self.cur_tok.kind == TokenType.Comment {
             self.cur_tok = self.peek_tok
             self.peek_tok = self.peek2_tok
             self.peek2_tok = self.l.next_token()
@@ -459,15 +459,29 @@ impl Parser {
         }
 
         self.next_token()
-        pname = self.cur_tok.lexeme
-        self.next_token()
-        pty = self.parse_type()
-        params.push(Param { name: pname, ty: pty })
+        // Optional `mut` prefix is consumed and ignored: value semantics in
+        // the self-hosted codegen make receivers mutable anyway ([РЕШЕНИЕ]
+        // stage 7d1). D22: `self` is the typeless receiver — after it comes
+        // the type, so a type parse would swallow the comma (Go parseParam).
+        if self.cur_token_is(TokenType.Mut) {
+            self.next_token()
+        }
+        if self.cur_token_is(TokenType.SelfKw) {
+            params.push(Param { name: "self", ty: TypeNode.Named("self", Span.new(self.cur_tok.pos, self.cur_tok.end)) })
+        } else {
+            pname = self.cur_tok.lexeme
+            self.next_token()
+            pty = self.parse_type()
+            params.push(Param { name: pname, ty: pty })
+        }
         self.skip_default_value()
 
         for self.peek_token_is(TokenType.Comma) {
             self.next_token()
             self.next_token()
+            if self.cur_token_is(TokenType.Mut) {
+                self.next_token()
+            }
             pname_next = self.cur_tok.lexeme
             self.next_token()
             pty_next = self.parse_type()
@@ -679,8 +693,11 @@ impl Parser {
         }
 
         // conditional loop: for cond { ... } -> Stmt.While (ast.dot has no
-        // condition slot in Stmt.For)
+        // condition slot in Stmt.For). The cond parse suppresses struct
+        // literals: `for name {` is a block loop, not a literal (D30).
+        self.no_struct_lit = true
         cond = self.parse_expr(PREC_LOWEST)
+        self.no_struct_lit = false
         if cond.is_none() {
             self.errors.push("expected in or condition after for")
             return None
@@ -698,7 +715,10 @@ impl Parser {
     fn parse_while_stmt(mut self) -> Option[Stmt] {
         start = self.cur_tok.pos
         self.next_token() // cur = condition start
+        // Same D30 rule as if/for: `while name {` is a block loop.
+        self.no_struct_lit = true
         cond = self.parse_expr(PREC_LOWEST)
+        self.no_struct_lit = false
         if cond.is_none() {
             self.errors.push("expected condition after while")
             return None
@@ -901,6 +921,16 @@ impl Parser {
             return TypeNode.Func(params, None, Span.new(start, self.cur_tok.end))
         }
         name = self.cur_tok.lexeme
+        // Generic arguments Option[Symbol] are consumed and dropped: the
+        // checker treats the type as Struct("Option") ([РЕШЕНИЕ] stage 7d1).
+        // Without the skip the [Symbol] tokens would linger and detach the
+        // following fn body (parse_fn_body sees LBracket, not LBrace).
+        if self.peek_token_is(TokenType.LBracket) {
+            for not self.peek_token_is(TokenType.RBracket) and not self.peek_token_is(TokenType.EOF) {
+                self.next_token()
+            }
+            self.next_token() // cur = RBracket
+        }
         end = self.cur_tok.end
         return TypeNode.Named(name, Span.new(start, end))
     }
