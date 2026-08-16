@@ -5,7 +5,10 @@
 // emitBreakStmt, emitContinueStmt). Covered: ExprStmt, Let (var decl),
 // Assign in statement position, Return, Block (stage 4a); While, For in
 // three forms (infinite / counted range / for-in over slice+array+map),
-// Break, Continue (stage 4b).
+// Break, Continue (stage 4b). Stage 6a (ARC): every emission routes through
+// StmtCtx which threads the live heap locals — block/loop exits release the
+// locals the block declared, returns release everything except the returned
+// ident, plain assigns into a heap local release the old value.
 //
 // NOTE: ast.dot has no If/Match STATEMENT nodes — Expr.If/Expr.Match used
 // in statement position fall through the generic ExprStmt path and render
@@ -18,56 +21,79 @@
 //
 // [РЕШЕНИЕ] Scope/vars: declarations APPEND to vars and are never removed
 // on block exit (monotonic growth) — C sees every local for the rest of
-// the function body. Real scope cleanup arrives with ARC on stage 6.
+// the function body. Heap lifetime tracking is separate (StmtCtx.heap) and
+// pops at block exits (stage 6a ARC).
 //
-// [РЕШЕНИЕ] Assign: plain "<target> op <value>;" with NO retain/release
-// (ARC is stage 6). Index targets do not lower to dot_slice_set yet (Go
-// emitAssignStmt does; deferred with the stage-4b statement pass).
+// [РЕШЕНИЕ] Assign: heap-target release is in (stage 6a), retain on copy
+// and dot_slice_set lowering for index targets are still missing (6b/4b).
 import ast
 import types
 import codegen
 import codegen_types
 import codegen_expr
 
+// [РЕШЕНИЕ] ARC (stage 6a): the public emit_stmt/emit_stmts signatures stay
+// unchanged (tests call them with plain []VarInfo), but every emission
+// routes through the ctx variants below, which thread a heap list
+// (StmtCtx.heap) of live heap-typed locals next to vars. The list is
+// ordered by declaration; a block exit releases the names the block
+// appended (reverse order), a return releases every live name except the
+// returned ident (move semantics), and a plain assign into a heap local
+// releases the old value first (MVP form, no temp — see emit_assign_stmt).
+// unused counts materialised return temps (Go unusedIdx) so two returns in
+// one C scope cannot redeclare the same temp name; ret_ty carries the
+// enclosing fn's declared return type so a return of an Unknown-typed
+// expression (a call) can still be materialised before the releases.
+pub struct StmtCtx {
+    vars   []VarInfo
+    heap   []string
+    unused int
+    ret_ty Type
+}
+
 // emit_stmt renders one statement into out at the given depth and returns
 // the updated vars (Let appends its VarInfo). Functional style: the vars
 // slice flows in and out, nothing is rebound (D53).
 pub fn emit_stmt(st Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+    return emit_stmt_ctx(st, StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: Type.Unknown }, out, depth).vars
+}
+
+fn emit_stmt_ctx(st Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     return match st {
-        Stmt.ExprStmt(e, _) => emit_expr_stmt(e, vars, out, depth)
-        Stmt.Let(name, ty_opt, value, _, _) => emit_let(name, ty_opt, value, vars, out, depth)
-        Stmt.Return(v_opt, _) => emit_return_stmt(v_opt, vars, out, depth)
-        Stmt.Block(stmts, _) => emit_block(stmts, vars, out, depth)
-        Stmt.For(pattern, iterable, body, _) => emit_for_stmt(pattern, iterable, body, vars, out, depth)
-        Stmt.While(condition, body, _) => emit_while_stmt(condition, body, vars, out, depth)
-        Stmt.Break(label_opt, _) => emit_break_stmt(label_opt, vars, out, depth)
-        Stmt.Continue(label_opt, _) => emit_continue_stmt(label_opt, vars, out, depth)
+        Stmt.ExprStmt(e, _) => emit_expr_stmt_ctx(e, ctx, out, depth)
+        Stmt.Let(name, ty_opt, value, _, _) => emit_let(name, ty_opt, value, ctx, out, depth)
+        Stmt.Return(v_opt, _) => emit_return_stmt(v_opt, ctx, out, depth)
+        Stmt.Block(stmts, _) => emit_block(stmts, ctx, out, depth)
+        Stmt.For(pattern, iterable, body, _) => emit_for_stmt(pattern, iterable, body, ctx, out, depth)
+        Stmt.While(condition, body, _) => emit_while_stmt(condition, body, ctx, out, depth)
+        Stmt.Break(label_opt, _) => emit_break_stmt(label_opt, ctx, out, depth)
+        Stmt.Continue(label_opt, _) => emit_continue_stmt(label_opt, ctx, out, depth)
     }
 }
 
 // emit_stmts renders a list of statements in order, threading vars through.
 pub fn emit_stmts(stmts []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
-    return emit_stmts_from(stmts, 0, vars, out, depth)
+    return emit_stmts_ctx(stmts, 0, StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: Type.Unknown }, out, depth).vars
 }
 
-fn emit_stmts_from(stmts []Stmt, i int, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+fn emit_stmts_ctx(stmts []Stmt, i int, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     if i >= stmts.len {
-        return vars
+        return ctx
     }
-    next = emit_stmt(stmts[i], vars, out, depth)
-    return emit_stmts_from(stmts, i + 1, next, out, depth)
+    next = emit_stmt_ctx(stmts[i], ctx, out, depth)
+    return emit_stmts_ctx(stmts, i + 1, next, out, depth)
 }
 
 // emit_expr_stmt renders an expression in statement position. Assignments
 // take the Go emitAssignStmt form (no parenthesised emit_assign from
 // codegen_expr); every other expression is emit_expr + ";".
-fn emit_expr_stmt(e Expr, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+fn emit_expr_stmt_ctx(e Expr, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     if is_assign_expr(e) {
-        emit_assign_stmt(e, vars, out, depth)
-        return vars
+        emit_assign_stmt(e, ctx, out, depth)
+        return ctx
     }
-    bwriteln(out, depth, emit_expr(e, vars) + ";")
-    return vars
+    bwriteln(out, depth, emit_expr(e, ctx.vars) + ";")
+    return ctx
 }
 
 fn is_assign_expr(e Expr) -> bool {
@@ -84,7 +110,7 @@ fn is_assign_expr(e Expr) -> bool {
 // match in a void fn makes the Go codegen emit `void _match_res` and marks
 // every initialiser inside as heap-escaping (dot_alloc path), so
 // statement-position dispatch is used like checker_stmt.check_stmt does.
-fn emit_assign_stmt(e Expr, vars []VarInfo, out CBuilder, depth int) {
+fn emit_assign_stmt(e Expr, ctx StmtCtx, out CBuilder, depth int) {
     match e {
         Expr.Assign(left, op, right, _) => {
             if left.len == 0 or right.len == 0 {
@@ -93,12 +119,50 @@ fn emit_assign_stmt(e Expr, vars []VarInfo, out CBuilder, depth int) {
             }
             op_s = assign_op_str(op)
             if op_s.len == 0 {
-                bwriteln(out, depth, emit_expr(e, vars) + ";")
+                bwriteln(out, depth, emit_expr(e, ctx.vars) + ";")
                 return
             }
-            bwriteln(out, depth, emit_expr(left[0], vars) + " " + op_s + " " + emit_expr(right[0], vars) + ";")
+            // [РЕШЕНИЕ] ARC: a plain `=` into a heap-typed local releases
+            // the old value first (`dot_release(x);\nx = <expr>;`). MVP
+            // form without a temp: Go emitAssignStmt evaluates the RHS into
+            // _dot_new_N before releasing, so a RHS that reads the target
+            // (`x = x + "!"`) is a known UAF here until the temp form lands
+            // with retain support (6b). A self-assign `x = x` is guarded.
+            // Compound ops keep the plain C form (Go PlusAssign path), and
+            // index targets never take this path (is_heap_target requires
+            // an Ident; dot_slice_set lowering is a 4b TODO).
+            tname = emit_expr(left[0], ctx.vars)
+            if is_plain_assign_op(op) and is_heap_target(left[0], ctx.vars) and not expr_is_ident(right[0], tname) {
+                bwriteln(out, depth, "dot_release(" + tname + ");")
+            }
+            bwriteln(out, depth, tname + " " + op_s + " " + emit_expr(right[0], ctx.vars) + ";")
         }
-        _ => bwriteln(out, depth, emit_expr(e, vars) + ";")
+        _ => bwriteln(out, depth, emit_expr(e, ctx.vars) + ";")
+    }
+}
+
+fn is_plain_assign_op(op TokenType) -> bool {
+    return match op {
+        TokenType.Assign => true
+        _ => false
+    }
+}
+
+// is_heap_target reports whether target is an Ident naming a heap-typed
+// local (the assign release guard; everything else keeps the plain form).
+fn is_heap_target(target Expr, vars []VarInfo) -> bool {
+    return match target {
+        Expr.Ident(name, _) => is_heap(var_type(vars, name))
+        _ => false
+    }
+}
+
+// expr_is_ident reports whether e is the plain ident name (self-assign
+// guard for the release-on-assign path).
+fn expr_is_ident(e Expr, name string) -> bool {
+    return match e {
+        Expr.Ident(n, _) => str_eq(n, name)
+        _ => false
     }
 }
 
@@ -110,12 +174,24 @@ fn emit_assign_stmt(e Expr, vars []VarInfo, out CBuilder, depth int) {
 // assignments (DotString* s = <expr>;). Multi-name declarations are not
 // representable either: the parser keeps only the first name and folds the
 // rest into a TupleLit value (parser.dot parse_multi_let).
-fn emit_let(name string, ty_opt Option[TypeNode], value Expr, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
-    v_ty = let_decl_ty(ty_opt, value, vars)
-    init = emit_expr(value, vars)
+// [РЕШЕНИЕ] ARC: a heap-typed Let joins ctx.heap so the owning block's exit
+// releases it. A same-name Let (D53 shadow) may push the name twice; the
+// release helpers dedupe by name (emit_heap_releases_from for block exits,
+// emit_return_releases for returns), because at the release point the C
+// name refers to the innermost declaration — releasing twice would
+// double-release it and the shadowed outer object still leaks (shadowing
+// is discouraged anyway).
+fn emit_let(name string, ty_opt Option[TypeNode], value Expr, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
+    v_ty = let_decl_ty(ty_opt, value, ctx.vars)
+    init = emit_expr(value, ctx.vars)
     bwriteln(out, depth, ty_to_c(v_ty) + " " + name + " = " + init + ";")
-    vars.push(VarInfo { name, ty: v_ty })
-    return vars
+    next_vars = ctx.vars
+    next_vars.push(VarInfo { name, ty: v_ty })
+    next_heap = ctx.heap
+    if is_heap(v_ty) {
+        next_heap.push(name)
+    }
+    return StmtCtx { vars: next_vars, heap: next_heap, unused: ctx.unused, ret_ty: ctx.ret_ty }
 }
 
 // let_decl_ty picks the declaration type: the annotation wins when present
@@ -130,26 +206,129 @@ fn let_decl_ty(ty_opt Option[TypeNode], value Expr, vars []VarInfo) -> Type {
     return infer_type(value, vars)
 }
 
-// [РЕШЕНИЕ]: plain `return <expr>;`. Go emitReturnStmt materialises the
-// value into a temp BEFORE scope cleanup and applies move/retain rules;
-// without ARC (stage 6) there is no cleanup to order against, so the
-// expression is returned in place.
-fn emit_return_stmt(v_opt Option[Expr], vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+// [РЕШЕНИЕ] ARC: every live heap local is released before the return,
+// EXCEPT the returned ident itself — `return s;` moves the value to the
+// caller, releasing it would be a UAF (Go move semantics). A complex
+// expression does not move a local, so all locals are released; when one
+// is live the expression is materialised into a temp BEFORE the releases
+// (Go emitReturnStmt _dot_ret_N): the expression may read locals, so it
+// must be evaluated while they are alive. The temp type is the expression
+// type, falling back to the fn's declared return type (ctx.ret_ty) for
+// Unknown-typed expressions like calls. The heap list is empty after a
+// return — every local is released or moved away.
+// NOTE (D53): all value plumbing lives in emit_return_expr because a plain
+// `x = ...` reassignment inside the if-let block would SHADOW the outer
+// local; here every assignment is at fn top level.
+fn emit_return_stmt(v_opt Option[Expr], ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     if v = v_opt {
-        bwriteln(out, depth, "return " + emit_expr(v, vars) + ";")
-    } else {
-        bwriteln(out, depth, "return;")
+        return emit_return_expr(v, ctx, out, depth)
     }
-    return vars
+    emit_return_releases(ctx.heap, "", out, depth)
+    bwriteln(out, depth, "return;")
+    return StmtCtx { vars: ctx.vars, heap: []string{}, unused: ctx.unused, ret_ty: ctx.ret_ty }
+}
+
+fn emit_return_expr(v Expr, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
+    ret_expr = emit_expr(v, ctx.vars)
+    ret_ty = infer_type(v, ctx.vars)
+    ret_is_ident = is_ident_expr(v)
+    skip = if ret_is_ident { ident_name_of(v) } else { "" }
+    temp_ty = if is_unknown_ty(ret_ty) or is_void_ty(ret_ty) { ctx.ret_ty } else { ret_ty }
+    if ctx.heap.len > 0 and not ret_is_ident and not is_unknown_ty(temp_ty) and not is_void_ty(temp_ty) {
+        tmp = "_dot_ret_" + int_to_str(ctx.unused)
+        bwriteln(out, depth, ty_to_c(temp_ty) + " " + tmp + " = " + ret_expr + ";")
+        emit_return_releases(ctx.heap, "", out, depth)
+        bwriteln(out, depth, "return " + tmp + ";")
+        return StmtCtx { vars: ctx.vars, heap: []string{}, unused: ctx.unused + 1, ret_ty: ctx.ret_ty }
+    }
+    emit_return_releases(ctx.heap, skip, out, depth)
+    bwriteln(out, depth, "return " + ret_expr + ";")
+    return StmtCtx { vars: ctx.vars, heap: []string{}, unused: ctx.unused, ret_ty: ctx.ret_ty }
+}
+
+// emit_return_releases emits dot_release for every live heap local except
+// skip, deepest first. A name appearing at several levels (D53 shadow) is
+// released once: at the return point the C name resolves to the deepest
+// declaration, so outer copies of a released name must be skipped and all
+// copies of the returned name are moved (Go emitReturnStmt shadowed rule).
+fn emit_return_releases(heap []string, skip string, out CBuilder, depth int) {
+    seen = []string{}
+    i = heap.len
+    for i > 0 {
+        i -= 1
+        name = heap[i]
+        if not str_eq(name, skip) and not names_has(seen, name) {
+            bwriteln(out, depth, "dot_release(" + name + ");")
+            seen.push(name)
+        }
+    }
+}
+
+fn names_has(names []string, name string) -> bool {
+    i = 0
+    for i < names.len {
+        if str_eq(names[i], name) {
+            return true
+        }
+        i += 1
+    }
+    return false
+}
+
+fn is_ident_expr(e Expr) -> bool {
+    return match e {
+        Expr.Ident(_, _) => true
+        _ => false
+    }
+}
+
+fn ident_name_of(e Expr) -> string {
+    return match e {
+        Expr.Ident(name, _) => name
+        _ => ""
+    }
 }
 
 // emit_block renders a brace block with +1 depth. Nested declarations are
-// folded into vars (never removed — see header).
-fn emit_block(stmts []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+// folded into vars (never removed — see header); the heap names the block
+// itself appended are released before the closing brace in reverse
+// declaration order (Go emitBlockStmt scope cleanup). A block whose body
+// ended in a return already released every live local (its heap list is
+// empty), so the cleanup is a no-op there.
+fn emit_block(stmts []Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     bwriteln(out, depth, "{{")
-    inner_vars = emit_stmts(stmts, vars, out, depth + 1)
+    entry = ctx.heap.len
+    inner = emit_stmts_ctx(stmts, 0, ctx, out, depth + 1)
+    heap_out = pop_block_heap(inner.heap, entry, out, depth + 1)
     bwriteln(out, depth, "}}")
-    return inner_vars
+    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty }
+}
+
+// pop_block_heap releases heap[start..] (the names the current block
+// appended) in reverse order, deduped by name, and returns the popped list
+// heap[0..start]. When the list is shorter than start, the body ended in a
+// return that released every live local already: nothing to emit, and
+// nothing is live after an unconditional return (the code that follows is
+// dead), so [] is returned.
+fn pop_block_heap(heap []string, start int, out CBuilder, depth int) -> []string {
+    if heap.len < start {
+        return []string{}
+    }
+    emit_heap_releases_from(heap, start, out, depth)
+    return heap[0..start]
+}
+
+fn emit_heap_releases_from(heap []string, start int, out CBuilder, depth int) {
+    seen = []string{}
+    i = heap.len
+    for i > start {
+        i -= 1
+        name = heap[i]
+        if not names_has(seen, name) {
+            bwriteln(out, depth, "dot_release(" + name + ");")
+            seen.push(name)
+        }
+    }
 }
 
 // --- Stage 4b: While / For / Break / Continue ---
@@ -157,34 +336,38 @@ fn emit_block(stmts []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInf
 // emit_while_stmt renders `while (<cond>) { <body> }` (Go emitForStmt Kind
 // ForCond). ast.dot has a dedicated Stmt.While because the self-hosted
 // parser folds `for cond {...}` into it (parser.dot parse_for_stmt).
-fn emit_while_stmt(condition Expr, body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
-    cond = emit_expr(condition, vars)
+fn emit_while_stmt(condition Expr, body []Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
+    cond = emit_expr(condition, ctx.vars)
     bwriteln(out, depth, "while (" + cond + ") {{")
-    inner_vars = emit_stmts(body, vars, out, depth + 1)
+    entry = ctx.heap.len
+    inner = emit_stmts_ctx(body, 0, ctx, out, depth + 1)
+    heap_out = pop_block_heap(inner.heap, entry, out, depth + 1)
     bwriteln(out, depth, "}}")
-    return inner_vars
+    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty }
 }
 
 // emit_for_stmt dispatches the two For shapes the self-hosted parser
 // builds: Pattern.CatchAll is the infinite loop `for {}` (parse_for_stmt
 // writes CatchAll + BoolLit(true)), Pattern.Ident is `for name in iterable`.
-fn emit_for_stmt(pattern Pattern, iterable Expr, body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+fn emit_for_stmt(pattern Pattern, iterable Expr, body []Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     match pattern {
-        Pattern.CatchAll => { return emit_for_infinite(body, vars, out, depth) }
-        Pattern.Ident(name) => { return emit_for_in(name, iterable, body, vars, out, depth) }
+        Pattern.CatchAll => { return emit_for_infinite(body, ctx, out, depth) }
+        Pattern.Ident(name) => { return emit_for_in(name, iterable, body, ctx, out, depth) }
         _ => {}
     }
     bwriteln(out, depth, "/* <TODO 4b: for with unsupported pattern> */")
-    return vars
+    return ctx
 }
 
 // emit_for_infinite renders `for (;;) { <body> }` (Go emitForStmt Kind
 // ForInfinite).
-fn emit_for_infinite(body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+fn emit_for_infinite(body []Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     bwriteln(out, depth, "for (;;) {{")
-    inner_vars = emit_stmts(body, vars, out, depth + 1)
+    entry = ctx.heap.len
+    inner = emit_stmts_ctx(body, 0, ctx, out, depth + 1)
+    heap_out = pop_block_heap(inner.heap, entry, out, depth + 1)
     bwriteln(out, depth, "}}")
-    return inner_vars
+    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty }
 }
 
 // emit_for_in picks the for-in form from the iterable: a Binary with
@@ -193,19 +376,19 @@ fn emit_for_infinite(body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []
 // have no iterator runtime helper ([РЕШЕНИЕ]: dot_iter_slice takes
 // DotSlice* only and DotString* has a different layout) — the stdlib never
 // iterates strings, so the TODO covers it.
-fn emit_for_in(name string, iterable Expr, body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+fn emit_for_in(name string, iterable Expr, body []Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     if for_is_range_expr(iterable) {
-        return emit_for_range(name, iterable, body, vars, out, depth)
+        return emit_for_range(name, iterable, body, ctx, out, depth)
     }
-    iter_ty = infer_type(iterable, vars)
+    iter_ty = infer_type(iterable, ctx.vars)
     match iter_ty {
-        Type.Slice(_) => { return emit_for_iter(name, iterable, iter_ty, body, vars, out, depth) }
-        Type.Array(_) => { return emit_for_iter(name, iterable, iter_ty, body, vars, out, depth) }
-        Type.Map(_, _) => { return emit_for_map(name, iterable, iter_ty, body, vars, out, depth) }
+        Type.Slice(_) => { return emit_for_iter(name, iterable, iter_ty, body, ctx, out, depth) }
+        Type.Array(_) => { return emit_for_iter(name, iterable, iter_ty, body, ctx, out, depth) }
+        Type.Map(_, _) => { return emit_for_map(name, iterable, iter_ty, body, ctx, out, depth) }
         _ => {}
     }
     bwriteln(out, depth, "/* <TODO 4b: for-in over unsupported iterable> */")
-    return vars
+    return ctx
 }
 
 // emit_for_range renders `for x in lo..hi` (DotDot) / `lo..=hi` (DotDotEq)
@@ -213,16 +396,18 @@ fn emit_for_in(name string, iterable Expr, body []Stmt, vars []VarInfo, out CBui
 // loop variable is a fresh declaration per iteration, so reassigning it in
 // the body does not affect iteration (D63). Counter names embed depth, so
 // nested and sibling loops cannot collide in C scope.
-fn emit_for_range(name string, range_e Expr, body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
-    parts = for_range_parts(range_e, vars)
+fn emit_for_range(name string, range_e Expr, body []Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
+    parts = for_range_parts(range_e, ctx.vars)
     counter = "_dot_range_" + int_to_str(depth)
     bwriteln(out, depth, "for (int64_t " + counter + " = " + parts[0] + "; " + counter + " " + parts[1] + " " + parts[2] + "; " + counter + "++) {{")
     bwriteln(out, depth + 1, "int64_t " + name + " = " + counter + ";")
-    inner_vars = vars
+    entry = ctx.heap.len
+    inner_vars = ctx.vars
     inner_vars.push(VarInfo { name, ty: Type.Int })
-    inner = emit_stmts(body, inner_vars, out, depth + 1)
+    inner = emit_stmts_ctx(body, 0, StmtCtx { vars: inner_vars, heap: ctx.heap, unused: ctx.unused, ret_ty: ctx.ret_ty }, out, depth + 1)
+    heap_out = pop_block_heap(inner.heap, entry, out, depth + 1)
     bwriteln(out, depth, "}}")
-    return inner
+    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty }
 }
 
 // for_range_parts extracts [lo, cmp, hi] from the DotDot binary. cmp is
@@ -282,22 +467,28 @@ fn for_is_inclusive_op(op TokenType) -> bool {
 // [РЕШЕНИЕ] struct elements are NOT boxed on this MVP (no dot_box on
 // slice stores yet — see emit_array_lit), so the Go dot_box_payload
 // dereference branch is not needed; every element is a plain cast.
-fn emit_for_iter(name string, iterable Expr, iter_ty Type, body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+fn emit_for_iter(name string, iterable Expr, iter_ty Type, body []Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     elem = for_elem_ty(iter_ty)
     it = "_dot_it_" + int_to_str(depth)
     iv = "_dot_iv_" + int_to_str(depth)
-    src = emit_expr(iterable, vars)
+    src = emit_expr(iterable, ctx.vars)
     bwriteln(out, depth, "{{")
     bwriteln(out, depth + 1, "DotIter " + it + " = dot_iter_slice(" + src + ");")
     bwriteln(out, depth + 1, "DotAny " + iv + " = NULL;")
     bwriteln(out, depth + 1, "while (dot_iter_next(&" + it + ", NULL, &" + iv + ")) {{")
     bwriteln(out, depth + 2, ty_to_c(elem) + " " + name + " = (" + ty_to_c(elem) + ")" + iv + ";")
-    inner_vars = vars
+    // [РЕШЕНИЕ] ARC: the loop variable is a BORROW of the iterator's DotAny
+    // slot (Go registers it in vars but never in scopeVars), so it joins
+    // vars only — releasing it would release the element's slot. The body's
+    // own Lets are released before the while brace closes.
+    entry = ctx.heap.len
+    inner_vars = ctx.vars
     inner_vars.push(VarInfo { name, ty: elem })
-    inner = emit_stmts(body, inner_vars, out, depth + 2)
+    inner = emit_stmts_ctx(body, 0, StmtCtx { vars: inner_vars, heap: ctx.heap, unused: ctx.unused, ret_ty: ctx.ret_ty }, out, depth + 2)
+    heap_out = pop_block_heap(inner.heap, entry, out, depth + 2)
     bwriteln(out, depth + 1, "}}")
     bwriteln(out, depth, "}}")
-    return inner
+    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty }
 }
 
 // emit_for_map renders `for k, v in m` as a map iterator loop. ast.dot has
@@ -306,22 +497,27 @@ fn emit_for_iter(name string, iterable Expr, iter_ty Type, body []Stmt, vars []V
 // ([РЕШЕНИЕ]: Go's single-variable form would bind the value, but the AST
 // cannot tell the two spellings apart). The value lands in the DotAny slot
 // and is discarded.
-fn emit_for_map(name string, iterable Expr, iter_ty Type, body []Stmt, vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+fn emit_for_map(name string, iterable Expr, iter_ty Type, body []Stmt, ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     key_ty = for_map_key_ty(iter_ty)
     it = "_dot_it_" + int_to_str(depth)
     iv = "_dot_iv_" + int_to_str(depth)
-    src = emit_expr(iterable, vars)
+    src = emit_expr(iterable, ctx.vars)
     bwriteln(out, depth, "{{")
     bwriteln(out, depth + 1, "DotIter " + it + " = dot_iter_map(" + src + ");")
     bwriteln(out, depth + 1, ty_to_c(key_ty) + " " + name + " = " + zero_c_value(key_ty) + ";")
     bwriteln(out, depth + 1, "DotAny " + iv + " = NULL;")
     bwriteln(out, depth + 1, "while (dot_iter_next(&" + it + ", &" + name + ", &" + iv + ")) {{")
-    inner_vars = vars
+    // The key slot is written by dot_iter_next (borrowed, never released —
+    // see emit_for_iter); only the body's own Lets are released per
+    // iteration.
+    entry = ctx.heap.len
+    inner_vars = ctx.vars
     inner_vars.push(VarInfo { name, ty: key_ty })
-    inner = emit_stmts(body, inner_vars, out, depth + 2)
+    inner = emit_stmts_ctx(body, 0, StmtCtx { vars: inner_vars, heap: ctx.heap, unused: ctx.unused, ret_ty: ctx.ret_ty }, out, depth + 2)
+    heap_out = pop_block_heap(inner.heap, entry, out, depth + 2)
     bwriteln(out, depth + 1, "}}")
     bwriteln(out, depth, "}}")
-    return inner
+    return StmtCtx { vars: inner.vars, heap: heap_out, unused: inner.unused, ret_ty: ctx.ret_ty }
 }
 
 fn for_elem_ty(t Type) -> Type {
@@ -353,15 +549,15 @@ fn for_first_ty(es []Type) -> Type {
 // stores nothing), so there is no C label a labeled break could goto —
 // plain break is the only sound form ([РЕШЕНИЕ]; revisit if labels ever
 // land in ast.dot).
-fn emit_break_stmt(label_opt Option[string], vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+fn emit_break_stmt(label_opt Option[string], ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     bwriteln(out, depth, "break;")
-    return vars
+    return ctx
 }
 
 // emit_continue_stmt renders `continue;`, labels ignored like break above.
-fn emit_continue_stmt(label_opt Option[string], vars []VarInfo, out CBuilder, depth int) -> []VarInfo {
+fn emit_continue_stmt(label_opt Option[string], ctx StmtCtx, out CBuilder, depth int) -> StmtCtx {
     bwriteln(out, depth, "continue;")
-    return vars
+    return ctx
 }
 
 // tynode_to_ty maps an AST TypeNode to the checker Type the annotation

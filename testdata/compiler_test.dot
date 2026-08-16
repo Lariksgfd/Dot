@@ -2303,4 +2303,159 @@ pub fn main() {
     } else {
         print("ERR: compile_to_c type err empty: " + c277)
     }
+
+    // --- ARC (T-051, stage 6a: heap releases) ---
+
+    b278 = new_builder()
+    body278 = []Stmt{}
+    body278.push(Stmt.Let("s", None, mks("hi"), false, s0()))
+    body278.push(Stmt.Return(Some(mki(1)), s0()))
+    d278 = Decl.Fn("f", []Param{}, []string{}, Some(tn("int")), body278, s0())
+    emit_fn_def(d278, b278, 0)
+    c278 = bfinish(b278)
+    if str_eq(c278, "int64_t Dot_f() {{\n    DotString* s = dot_string_from_lit(\"hi\", 2);\n    int64_t _dot_ret_0 = 1;\n    dot_release(s);\n    return _dot_ret_0;\n}}\n\n") {
+        print("OK: arc ret int releases string")
+    } else {
+        print("ERR: arc ret int releases string: " + c278)
+    }
+
+    b279 = new_builder()
+    body279 = []Stmt{}
+    body279.push(Stmt.Let("s", None, mks("hi"), false, s0()))
+    body279.push(Stmt.Return(Some(mkbin(mkid("s"), TokenType.Plus, mks("!"))), s0()))
+    d279 = Decl.Fn("f", []Param{}, []string{}, Some(tn("string")), body279, s0())
+    emit_fn_def(d279, b279, 0)
+    c279 = bfinish(b279)
+    if str_eq(c279, "DotString* Dot_f() {{\n    DotString* s = dot_string_from_lit(\"hi\", 2);\n    DotString* _dot_ret_0 = dot_string_concat(s, dot_string_from_lit(\"!\", 1));\n    dot_release(s);\n    return _dot_ret_0;\n}}\n\n") {
+        print("OK: arc ret complex temp")
+    } else {
+        print("ERR: arc ret complex temp: " + c279)
+    }
+
+    b280 = new_builder()
+    body280 = []Stmt{}
+    body280.push(Stmt.Let("s", None, mks("hi"), false, s0()))
+    body280.push(Stmt.Return(Some(mkid("s")), s0()))
+    d280 = Decl.Fn("f", []Param{}, []string{}, Some(tn("string")), body280, s0())
+    emit_fn_def(d280, b280, 0)
+    c280 = bfinish(b280)
+    if str_eq(c280, "DotString* Dot_f() {{\n    DotString* s = dot_string_from_lit(\"hi\", 2);\n    return s;\n}}\n\n") {
+        print("OK: arc ret heap move")
+    } else {
+        print("ERR: arc ret heap move: " + c280)
+    }
+
+    b281 = new_builder()
+    body281 = []Stmt{}
+    body281.push(Stmt.Let("s", None, mks("hi"), false, s0()))
+    body281.push(Stmt.Return(None, s0()))
+    d281 = Decl.Fn("f", []Param{}, []string{}, None, body281, s0())
+    emit_fn_def(d281, b281, 0)
+    c281 = bfinish(b281)
+    if str_eq(c281, "void Dot_f() {{\n    DotString* s = dot_string_from_lit(\"hi\", 2);\n    dot_release(s);\n    return;\n}}\n\n") {
+        print("OK: arc void ret release")
+    } else {
+        print("ERR: arc void ret release: " + c281)
+    }
+
+    b282 = new_builder()
+    blk282 = []Stmt{}
+    blk282.push(Stmt.Let("t", None, mks("in"), false, s0()))
+    body282 = []Stmt{}
+    body282.push(Stmt.Let("s", None, mks("out"), false, s0()))
+    body282.push(Stmt.Block(blk282, s0()))
+    body282.push(Stmt.Return(Some(mki(1)), s0()))
+    d282 = Decl.Fn("f", []Param{}, []string{}, Some(tn("int")), body282, s0())
+    emit_fn_def(d282, b282, 0)
+    c282 = bfinish(b282)
+    if str_eq(c282, "int64_t Dot_f() {{\n    DotString* s = dot_string_from_lit(\"out\", 3);\n    {{\n        DotString* t = dot_string_from_lit(\"in\", 2);\n        dot_release(t);\n    }}\n    int64_t _dot_ret_0 = 1;\n    dot_release(s);\n    return _dot_ret_0;\n}}\n\n") {
+        print("OK: arc block release scope")
+    } else {
+        print("ERR: arc block release scope: " + c282)
+    }
+
+    b283 = new_builder()
+    body283 = []Stmt{}
+    body283.push(Stmt.Let("t", None, mks("in"), false, s0()))
+    emit_stmt(Stmt.While(mkb(true), body283, s0()), []VarInfo{}, b283, 0)
+    c283 = bfinish(b283)
+    if str_eq(c283, "while (true) {{\n    DotString* t = dot_string_from_lit(\"in\", 2);\n    dot_release(t);\n}}\n") {
+        print("OK: arc while body release")
+    } else {
+        print("ERR: arc while body release: " + c283)
+    }
+
+    b284 = new_builder()
+    stmts284 = []Stmt{}
+    stmts284.push(Stmt.Let("s", None, mks("a"), false, s0()))
+    stmts284.push(Stmt.ExprStmt(Expr.Assign([mkid("s")], TokenType.Assign, [mks("b")], s0()), s0()))
+    emit_stmts(stmts284, []VarInfo{}, b284, 0)
+    c284 = bfinish(b284)
+    if str_eq(c284, "DotString* s = dot_string_from_lit(\"a\", 1);\ndot_release(s);\ns = dot_string_from_lit(\"b\", 1);\n") {
+        print("OK: arc reassign release")
+    } else {
+        print("ERR: arc reassign release: " + c284)
+    }
+
+    b285 = new_builder()
+    stmts285 = []Stmt{}
+    stmts285.push(Stmt.Let("s", None, mks("a"), false, s0()))
+    stmts285.push(Stmt.ExprStmt(Expr.Assign([mkid("s")], TokenType.PlusAssign, [mks("!")], s0()), s0()))
+    emit_stmts(stmts285, []VarInfo{}, b285, 0)
+    c285 = bfinish(b285)
+    if str_eq(c285, "DotString* s = dot_string_from_lit(\"a\", 1);\ns += dot_string_from_lit(\"!\", 1);\n") {
+        print("OK: arc compound no release")
+    } else {
+        print("ERR: arc compound no release: " + c285)
+    }
+
+    b286 = new_builder()
+    blk286 = []Stmt{}
+    blk286.push(Stmt.Let("a", None, mks("1"), false, s0()))
+    blk286.push(Stmt.Let("b", None, mks("2"), false, s0()))
+    emit_stmt(Stmt.Block(blk286, s0()), []VarInfo{}, b286, 0)
+    c286 = bfinish(b286)
+    if str_eq(c286, "{{\n    DotString* a = dot_string_from_lit(\"1\", 1);\n    DotString* b = dot_string_from_lit(\"2\", 1);\n    dot_release(b);\n    dot_release(a);\n}}\n") {
+        print("OK: arc block reverse release")
+    } else {
+        print("ERR: arc block reverse release: " + c286)
+    }
+
+    b287 = new_builder()
+    stmts287 = []Stmt{}
+    stmts287.push(Stmt.Let("s", None, mks("a"), false, s0()))
+    stmts287.push(Stmt.ExprStmt(Expr.Assign([mkid("s")], TokenType.Assign, [mkid("s")], s0()), s0()))
+    emit_stmts(stmts287, []VarInfo{}, b287, 0)
+    c287 = bfinish(b287)
+    if str_eq(c287, "DotString* s = dot_string_from_lit(\"a\", 1);\ns = s;\n") {
+        print("OK: arc self assign no release")
+    } else {
+        print("ERR: arc self assign no release: " + c287)
+    }
+
+    b288 = new_builder()
+    body288 = []Stmt{}
+    body288.push(Stmt.Let("s", None, mks("hi"), false, s0()))
+    body288.push(Stmt.ExprStmt(mkid("s"), s0()))
+    d288 = Decl.Fn("f", []Param{}, []string{}, Some(tn("string")), body288, s0())
+    emit_fn_def(d288, b288, 0)
+    c288 = bfinish(b288)
+    if str_eq(c288, "DotString* Dot_f() {{\n    DotString* s = dot_string_from_lit(\"hi\", 2);\n    DotString* _dot_ret_tail_1 = s;\n    return _dot_ret_tail_1;\n}}\n\n") {
+        print("OK: arc tail ident move")
+    } else {
+        print("ERR: arc tail ident move: " + c288)
+    }
+
+    b289 = new_builder()
+    body289 = []Stmt{}
+    body289.push(Stmt.Let("s", None, mks("hi"), false, s0()))
+    body289.push(Stmt.ExprStmt(mkbin(mkid("s"), TokenType.Plus, mks("!")), s0()))
+    d289 = Decl.Fn("f", []Param{}, []string{}, Some(tn("string")), body289, s0())
+    emit_fn_def(d289, b289, 0)
+    c289 = bfinish(b289)
+    if str_eq(c289, "DotString* Dot_f() {{\n    DotString* s = dot_string_from_lit(\"hi\", 2);\n    DotString* _dot_ret_tail_1 = dot_string_concat(s, dot_string_from_lit(\"!\", 1));\n    dot_release(s);\n    return _dot_ret_tail_1;\n}}\n\n") {
+        print("OK: arc tail complex temp")
+    } else {
+        print("ERR: arc tail complex temp: " + c289)
+    }
 }

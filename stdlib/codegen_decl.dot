@@ -221,44 +221,56 @@ fn emit_impl_def_from(target TypeNode, methods []Decl, out CBuilder, depth int) 
 // variables, not just parameters (bug c262). Everything else is emitted
 // statement by statement; an empty body renders as an empty C block.
 fn emit_fn_body(body []Stmt, ret_ty Option[TypeNode], vars []VarInfo, out CBuilder, depth int) {
+    r_ty = fn_ret_ty(ret_ty)
+    ctx0 = StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: r_ty }
     if body.len == 0 {
-        emit_stmts(body, vars, out, depth)
+        emit_stmts_ctx(body, 0, ctx0, out, depth)
         return
     }
-    r_ty = fn_ret_ty(ret_ty)
     if is_bad_ret_ty(r_ty) {
-        emit_stmts(body, vars, out, depth)
+        // [РЕШЕНИЕ] ARC: void fns (and bad ret types) release their body's
+        // heap locals at the closing brace; a trailing return already
+        // released everything (heap is empty), so the cleanup is a no-op.
+        inner = emit_stmts_ctx(body, 0, ctx0, out, depth)
+        pop_block_heap(inner.heap, 0, out, depth)
         return
     }
     // init = all but the last statement, emitted with vars accumulation
     // (emit_stmts threads Let bindings through); the tail then sees them.
-    init_vars = emit_stmts(body[0..body.len - 1], vars, out, depth)
-    if fn_body_tail(body[body.len - 1], init_vars, out, depth) {
+    init = emit_stmts_ctx(body[0..body.len - 1], 0, ctx0, out, depth)
+    if fn_body_tail(body[body.len - 1], init, out, depth) {
         return
     }
-    emit_stmt(body[body.len - 1], init_vars, out, depth)
+    last = emit_stmt_ctx(body[body.len - 1], init, out, depth)
+    pop_block_heap(last.heap, 0, out, depth)
 }
 
 // fn_body_tail materialises one trailing ExprStmt into a `_dot_ret_tail_N`
 // temp plus a return. Assignments and void/unknown-typed expressions are
 // NOT tails: Go keeps AssignStmt a statement (emitBodyStmts only matches
 // ast.ExprStmt), and a void call (print) or untyped expr has no value to
-// return.
-fn fn_body_tail(last Stmt, vars []VarInfo, out CBuilder, depth int) -> bool {
+// return. The value lands in the temp BEFORE the scope releases run, so it
+// may read locals safely; a tail that is a bare ident moves that local
+// (its release is skipped), like emit_return_stmt.
+fn fn_body_tail(last Stmt, ctx StmtCtx, out CBuilder, depth int) -> bool {
     match last {
         Stmt.ExprStmt(e, _) => {
             if is_assign_expr(e) {
                 return false
             }
-            vt = infer_type(e, vars)
+            vt = infer_type(e, ctx.vars)
             if is_unknown_ty(vt) or is_void_ty(vt) {
                 return false
             }
+            // [РЕШЕНИЕ] if-EXPRESSION, not an if statement + assignment: a
+            // plain `skip = ...` inside an if block would shadow (D53).
+            skip = if is_ident_expr(e) { ident_name_of(e) } else { "" }
             // [РЕШЕНИЕ] temp name embeds depth instead of Go's global
             // unusedIdx counter: two tail temps can never share one C scope
             // (one tail per fn body), and depth keeps them unique there.
             tmp = "_dot_ret_tail_" + int_to_str(depth)
-            bwriteln(out, depth, ty_to_c(vt) + " " + tmp + " = " + emit_expr(e, vars) + ";")
+            bwriteln(out, depth, ty_to_c(vt) + " " + tmp + " = " + emit_expr(e, ctx.vars) + ";")
+            emit_return_releases(ctx.heap, skip, out, depth)
             bwriteln(out, depth, "return " + tmp + ";")
             return true
         }

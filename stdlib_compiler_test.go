@@ -295,6 +295,18 @@ func TestStdlibCompiler(t *testing.T) {
 			"OK: compile_to_c hello matches driver",
 			"OK: compile_to_c syntax err empty",
 			"OK: compile_to_c type err empty",
+			"OK: arc ret int releases string",
+			"OK: arc ret complex temp",
+			"OK: arc ret heap move",
+			"OK: arc void ret release",
+			"OK: arc block release scope",
+			"OK: arc while body release",
+			"OK: arc reassign release",
+			"OK: arc compound no release",
+			"OK: arc block reverse release",
+			"OK: arc self assign no release",
+			"OK: arc tail ident move",
+			"OK: arc tail complex temp",
 		} {
 				if !strings.Contains(out, want) {
 					t.Errorf("expected %q in output, got: %s", want, out)
