@@ -1195,7 +1195,7 @@ pub fn main() {
         print("ERR: emit if no else: " + c160)
     }
 
-    c161 = emit_expr(Expr.Call([mkid("f")], []Expr{}, s0()), []VarInfo{})
+    c161 = emit_expr(Expr.Call([mki(1)], []Expr{}, s0()), []VarInfo{})
     if str_eq(c161, "<TODO>") {
         print("OK: emit call todo")
     } else {
@@ -1287,5 +1287,212 @@ pub fn main() {
         print("OK: infer known ident")
     } else {
         print("ERR: infer known ident")
+    }
+
+    // --- codegen_expr (T-051, stage 3b: Call/Index/Slice/Field) ---
+
+    c176 = emit_expr(Expr.Call([mkid("f")], [mki(1), mki(2)], s0()), []VarInfo{})
+    if str_eq(c176, "Dot_f(1, 2)") {
+        print("OK: emit call two args")
+    } else {
+        print("ERR: emit call two args: " + c176)
+    }
+
+    c177 = emit_expr(Expr.Call([mkid("f")], []Expr{}, s0()), []VarInfo{})
+    if str_eq(c177, "Dot_f()") {
+        print("OK: emit call no args")
+    } else {
+        print("ERR: emit call no args: " + c177)
+    }
+
+    c178 = emit_expr(Expr.Call([mkid("f")], [Expr.Call([mkid("g")], [mki(1)], s0())], s0()), []VarInfo{})
+    if str_eq(c178, "Dot_f(Dot_g(1))") {
+        print("OK: emit call nested")
+    } else {
+        print("ERR: emit call nested: " + c178)
+    }
+
+    c179 = emit_expr(Expr.Call([mkid("print")], [mki(42)], s0()), []VarInfo{})
+    if str_eq(c179, "dot_print(dot_slice_pack(1, (DotAny[]){{(DotAny)(intptr_t)(42)}}))") {
+        print("OK: emit print pack int")
+    } else {
+        print("ERR: emit print pack int: " + c179)
+    }
+
+    c180 = emit_expr(Expr.Call([mkid("println")], [mks("a"), mks("b")], s0()), []VarInfo{})
+    if str_eq(c180, "dot_println(dot_slice_pack(2, (DotAny[]){{dot_string_from_lit(\"a\", 1), dot_string_from_lit(\"b\", 1)}}))") {
+        print("OK: emit println pack strings")
+    } else {
+        print("ERR: emit println pack strings: " + c180)
+    }
+
+    c181 = emit_expr(Expr.Call([mkid("eprint")], [mkf(3.14)], s0()), []VarInfo{})
+    if str_eq(c181, "dot_eprint(dot_slice_pack(1, (DotAny[]){{(DotAny)(intptr_t)(3.14)}}))") {
+        print("OK: emit eprint pack float")
+    } else {
+        print("ERR: emit eprint pack float: " + c181)
+    }
+
+    c182 = emit_expr(Expr.Call([mkid("print")], []Expr{}, s0()), []VarInfo{})
+    if str_eq(c182, "dot_print(dot_slice_pack(0, (DotAny[]){{}}))") {
+        print("OK: emit print no args")
+    } else {
+        print("ERR: emit print no args: " + c182)
+    }
+
+    c183 = emit_expr(Expr.Call([mkid("len")], [mkid("x")], s0()), []VarInfo{})
+    if str_eq(c183, "dot_len(x)") {
+        print("OK: emit len call")
+    } else {
+        print("ERR: emit len call: " + c183)
+    }
+
+    c184 = emit_expr(Expr.Call([mkid("len")], []Expr{}, s0()), []VarInfo{})
+    if str_eq(c184, "dot_len(0)") {
+        print("OK: emit len no args")
+    } else {
+        print("ERR: emit len no args: " + c184)
+    }
+
+    c185 = emit_expr(Expr.Call([mkid("panic")], [mks("msg")], s0()), []VarInfo{})
+    if str_eq(c185, "dot_panic(dot_string_from_lit(\"msg\", 3))") {
+        print("OK: emit panic call")
+    } else {
+        print("ERR: emit panic call: " + c185)
+    }
+
+    c186 = emit_expr(Expr.Call([mkid("input")], []Expr{}, s0()), []VarInfo{})
+    if str_eq(c186, "dot_input(NULL)") {
+        print("OK: emit input no args")
+    } else {
+        print("ERR: emit input no args: " + c186)
+    }
+
+    c187 = emit_expr(Expr.Call([mkid("type_of")], [mkid("x")], s0()), []VarInfo{})
+    if str_eq(c187, "dot_typeof(x)") {
+        print("OK: emit type_of call")
+    } else {
+        print("ERR: emit type_of call: " + c187)
+    }
+
+    vars_a = []VarInfo{}
+    vars_a.push(VarInfo { name: "a", ty: Type.Slice(elem: []Type{Type.Int}) })
+    c188 = emit_expr(Expr.Index([mkid("a")], [mkid("i")], s0()), vars_a)
+    if str_eq(c188, "((int64_t)(intptr_t)dot_slice_get(a, i))") {
+        print("OK: emit index slice")
+    } else {
+        print("ERR: emit index slice: " + c188)
+    }
+
+    vars_s = []VarInfo{}
+    vars_s.push(VarInfo { name: "s", ty: Type.String })
+    c189 = emit_expr(Expr.Index([mkid("s")], [mkid("i")], s0()), vars_s)
+    if str_eq(c189, "((DotString*)s)->data[i]") {
+        print("OK: emit index string")
+    } else {
+        print("ERR: emit index string: " + c189)
+    }
+
+    vars_sl = []VarInfo{}
+    vars_sl.push(VarInfo { name: "s", ty: Type.Slice(elem: []Type{Type.Int}) })
+    c190 = emit_expr(Expr.Index([mkid("s")], [mkbin(mki(1), TokenType.DotDot, mki(3))], s0()), vars_sl)
+    if str_eq(c190, "dot_slice_sub(s, 1, 3, false)") {
+        print("OK: emit slice range")
+    } else {
+        print("ERR: emit slice range: " + c190)
+    }
+
+    c191 = emit_expr(Expr.Index([mkid("s")], [mkbin(mki(1), TokenType.DotDotEq, mki(3))], s0()), vars_sl)
+    if str_eq(c191, "dot_slice_sub(s, 1, 3, true)") {
+        print("OK: emit slice inclusive")
+    } else {
+        print("ERR: emit slice inclusive: " + c191)
+    }
+
+    c192 = emit_expr(Expr.Index([mks("abc")], [mkbin(mki(0), TokenType.DotDot, mki(2))], s0()), []VarInfo{})
+    if str_eq(c192, "dot_string_from_bytes(dot_slice_sub(dot_string_to_bytes(dot_string_from_lit(\"abc\", 3)), 0, 2, false))") {
+        print("OK: emit slice string")
+    } else {
+        print("ERR: emit slice string: " + c192)
+    }
+
+    vars_p = []VarInfo{}
+    vars_p.push(VarInfo { name: "p", ty: Type.Struct(name: "Point") })
+    c193 = emit_expr(Expr.Field([mkid("p")], "x", s0()), vars_p)
+    if str_eq(c193, "p->dot_x") {
+        print("OK: emit field struct")
+    } else {
+        print("ERR: emit field struct: " + c193)
+    }
+
+    c194 = emit_expr(Expr.Field([mkid("s")], "len", s0()), vars_s)
+    if str_eq(c194, "((DotString*)s)->len") {
+        print("OK: emit field str len")
+    } else {
+        print("ERR: emit field str len: " + c194)
+    }
+
+    vars_v = []VarInfo{}
+    vars_v.push(VarInfo { name: "v", ty: Type.Slice(elem: []Type{Type.Int}) })
+    c195 = emit_expr(Expr.Field([mkid("v")], "len", s0()), vars_v)
+    if str_eq(c195, "dot_slice_len(v)") {
+        print("OK: emit field slice len")
+    } else {
+        print("ERR: emit field slice len: " + c195)
+    }
+
+    c196 = emit_expr(Expr.Field([mkid("v")], "cap", s0()), vars_v)
+    if str_eq(c196, "dot_slice_cap(v)") {
+        print("OK: emit field slice cap")
+    } else {
+        print("ERR: emit field slice cap: " + c196)
+    }
+
+    c197 = emit_expr(Expr.Call([Expr.Field([mkid("p")], "dist", s0())], [mki(3), mki(4)], s0()), vars_p)
+    if str_eq(c197, "Dot_Point_dist(p, 3, 4)") {
+        print("OK: emit method call")
+    } else {
+        print("ERR: emit method call: " + c197)
+    }
+
+    c198 = emit_expr(Expr.Call([Expr.Field([mkid("v")], "push", s0())], [mki(1)], s0()), vars_v)
+    if str_eq(c198, "<TODO>") {
+        print("OK: emit method builtin todo")
+    } else {
+        print("ERR: emit method builtin todo: " + c198)
+    }
+
+    if Type.Int.equals(infer_type(Expr.Index([mkid("a")], [mki(0)], s0()), vars_a)) {
+        print("OK: infer index slice")
+    } else {
+        print("ERR: infer index slice")
+    }
+
+    if Type.Int.equals(infer_type(Expr.Index([mkid("s")], [mki(0)], s0()), vars_s)) {
+        print("OK: infer index string")
+    } else {
+        print("ERR: infer index string")
+    }
+
+    if Type.Slice(elem: []Type{Type.Int}).equals(infer_type(Expr.Index([mkid("a")], [mkbin(mki(0), TokenType.DotDot, mki(2))], s0()), vars_a)) {
+        print("OK: infer range slice")
+    } else {
+        print("ERR: infer range slice")
+    }
+
+    it_call = infer_type(Expr.Call([mkid("f")], [mki(1)], s0()), []VarInfo{})
+    is_call_unknown = match it_call { Type.Unknown => true, _ => false }
+    if is_call_unknown {
+        print("OK: infer call unknown")
+    } else {
+        print("ERR: infer call unknown")
+    }
+
+    it_field = infer_type(Expr.Field([mkid("p")], "x", s0()), vars_p)
+    is_field_unknown = match it_field { Type.Unknown => true, _ => false }
+    if is_field_unknown {
+        print("OK: infer field unknown")
+    } else {
+        print("ERR: infer field unknown")
     }
 }
