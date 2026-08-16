@@ -105,6 +105,10 @@ impl Parser {
         if self.cur_token_is(TokenType.Impl) {
             return self.parse_impl_decl()
         }
+        // @extern("C") fn ... / @extern("C") struct ... — stage 7c1.
+        if self.cur_token_is(TokenType.At) {
+            return self.parse_annotation_decl()
+        }
         // import ast / import "../stdlib/sync.dot": consumed and dropped.
         // ast.dot has no Decl.Import variant, so no decl is produced. cur is
         // left on the module name token, parse_program advances past it.
@@ -120,6 +124,86 @@ impl Parser {
             return self.parse_toplevel_stmt()
         }
         return None
+    }
+
+    // Annotation preceding a declaration (stage 7c1): tokens are At + name +
+    // optional (args). The name token may be Ident OR the Extern keyword —
+    // the self-hosted lexer does not suppress keyword lookup after '@' the
+    // way Go's does (lexer/ident.go), so `@extern` yields At + TokenType.Extern.
+    // @extern("C") fn becomes Decl.ExternFn (signature only), @extern("C")
+    // struct becomes Decl.ExternStruct; any other annotation is consumed and
+    // the following declaration is parsed normally (annotation dropped).
+    fn parse_annotation_decl(mut self) -> Option[Decl] {
+        self.next_token() // cur = annotation name (Ident or Extern)
+        name = self.cur_tok.lexeme
+        arg = self.parse_annotation_arg()
+        self.next_token() // cur = declaration keyword (newlines skipped)
+        if name == "extern" and arg == "C" {
+            if self.cur_token_is(TokenType.Fn) {
+                return self.parse_extern_fn_decl()
+            }
+            if self.cur_token_is(TokenType.Struct) {
+                return self.parse_extern_struct_decl()
+            }
+        }
+        return self.parse_decl()
+    }
+
+    // Parses the optional (args) of an annotation and returns the first
+    // string argument. Bare form: stream untouched, returns "". Parens form:
+    // cur advances to RParen. The value assignment must not sit inside an
+    // if-body — Dot scoping would shadow it (D53) — so the value is captured
+    // into a fn-level local before the closing paren is consumed.
+    fn parse_annotation_arg(mut self) -> string {
+        if not self.peek_token_is(TokenType.LParen) {
+            return ""
+        }
+        self.next_token() // cur = LParen
+        self.next_token() // cur = StringLit
+        v = self.cur_tok.value
+        self.next_token() // cur = RParen
+        return v
+    }
+
+    // to_extern_fn repacks a Decl.Fn into Decl.ExternFn. A non-Fn decl is
+    // passed through untouched (unreachable in practice: parse_fn_decl only
+    // ever produces Decl.Fn on success). The match must not use a `_ => None`
+    // arm — the Go checker cannot unify None with Some(...) across arms.
+    fn to_extern_fn(d Decl) -> Decl {
+        return match d {
+            Decl.Fn(name, params, _, ret_ty, _, span) => Decl.ExternFn(name, params, ret_ty, span)
+            _ => d
+        }
+    }
+
+    // to_extern_struct repacks a Decl.Struct into Decl.ExternStruct; see
+    // to_extern_fn for why the fallback passes the decl through.
+    fn to_extern_struct(d Decl) -> Decl {
+        return match d {
+            Decl.Struct(name, _, span) => Decl.ExternStruct(name, span)
+            _ => d
+        }
+    }
+
+    // @extern("C") fn signature: reuses parse_fn_decl, which already
+    // tolerates a missing body (parse_fn_body returns an empty body when no
+    // LBrace follows), then repacks the fields into Decl.ExternFn.
+    fn parse_extern_fn_decl(mut self) -> Option[Decl] {
+        d = self.parse_fn_decl()
+        if d.is_none() {
+            return None
+        }
+        return Some(self.to_extern_fn(d.unwrap()))
+    }
+
+    // @extern("C") struct: reuses parse_struct_decl (an empty body like
+    // `struct File {}` is fine), then repacks into Decl.ExternStruct.
+    fn parse_extern_struct_decl(mut self) -> Option[Decl] {
+        d = self.parse_struct_decl()
+        if d.is_none() {
+            return None
+        }
+        return Some(self.to_extern_struct(d.unwrap()))
     }
 
     // Top-level statements (let / const / assignments) are wrapped into a

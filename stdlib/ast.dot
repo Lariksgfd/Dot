@@ -92,6 +92,16 @@ pub enum Decl {
     Enum(name string, variants []VariantDef, span Span)
     Trait(name string, methods []Decl, span Span)
     Impl(trait_name Option[string], target TypeNode, methods []Decl, span Span)
+
+    // [РЕШЕНИЕ] ExternFn/ExternStruct carry the @extern("C") annotation
+    // (T-051 stage 7c1). They are APPENDED after the original five variants
+    // instead of adding an is_extern bool field to Fn/Struct, so the payload
+    // layouts and tag values of the existing variants stay stable — every
+    // direct Decl.Fn/Decl.Struct construction (incl. testdata) keeps
+    // compiling untouched. ExternFn holds a signature only: no body, no
+    // type params (both dropped by the parser).
+    ExternFn(name string, params []Param, ret_ty Option[TypeNode], span Span)
+    ExternStruct(name string, span Span)
 }
 
 pub struct Param {

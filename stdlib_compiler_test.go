@@ -325,6 +325,11 @@ func TestStdlibCompiler(t *testing.T) {
 			"OK: emit let call known sig",
 			"OK: emit let call no sigs void ptr",
 			"OK: emit program let call sig",
+			"OK: extern fn decl no def",
+			"OK: extern struct no def",
+			"OK: extern non-C arg parsed as normal fn",
+			"OK: extern fn params ret int",
+			"OK: extern fn ret int no missing return",
 		} {
 				if !strings.Contains(out, want) {
 					t.Errorf("expected %q in output, got: %s", want, out)

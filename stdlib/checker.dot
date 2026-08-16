@@ -64,7 +64,29 @@ impl Checker {
             Decl.Enum(name, variants, span) => self.check_enum_decl(name, variants, span)
             Decl.Trait(name, methods, span) => {}
             Decl.Impl(trait_name, target, methods, span) => {}
+            Decl.ExternFn(name, params, ret_ty, span) => self.check_extern_fn_decl(name, params, ret_ty, span)
+            Decl.ExternStruct(name, span) => self.check_struct_decl(name, []FieldDef{}, span)
         }
+    }
+
+    // Extern fn (stage 7c1): register the signature so call sites type-check
+    // against the real params/return type. There is no body, so no body or
+    // missing-return diagnostics can fire — e.g. io.dot's
+    // `fn read(f *File, n int) -> string` must not raise "Missing return
+    // value".
+    fn check_extern_fn_decl(mut self, name string, params []Param, ret_ty Option[TypeNode], span Span) {
+        resolved_ret_ty = self.resolve_ret_ty(ret_ty, []string{})
+        param_types = []Type{}
+        for p in params {
+            param_types.push(self.resolve_type(p.ty, []string{}))
+        }
+        fn_ty = Type.Func(params: param_types, ret_ty: []Type{resolved_ret_ty})
+        self.current_scope[0].define(Symbol {
+            name,
+            kind: SymbolKind.Function,
+            ty: fn_ty,
+            is_mut: false,
+        })
     }
 
     fn check_struct_decl(mut self, name string, fields []FieldDef, span Span) {

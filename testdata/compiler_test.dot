@@ -2643,4 +2643,46 @@ pub fn main() {
     } else {
         print("ERR: emit program let call sig: " + c307)
     }
+
+    // --- extern decls (T-051, stage 7c1+7c2: @extern("C")) ---
+
+    ext308 = "@extern(\"C\")\nfn print_str(s string)\n\nfn main() {{\n    print_str(\"extern-ok\")\n}}\n"
+    c308 = compile_to_c(ext308)
+    if str_contains(c308, "extern void Dot_print_str(DotString*);") and not str_contains(c308, "void Dot_print_str(DotString* s) {{") and str_contains(c308, "Dot_print_str(dot_string_from_lit(\"extern-ok\", 9));") {
+        print("OK: extern fn decl no def")
+    } else {
+        print("ERR: extern fn decl no def: " + c308)
+    }
+
+    ext309 = "@extern(\"C\")\nstruct File {{}}\n\nfn get() -> *File {{}}\n"
+    c309 = compile_to_c(ext309)
+    if not str_contains(c309, "struct DotFile") and str_contains(c309, "void* Dot_get(void);") {
+        print("OK: extern struct no def")
+    } else {
+        print("ERR: extern struct no def: " + c309)
+    }
+
+    ext310 = "@extern(\"C++\")\nfn f() -> int {{\n    return 7\n}}\n\nfn main() {{\n    print(f())\n}}\n"
+    c310 = compile_to_c(ext310)
+    if str_contains(c310, "int64_t Dot_f(void);") and str_contains(c310, "int64_t Dot_f() {{") and not str_contains(c310, "extern int64_t Dot_f") {
+        print("OK: extern non-C arg parsed as normal fn")
+    } else {
+        print("ERR: extern non-C arg parsed as normal fn: " + c310)
+    }
+
+    ext311 = "@extern(\"C\")\nfn add(a int, b int) -> int\n\nfn main() {{\n    print(add(2, 3))\n}}\n"
+    c311 = compile_to_c(ext311)
+    if str_contains(c311, "extern int64_t Dot_add(int64_t, int64_t);") and not str_contains(c311, "int64_t Dot_add(int64_t a, int64_t b) {{") and str_contains(c311, "Dot_add(2, 3)") {
+        print("OK: extern fn params ret int")
+    } else {
+        print("ERR: extern fn params ret int: " + c311)
+    }
+
+    ext312 = "@extern(\"C\")\nfn get_num() -> int\n\nfn main() {{\n    print(get_num())\n}}\n"
+    c312 = compile_to_c(ext312)
+    if c312.len > 0 and str_contains(c312, "extern int64_t Dot_get_num(void);") {
+        print("OK: extern fn ret int no missing return")
+    } else {
+        print("ERR: extern fn ret int no missing return: " + c312)
+    }
 }

@@ -37,6 +37,13 @@ pub fn emit_type_decl(d Decl, out CBuilder, depth int) {
         Decl.Trait(name, _, _) => bwriteln(out, depth, "/* <TODO 5b: trait vtable " + name + "> */")
         Decl.Impl(_, target, methods, _) => emit_impl_def_from(target, methods, out, depth, []FnSig{})
         Decl.Fn(name, params, _, ret_ty, body, _) => emit_fn_def_from(name, params, ret_ty, body, out, depth, []FnSig{})
+        // extern decls live in the C runtime headers: ExternFn prototypes
+        // are emitted by emit_fn_decl (stage 7c2, `extern` prefix) and its
+        // definition is skipped in emit_fn_defs (no body in the AST);
+        // ExternStruct emits NO typedef/def at all — the C header owns the
+        // type (Go isExternType, emit_types.go:49).
+        Decl.ExternFn(_, _, _, _) => {}
+        Decl.ExternStruct(_, _) => {}
     }
 }
 
@@ -134,11 +141,20 @@ fn variant_field_name(variant string, field string) -> string {
 // verified against Go output (`dot build` of tmp_fn.dot): Go emitFuncDecls
 // uses emitForwardParams (emit_decl.go:243), while named params belong to
 // definitions only (emitParams). Empty param list renders as `void`.
+// emit_fn_decl renders one forward declaration. Extern fns (stage 7c2) get
+// the `extern` prefix exactly like Go emitFuncDecls (emit_decl.go:334):
+// `extern <Ret> Dot_<Name>(<types>);` — parameter TYPES only (void for an
+// empty list), the body lives in the C runtime; dot_runtime.h maps the
+// Dot_-prefixed name onto the real dot_<file>_<fn> symbol via #define.
 pub fn emit_fn_decl(d Decl, out CBuilder, depth int) {
     match d {
         Decl.Fn(name, params, _, ret_ty, _, _) => {
             ret_c = ty_to_c(fn_ret_ty(ret_ty))
             bwriteln(out, depth, ret_c + " Dot_" + name + "(" + fn_decl_params_c(params) + ");")
+        }
+        Decl.ExternFn(name, params, ret_ty, _) => {
+            ret_c = ty_to_c(fn_ret_ty(ret_ty))
+            bwriteln(out, depth, "extern " + ret_c + " Dot_" + name + "(" + fn_decl_params_c(params) + ");")
         }
         _ => {}
     }
