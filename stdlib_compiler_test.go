@@ -318,6 +318,13 @@ func TestStdlibCompiler(t *testing.T) {
 			"OK: struct lit box retain inside init",
 			"OK: struct lit call arg box",
 			"OK: struct lit return tail box",
+			"OK: infer call known sig",
+			"OK: infer call unknown sig",
+			"OK: infer call public wrapper unknown",
+			"OK: infer method call unknown",
+			"OK: emit let call known sig",
+			"OK: emit let call no sigs void ptr",
+			"OK: emit program let call sig",
 		} {
 				if !strings.Contains(out, want) {
 					t.Errorf("expected %q in output, got: %s", want, out)

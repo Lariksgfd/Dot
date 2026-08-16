@@ -35,8 +35,8 @@ pub fn emit_type_decl(d Decl, out CBuilder, depth int) {
         Decl.Struct(name, fields, _) => emit_struct_def(name, fields, out, depth)
         Decl.Enum(name, variants, _) => emit_enum_def(name, variants, out, depth)
         Decl.Trait(name, _, _) => bwriteln(out, depth, "/* <TODO 5b: trait vtable " + name + "> */")
-        Decl.Impl(_, target, methods, _) => emit_impl_def_from(target, methods, out, depth)
-        Decl.Fn(name, params, _, ret_ty, body, _) => emit_fn_def_from(name, params, ret_ty, body, out, depth)
+        Decl.Impl(_, target, methods, _) => emit_impl_def_from(target, methods, out, depth, []FnSig{})
+        Decl.Fn(name, params, _, ret_ty, body, _) => emit_fn_def_from(name, params, ret_ty, body, out, depth, []FnSig{})
     }
 }
 
@@ -148,10 +148,15 @@ pub fn emit_fn_decl(d Decl, out CBuilder, depth int) {
 // `Ret Dot_<Name>(<named params>) { <body> }`. Parameters are registered in
 // vars so the body sees their types; a trailing expression statement in a
 // value-returning fn is materialised into a temp and returned (Go
-// emitBodyStmts tail handling).
+// emitBodyStmts tail handling). The public form carries no fn registry
+// (stage 7b) — emit_program goes through emit_fn_def_full.
 pub fn emit_fn_def(d Decl, out CBuilder, depth int) {
+    emit_fn_def_full(d, out, depth, []FnSig{})
+}
+
+fn emit_fn_def_full(d Decl, out CBuilder, depth int, sigs []FnSig) {
     match d {
-        Decl.Fn(name, params, _, ret_ty, body, _) => emit_fn_def_from(name, params, ret_ty, body, out, depth)
+        Decl.Fn(name, params, _, ret_ty, body, _) => emit_fn_def_from(name, params, ret_ty, body, out, depth, sigs)
         _ => {}
     }
 }
@@ -178,6 +183,12 @@ pub fn emit_impl_decl(d Decl, out CBuilder, depth int) {
 // ...) { <body> }`. self is registered in vars as the struct type so field
 // access `self.x` lowers to `self->dot_x`.
 pub fn emit_impl_def(d Decl, out CBuilder, depth int) {
+    emit_impl_def_full(d, out, depth, []FnSig{})
+}
+
+// emit_impl_def_full is the registry-threading form of emit_impl_def
+// (stage 7b: method bodies see the whole program's fn signatures).
+fn emit_impl_def_full(d Decl, out CBuilder, depth int, sigs []FnSig) {
     match d {
         Decl.Impl(_, target, methods, _) => {
             recv = impl_recv_name(target)
@@ -185,30 +196,30 @@ pub fn emit_impl_def(d Decl, out CBuilder, depth int) {
                 bwriteln(out, depth, "/* <TODO 5b: impl on unsupported target> */")
                 return
             }
-            emit_impl_defs(recv, methods, 0, out, depth)
+            emit_impl_defs(recv, methods, 0, out, depth, sigs)
         }
         _ => {}
     }
 }
 
 // emit_fn_def_from renders one free fn with its unpacked fields.
-fn emit_fn_def_from(name string, params []Param, ret_ty Option[TypeNode], body []Stmt, out CBuilder, depth int) {
+fn emit_fn_def_from(name string, params []Param, ret_ty Option[TypeNode], body []Stmt, out CBuilder, depth int, sigs []FnSig) {
     ret_c = ty_to_c(fn_ret_ty(ret_ty))
     params_c = fn_params_c(params, 0, "")
     bwriteln(out, depth, ret_c + " Dot_" + name + "(" + params_c + ") {{")
     vars = fn_params_vars(params, 0, []VarInfo{})
-    emit_fn_body(body, ret_ty, vars, out, depth + 1)
+    emit_fn_body(body, ret_ty, vars, out, depth + 1, sigs)
     bwriteln(out, depth, "}}")
     bwriteln(out, depth, "")
 }
 
-fn emit_impl_def_from(target TypeNode, methods []Decl, out CBuilder, depth int) {
+fn emit_impl_def_from(target TypeNode, methods []Decl, out CBuilder, depth int, sigs []FnSig) {
     recv = impl_recv_name(target)
     if recv.len == 0 {
         bwriteln(out, depth, "/* <TODO 5b: impl on unsupported target> */")
         return
     }
-    emit_impl_defs(recv, methods, 0, out, depth)
+    emit_impl_defs(recv, methods, 0, out, depth, sigs)
 }
 
 // [РЕШЕНИЕ] Body emission: the self-hosted AST has no ExprBody — the parser
@@ -220,9 +231,9 @@ fn emit_impl_def_from(target TypeNode, methods []Decl, out CBuilder, depth int) 
 // FIRST so their Lets land in vars — the tail's infer_type must see local
 // variables, not just parameters (bug c262). Everything else is emitted
 // statement by statement; an empty body renders as an empty C block.
-fn emit_fn_body(body []Stmt, ret_ty Option[TypeNode], vars []VarInfo, out CBuilder, depth int) {
+fn emit_fn_body(body []Stmt, ret_ty Option[TypeNode], vars []VarInfo, out CBuilder, depth int, sigs []FnSig) {
     r_ty = fn_ret_ty(ret_ty)
-    ctx0 = StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: r_ty }
+    ctx0 = StmtCtx { vars, heap: []string{}, unused: 0, ret_ty: r_ty, sigs }
     if body.len == 0 {
         emit_stmts_ctx(body, 0, ctx0, out, depth)
         return
@@ -258,7 +269,7 @@ fn fn_body_tail(last Stmt, ctx StmtCtx, out CBuilder, depth int) -> bool {
             if is_assign_expr(e) {
                 return false
             }
-            vt = infer_type(e, ctx.vars)
+            vt = infer_type_full(e, ctx.vars, ctx.sigs)
             if is_unknown_ty(vt) or is_void_ty(vt) {
                 return false
             }
@@ -269,7 +280,7 @@ fn fn_body_tail(last Stmt, ctx StmtCtx, out CBuilder, depth int) -> bool {
             // unusedIdx counter: two tail temps can never share one C scope
             // (one tail per fn body), and depth keeps them unique there.
             tmp = "_dot_ret_tail_" + int_to_str(depth)
-            bwriteln(out, depth, ty_to_c(vt) + " " + tmp + " = " + emit_expr(e, ctx.vars) + ";")
+            bwriteln(out, depth, ty_to_c(vt) + " " + tmp + " = " + emit_expr_full(e, ctx.vars, ctx.sigs) + ";")
             emit_return_releases(ctx.heap, skip, out, depth)
             bwriteln(out, depth, "return " + tmp + ";")
             return true
@@ -296,12 +307,12 @@ fn emit_impl_decls(recv string, methods []Decl, i int, out CBuilder, depth int) 
     emit_impl_decls(recv, methods, i + 1, out, depth)
 }
 
-fn emit_impl_defs(recv string, methods []Decl, i int, out CBuilder, depth int) {
+fn emit_impl_defs(recv string, methods []Decl, i int, out CBuilder, depth int, sigs []FnSig) {
     if i >= methods.len {
         return
     }
-    emit_method_def(recv, methods[i], out, depth)
-    emit_impl_defs(recv, methods, i + 1, out, depth)
+    emit_method_def(recv, methods[i], out, depth, sigs)
+    emit_impl_defs(recv, methods, i + 1, out, depth, sigs)
 }
 
 fn emit_method_decl(recv string, m Decl, out CBuilder, depth int) {
@@ -314,13 +325,13 @@ fn emit_method_decl(recv string, m Decl, out CBuilder, depth int) {
     }
 }
 
-fn emit_method_def(recv string, m Decl, out CBuilder, depth int) {
+fn emit_method_def(recv string, m Decl, out CBuilder, depth int, sigs []FnSig) {
     match m {
         Decl.Fn(name, params, _, ret_ty, body, _) => {
             ret_c = ty_to_c(fn_ret_ty(ret_ty))
             bwriteln(out, depth, ret_c + " Dot_" + recv + "_" + name + "(" + method_params_c(recv, params) + ") {{")
             vars = method_body_vars(recv, params)
-            emit_fn_body(body, ret_ty, vars, out, depth + 1)
+            emit_fn_body(body, ret_ty, vars, out, depth + 1, sigs)
             bwriteln(out, depth, "}}")
             bwriteln(out, depth, "")
         }
@@ -470,9 +481,53 @@ pub fn emit_program(decls []Decl) -> string {
     emit_type_fwds(decls, out)
     emit_type_defs(decls, out)
     emit_fn_decls(decls, out)
-    emit_fn_defs(decls, out)
+    emit_fn_defs(decls, out, collect_sigs(decls))
     emit_main_driver(decls, out)
     return bfinish(out)
+}
+
+// collect_sigs builds the fn signature registry (stage 7b): every free fn
+// contributes FnSig { name, ret }, every impl method contributes
+// FnSig { Recv_Method, ret } — the same name spelling emit_method_def
+// emits ("Dot_" + recv + "_" + name) so call sites and definitions agree.
+// fn_ret_ty resolves the declared annotation (absent = void).
+fn collect_sigs(decls []Decl) -> []FnSig {
+    return collect_sigs_from(decls, 0, []FnSig{})
+}
+
+fn collect_sigs_from(decls []Decl, i int, acc []FnSig) -> []FnSig {
+    if i >= decls.len {
+        return acc
+    }
+    next = match decls[i] {
+        Decl.Fn(name, _, _, ret_ty, _, _) => fn_sig_list(acc, name, fn_ret_ty(ret_ty))
+        Decl.Impl(_, target, methods, _) => impl_sigs(impl_recv_name(target), methods, acc)
+        _ => acc
+    }
+    return collect_sigs_from(decls, i + 1, next)
+}
+
+fn fn_sig_list(sigs []FnSig, name string, ret Type) -> []FnSig {
+    sigs.push(FnSig { name, ret })
+    return sigs
+}
+
+fn impl_sigs(recv string, methods []Decl, sigs []FnSig) -> []FnSig {
+    if recv.len == 0 {
+        return sigs
+    }
+    return impl_sigs_from(methods, 0, recv, sigs)
+}
+
+fn impl_sigs_from(methods []Decl, i int, recv string, sigs []FnSig) -> []FnSig {
+    if i >= methods.len {
+        return sigs
+    }
+    next = match methods[i] {
+        Decl.Fn(name, _, _, ret_ty, _, _) => fn_sig_list(sigs, recv + "_" + name, fn_ret_ty(ret_ty))
+        _ => sigs
+    }
+    return impl_sigs_from(methods, i + 1, recv, next)
 }
 
 // Phase 1: forward typedefs for every named struct/enum so pointer fields
@@ -510,11 +565,12 @@ fn emit_fn_decls(decls []Decl, out CBuilder) {
     }
 }
 
-// Phase 4: definitions of every free fn and impl method.
-fn emit_fn_defs(decls []Decl, out CBuilder) {
+// Phase 4: definitions of every free fn and impl method. sigs threads the
+// program-wide fn signature registry into the body emitters (stage 7b).
+fn emit_fn_defs(decls []Decl, out CBuilder, sigs []FnSig) {
     for d in decls {
-        emit_fn_def(d, out, 0)
-        emit_impl_def(d, out, 0)
+        emit_fn_def_full(d, out, 0, sigs)
+        emit_impl_def_full(d, out, 0, sigs)
     }
 }
 

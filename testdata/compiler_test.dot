@@ -2568,4 +2568,79 @@ pub fn main() {
     } else {
         print("ERR: struct lit return tail box: " + c300)
     }
+
+    // --- fn-sig registry (T-051, stage 7b: call type inference) ---
+
+    sigs_f = []FnSig{}
+    sigs_f.push(FnSig { name: "f", ret: Type.String })
+
+    it301 = infer_type_full(Expr.Call([mkid("f")], [mki(1)], s0()), []VarInfo{}, sigs_f)
+    if Type.String.equals(it301) {
+        print("OK: infer call known sig")
+    } else {
+        print("ERR: infer call known sig")
+    }
+
+    it302 = infer_type_full(Expr.Call([mkid("zz")], [mki(1)], s0()), []VarInfo{}, sigs_f)
+    is_unknown302 = match it302 { Type.Unknown => true, _ => false }
+    if is_unknown302 {
+        print("OK: infer call unknown sig")
+    } else {
+        print("ERR: infer call unknown sig")
+    }
+
+    it303 = infer_type(Expr.Call([mkid("f")], [mki(1)], s0()), []VarInfo{})
+    is_unknown303 = match it303 { Type.Unknown => true, _ => false }
+    if is_unknown303 {
+        print("OK: infer call public wrapper unknown")
+    } else {
+        print("ERR: infer call public wrapper unknown")
+    }
+
+    it304 = infer_type_full(Expr.Call([Expr.Field([mkid("p")], "dist", s0())], [mki(3)], s0()), vars_p, sigs_f)
+    is_unknown304 = match it304 { Type.Unknown => true, _ => false }
+    if is_unknown304 {
+        print("OK: infer method call unknown")
+    } else {
+        print("ERR: infer method call unknown")
+    }
+
+    b305 = new_builder()
+    body305 = []Stmt{}
+    body305.push(Stmt.Let("s", None, Expr.Call([mkid("g")], []Expr{}, s0()), false, s0()))
+    d305 = Decl.Fn("main", []Param{}, []string{}, None, body305, s0())
+    sigs_g = []FnSig{}
+    sigs_g.push(FnSig { name: "g", ret: Type.String })
+    emit_fn_def_full(d305, b305, 0, sigs_g)
+    c305 = bfinish(b305)
+    if str_contains(c305, "DotString* s = Dot_g();") {
+        print("OK: emit let call known sig")
+    } else {
+        print("ERR: emit let call known sig: " + c305)
+    }
+
+    b306 = new_builder()
+    d306 = Decl.Fn("main", []Param{}, []string{}, None, body305, s0())
+    emit_fn_def(d306, b306, 0)
+    c306 = bfinish(b306)
+    if str_contains(c306, "void* s = Dot_g();") {
+        print("OK: emit let call no sigs void ptr")
+    } else {
+        print("ERR: emit let call no sigs void ptr: " + c306)
+    }
+
+    decls_p307 = []Decl{}
+    body_g307 = []Stmt{}
+    body_g307.push(Stmt.ExprStmt(mks("hi"), s0()))
+    decls_p307.push(Decl.Fn("g", []Param{}, []string{}, Some(tn("string")), body_g307, s0()))
+    body_m307 = []Stmt{}
+    body_m307.push(Stmt.Let("s", None, Expr.Call([mkid("g")], []Expr{}, s0()), false, s0()))
+    body_m307.push(Stmt.ExprStmt(Expr.Call([mkid("print")], [mkid("s")], s0()), s0()))
+    decls_p307.push(Decl.Fn("main", []Param{}, []string{}, None, body_m307, s0()))
+    c307 = emit_program(decls_p307)
+    if str_contains(c307, "DotString* s = Dot_g();") and str_contains(c307, "dot_release(s);") and str_contains(c307, "DotString* Dot_g(void);") {
+        print("OK: emit program let call sig")
+    } else {
+        print("ERR: emit program let call sig: " + c307)
+    }
 }

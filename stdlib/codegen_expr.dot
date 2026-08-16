@@ -6,6 +6,13 @@
 // StructLit, MapLit, Assign (3c). TupleLit stays "<TODO>" (the checker has
 // no Type.Tuple yet), as does FnLit until closures land.
 //
+// Stage 7b (self-compile): the public emit_expr/infer_type keep their
+// plain (e, vars) signatures (compiler_test.dot calls them directly), but
+// all real work lives in emit_expr_full/infer_type_full which ALSO thread
+// a fn signature registry (sigs []FnSig). A Call whose callee is a known
+// fn name now infers its declared return type, so `s = g()` without an
+// annotation emits `DotString* s = Dot_g();` instead of `void*` (T-051 7b).
+//
 // NOTE [РЕШЕНИЕ]: vars is a []VarInfo of name/type pairs, NOT map[string]Type.
 // The stdlib stays map-free so the self-hosted codegen never has to emit map
 // operations (T-052 self-compile); types.dot Scope emulates a map with a
@@ -20,10 +27,25 @@ pub struct VarInfo {
     ty   Type
 }
 
-// infer_type is minimal expression type inference. The self-hosted codegen
-// has no checker side-table, so operand types are recomputed on demand
-// (T-051 design decision). Unknown propagates where a rule gives no answer.
+// FnSig is one entry of the fn signature registry: the C-visible name
+// ("name" for free fns, "Recv_Method" for impl methods — the same spelling
+// emit_method_def/emit_call build) and the declared return type.
+pub struct FnSig {
+    name string
+    ret  Type
+}
+
+// infer_type is the public wrapper: no registry, every Call stays Unknown
+// (the c199 form).
 pub fn infer_type(e Expr, vars []VarInfo) -> Type {
+    return infer_type_full(e, vars, []FnSig{})
+}
+
+// infer_type_full is minimal expression type inference. The self-hosted
+// codegen has no checker side-table, so operand types are recomputed on
+// demand (T-051 design decision). Unknown propagates where a rule gives no
+// answer.
+fn infer_type_full(e Expr, vars []VarInfo, sigs []FnSig) -> Type {
     return match e {
         Expr.IntLit(_, _) => Type.Int
         Expr.FloatLit(_, _) => Type.Float
@@ -31,30 +53,64 @@ pub fn infer_type(e Expr, vars []VarInfo) -> Type {
         Expr.BoolLit(_, _) => Type.Bool
         Expr.NilLit(_) => Type.Nil
         Expr.Ident(name, _) => var_type(vars, name)
-        Expr.Unary(op, right, _) => infer_unary_type(right, op, vars)
-        Expr.Binary(left, op, right, _) => infer_binary_type(left, op, right, vars)
-        Expr.If(_, then_branch, _, _) => infer_if_type(then_branch, vars)
-        Expr.Call(_, _, _) => Type.Unknown
-        Expr.Index(left, index, _) => infer_index_type(left, index, vars)
+        Expr.Unary(op, right, _) => infer_unary_type(right, op, vars, sigs)
+        Expr.Binary(left, op, right, _) => infer_binary_type(left, op, right, vars, sigs)
+        Expr.If(_, then_branch, _, _) => infer_if_type(then_branch, vars, sigs)
+        // [РЕШЕНИЕ] 7b: a Call on an Ident callee whose name is in the fn
+        // registry yields the declared return type; a method call (callee
+        // is a Field) needs the checker's selection info and stays Unknown.
+        Expr.Call(callee, _, _) => call_ty(callee, sigs)
+        Expr.Index(left, index, _) => infer_index_type(left, index, vars, sigs)
         Expr.Field(_, _, _) => Type.Unknown
-        Expr.ArrayLit(elements, _) => Type.Array([]Type{array_lit_elem_ty(elements, 0, Type.Unknown, vars)})
-        Expr.TupleLit(elements, _) => tuple_lit_ty(elements, vars)
-        Expr.Match(_, arms, _) => match_first_arm_ty(arms, vars)
-        Expr.Assign(_, _, right, _) => assign_value_ty(right, vars)
+        Expr.ArrayLit(elements, _) => Type.Array([]Type{array_lit_elem_ty(elements, 0, Type.Unknown, vars, sigs)})
+        Expr.TupleLit(elements, _) => tuple_lit_ty(elements, vars, sigs)
+        Expr.Match(_, arms, _) => match_first_arm_ty(arms, vars, sigs)
+        Expr.Assign(_, _, right, _) => assign_value_ty(right, vars, sigs)
         Expr.StructLit(name, _, _) => Type.Struct(name)
-        Expr.MapLit(entries, _) => map_lit_ty(entries, vars)
+        Expr.MapLit(entries, _) => map_lit_ty(entries, vars, sigs)
         _ => Type.Unknown
     }
+}
+
+// call_ty resolves the return type of a Call expression: an Ident callee
+// found in the fn registry yields its declared return type, everything
+// else (Field callees, builtins, unknown names, missing callee) stays
+// Unknown.
+fn call_ty(callee []Expr, sigs []FnSig) -> Type {
+    if callee.len == 0 {
+        return Type.Unknown
+    }
+    name = match callee[0] {
+        Expr.Ident(n, _) => n
+        _ => ""
+    }
+    if name.len == 0 {
+        return Type.Unknown
+    }
+    return sig_ret(sigs, name)
+}
+
+// sig_ret linear-searches the fn registry for name and returns its
+// declared return type, Unknown when absent.
+fn sig_ret(sigs []FnSig, name string) -> Type {
+    i = 0
+    for i < sigs.len {
+        if str_eq(sigs[i].name, name) {
+            return sigs[i].ret
+        }
+        i += 1
+    }
+    return Type.Unknown
 }
 
 // infer_index_type: an index yields the element type of its container;
 // a range expression s[a..b] yields the container type itself (slice of
 // slice / string of string), mirroring checker.check_index/slice_type.
-fn infer_index_type(left []Expr, index []Expr, vars []VarInfo) -> Type {
+fn infer_index_type(left []Expr, index []Expr, vars []VarInfo, sigs []FnSig) -> Type {
     if left.len == 0 or index.len == 0 {
         return Type.Unknown
     }
-    left_ty = infer_type(left[0], vars)
+    left_ty = infer_type_full(left[0], vars, sigs)
     if is_range_index(index[0]) {
         return left_ty
     }
@@ -86,23 +142,23 @@ fn var_type(vars []VarInfo, name string) -> Type {
     return Type.Unknown
 }
 
-fn infer_unary_type(right []Expr, op TokenType, vars []VarInfo) -> Type {
+fn infer_unary_type(right []Expr, op TokenType, vars []VarInfo, sigs []FnSig) -> Type {
     if right.len == 0 {
         return Type.Unknown
     }
     return match op {
         TokenType.Not => Type.Bool
-        TokenType.Minus => infer_type(right[0], vars)
-        _ => infer_type(right[0], vars)
+        TokenType.Minus => infer_type_full(right[0], vars, sigs)
+        _ => infer_type_full(right[0], vars, sigs)
     }
 }
 
-fn infer_binary_type(left []Expr, op TokenType, right []Expr, vars []VarInfo) -> Type {
+fn infer_binary_type(left []Expr, op TokenType, right []Expr, vars []VarInfo, sigs []FnSig) -> Type {
     if left.len == 0 or right.len == 0 {
         return Type.Unknown
     }
-    l_ty = infer_type(left[0], vars)
-    r_ty = infer_type(right[0], vars)
+    l_ty = infer_type_full(left[0], vars, sigs)
+    r_ty = infer_type_full(right[0], vars, sigs)
     return match op {
         TokenType.EqEq => Type.Bool
         TokenType.BangEq => Type.Bool
@@ -157,23 +213,28 @@ fn is_int_ty(t Type) -> bool {
 
 // The value type of an if-expr is the type of the then-branch's last
 // expression statement (same rule as checker.check_if_then).
-fn infer_if_type(then_branch []Stmt, vars []VarInfo) -> Type {
-    return if_then_type(then_branch, 0, Type.Unknown, vars)
+fn infer_if_type(then_branch []Stmt, vars []VarInfo, sigs []FnSig) -> Type {
+    return if_then_type(then_branch, 0, Type.Unknown, vars, sigs)
 }
 
-fn if_then_type(stmts []Stmt, i int, acc Type, vars []VarInfo) -> Type {
+fn if_then_type(stmts []Stmt, i int, acc Type, vars []VarInfo, sigs []FnSig) -> Type {
     if i >= stmts.len {
         return acc
     }
     return match stmts[i] {
-        Stmt.ExprStmt(e, _) => if_then_type(stmts, i + 1, infer_type(e, vars), vars)
-        _ => if_then_type(stmts, i + 1, acc, vars)
+        Stmt.ExprStmt(e, _) => if_then_type(stmts, i + 1, infer_type_full(e, vars, sigs), vars, sigs)
+        _ => if_then_type(stmts, i + 1, acc, vars, sigs)
     }
 }
 
-// emit_expr renders a Dot expression as a C expression string. Unsupported
-// nodes (stages 3b/3c) yield a "<TODO>" marker.
+// emit_expr is the public wrapper (no fn registry) around emit_expr_full.
 pub fn emit_expr(e Expr, vars []VarInfo) -> string {
+    return emit_expr_full(e, vars, []FnSig{})
+}
+
+// emit_expr_full renders a Dot expression as a C expression string.
+// Unsupported nodes (stages 3b/3c) yield a "<TODO>" marker.
+fn emit_expr_full(e Expr, vars []VarInfo, sigs []FnSig) -> string {
     return match e {
         Expr.IntLit(value, _) => int_to_str(value)
         Expr.FloatLit(value, _) => float_to_str(value)
@@ -186,31 +247,31 @@ pub fn emit_expr(e Expr, vars []VarInfo) -> string {
         }
         Expr.NilLit(_) => "NULL"
         Expr.Ident(name, _) => name
-        Expr.Unary(op, right, _) => emit_unary(right, op, vars)
-        Expr.Binary(left, op, right, _) => emit_binary(left, op, right, vars)
-        Expr.If(condition, then_branch, else_branch, _) => emit_if_expr(condition, then_branch, else_branch, vars)
-        Expr.Call(callee, args, _) => emit_call(callee, args, vars)
-        Expr.Index(left, index, _) => emit_index(left, index, vars)
-        Expr.Field(left, name, _) => emit_field(left, name, vars)
-        Expr.Match(value, arms, _) => emit_match(value, arms, vars)
-        Expr.ArrayLit(elements, _) => emit_array_lit(elements, vars)
+        Expr.Unary(op, right, _) => emit_unary(right, op, vars, sigs)
+        Expr.Binary(left, op, right, _) => emit_binary(left, op, right, vars, sigs)
+        Expr.If(condition, then_branch, else_branch, _) => emit_if_expr(condition, then_branch, else_branch, vars, sigs)
+        Expr.Call(callee, args, _) => emit_call(callee, args, vars, sigs)
+        Expr.Index(left, index, _) => emit_index(left, index, vars, sigs)
+        Expr.Field(left, name, _) => emit_field(left, name, vars, sigs)
+        Expr.Match(value, arms, _) => emit_match(value, arms, vars, sigs)
+        Expr.ArrayLit(elements, _) => emit_array_lit(elements, vars, sigs)
         // [РЕШЕНИЕ]: TupleLit stays "<TODO>": the self-hosted checker has no
         // Type.Tuple (tuple_type is a placeholder returning the first
         // element's type), and C tuples need DotTuple_N typedef
         // registration from the declaration pass (stage 5).
         Expr.TupleLit(_, _) => "<TODO>"
-        Expr.StructLit(name, fields, _) => emit_struct_lit(name, fields, vars)
+        Expr.StructLit(name, fields, _) => emit_struct_lit(name, fields, vars, sigs)
         Expr.MapLit(entries, _) => emit_map_lit(entries)
-        Expr.Assign(left, op, right, _) => emit_assign(left, op, right, vars)
+        Expr.Assign(left, op, right, _) => emit_assign(left, op, right, vars, sigs)
         _ => "<TODO>"
     }
 }
 
-fn emit_unary(right []Expr, op TokenType, vars []VarInfo) -> string {
+fn emit_unary(right []Expr, op TokenType, vars []VarInfo, sigs []FnSig) -> string {
     if right.len == 0 {
         return "<TODO>"
     }
-    inner = emit_expr(right[0], vars)
+    inner = emit_expr_full(right[0], vars, sigs)
     return match op {
         TokenType.Not => "!(" + inner + ")"
         TokenType.Minus => "-(" + inner + ")"
@@ -221,14 +282,14 @@ fn emit_unary(right []Expr, op TokenType, vars []VarInfo) -> string {
 // emit_binary reuses the стаб's binop_typed_to_c: it already picks the
 // right C for string concat/eq and pow_int/pow_float from the operand
 // type tags, so no operator logic is duplicated here.
-fn emit_binary(left []Expr, op TokenType, right []Expr, vars []VarInfo) -> string {
+fn emit_binary(left []Expr, op TokenType, right []Expr, vars []VarInfo, sigs []FnSig) -> string {
     if left.len == 0 or right.len == 0 {
         return "<TODO>"
     }
-    lhs = emit_expr(left[0], vars)
-    rhs = emit_expr(right[0], vars)
-    l_ty = infer_type(left[0], vars)
-    r_ty = infer_type(right[0], vars)
+    lhs = emit_expr_full(left[0], vars, sigs)
+    rhs = emit_expr_full(right[0], vars, sigs)
+    l_ty = infer_type_full(left[0], vars, sigs)
+    r_ty = infer_type_full(right[0], vars, sigs)
     op_str = binop_str(op)
     if op_str.len == 0 {
         return "<TODO>"
@@ -276,33 +337,33 @@ fn ty_tag(t Type) -> string {
 // The then-branch value is the last expression statement; the else-branch
 // value is the last element of the else slice (checker.check_else_branch
 // rule). Both fall back to a marker when absent.
-fn emit_if_expr(condition []Expr, then_branch []Stmt, else_branch []Expr, vars []VarInfo) -> string {
+fn emit_if_expr(condition []Expr, then_branch []Stmt, else_branch []Expr, vars []VarInfo, sigs []FnSig) -> string {
     if condition.len == 0 {
         return "<TODO>"
     }
-    cond = emit_expr(condition[0], vars)
-    then_e = then_value(then_branch, vars)
-    else_e = else_value(else_branch, vars)
+    cond = emit_expr_full(condition[0], vars, sigs)
+    then_e = then_value(then_branch, vars, sigs)
+    else_e = else_value(else_branch, vars, sigs)
     return ifexpr_to_c(cond, then_e, else_e)
 }
 
-fn then_value(stmts []Stmt, vars []VarInfo) -> string {
-    return then_value_of(stmts, 0, "<TODO>", vars)
+fn then_value(stmts []Stmt, vars []VarInfo, sigs []FnSig) -> string {
+    return then_value_of(stmts, 0, "<TODO>", vars, sigs)
 }
 
-fn then_value_of(stmts []Stmt, i int, acc string, vars []VarInfo) -> string {
+fn then_value_of(stmts []Stmt, i int, acc string, vars []VarInfo, sigs []FnSig) -> string {
     if i >= stmts.len {
         return acc
     }
     return match stmts[i] {
-        Stmt.ExprStmt(e, _) => then_value_of(stmts, i + 1, emit_expr(e, vars), vars)
-        _ => then_value_of(stmts, i + 1, acc, vars)
+        Stmt.ExprStmt(e, _) => then_value_of(stmts, i + 1, emit_expr_full(e, vars, sigs), vars, sigs)
+        _ => then_value_of(stmts, i + 1, acc, vars, sigs)
     }
 }
 
-fn else_value(else_branch []Expr, vars []VarInfo) -> string {
+fn else_value(else_branch []Expr, vars []VarInfo, sigs []FnSig) -> string {
     if else_branch.len > 0 {
-        return emit_expr(else_branch[else_branch.len - 1], vars)
+        return emit_expr_full(else_branch[else_branch.len - 1], vars, sigs)
     }
     return "<TODO>"
 }
@@ -396,13 +457,13 @@ fn trim_trailing_zeros(s string) -> string {
 
 // emit_call: plain function calls use the Dot_-prefixed C name (Go fndecl
 // emits "Dot_" + Name), builtins map to their runtime helpers.
-fn emit_call(callee []Expr, args []Expr, vars []VarInfo) -> string {
+fn emit_call(callee []Expr, args []Expr, vars []VarInfo, sigs []FnSig) -> string {
     if callee.len == 0 {
         return "<TODO>"
     }
     return match callee[0] {
-        Expr.Ident(name, _) => emit_call_by_name(name, args, vars)
-        Expr.Field(recv, name, _) => emit_method_call(recv, name, args, vars)
+        Expr.Ident(name, _) => emit_call_by_name(name, args, vars, sigs)
+        Expr.Field(recv, name, _) => emit_method_call(recv, name, args, vars, sigs)
         _ => "<TODO>"
     }
 }
@@ -413,29 +474,29 @@ fn emit_call(callee []Expr, args []Expr, vars []VarInfo) -> string {
 // emitBuiltinCall). Zero-value defaults for a missing argument mirror Go's
 // emitArg: "NULL" for string params (input, panic), "0" for DotAny ones
 // (len, type_of).
-fn emit_call_by_name(name string, args []Expr, vars []VarInfo) -> string {
+fn emit_call_by_name(name string, args []Expr, vars []VarInfo, sigs []FnSig) -> string {
     if str_eq(name, "print") {
-        return "dot_print(" + emit_variadic_pack(args, vars) + ")"
+        return "dot_print(" + emit_variadic_pack(args, vars, sigs) + ")"
     }
     if str_eq(name, "println") {
-        return "dot_println(" + emit_variadic_pack(args, vars) + ")"
+        return "dot_println(" + emit_variadic_pack(args, vars, sigs) + ")"
     }
     if str_eq(name, "eprint") {
-        return "dot_eprint(" + emit_variadic_pack(args, vars) + ")"
+        return "dot_eprint(" + emit_variadic_pack(args, vars, sigs) + ")"
     }
     if str_eq(name, "len") {
-        return "dot_len(" + emit_first_arg(args, vars, "0") + ")"
+        return "dot_len(" + emit_first_arg(args, vars, "0", sigs) + ")"
     }
     if str_eq(name, "input") {
-        return "dot_input(" + emit_first_arg(args, vars, "NULL") + ")"
+        return "dot_input(" + emit_first_arg(args, vars, "NULL", sigs) + ")"
     }
     if str_eq(name, "type_of") {
-        return "dot_typeof(" + emit_first_arg(args, vars, "0") + ")"
+        return "dot_typeof(" + emit_first_arg(args, vars, "0", sigs) + ")"
     }
     if str_eq(name, "panic") {
-        return "dot_panic(" + emit_first_arg(args, vars, "NULL") + ")"
+        return "dot_panic(" + emit_first_arg(args, vars, "NULL", sigs) + ")"
     }
-    return "Dot_" + name + "(" + emit_plain_args(args, vars) + ")"
+    return "Dot_" + name + "(" + emit_plain_args(args, vars, sigs) + ")"
 }
 
 // [РЕШЕНИЕ]: method calls on struct receivers emit as Dot_<Struct>_<Method>
@@ -443,45 +504,47 @@ fn emit_call_by_name(name string, args []Expr, vars []VarInfo) -> string {
 // "_" + Method.Name, emitMethodCall). Only struct receivers are covered:
 // builtin methods (items.push, ...) and static Type.method calls need the
 // checker's selection info which the self-hosted codegen does not carry, so
-// they stay "<TODO>" until stage 5 wires declarations into vars.
-fn emit_method_call(recv []Expr, name string, args []Expr, vars []VarInfo) -> string {
+// they stay "<TODO>" until stage 5 wires declarations into vars. The fn
+// registry is not consulted here either (method callees need selection
+// info, not a flat name lookup — [РЕШЕНИЕ] 7b).
+fn emit_method_call(recv []Expr, name string, args []Expr, vars []VarInfo, sigs []FnSig) -> string {
     if recv.len == 0 {
         return "<TODO>"
     }
-    r_ty = infer_type(recv[0], vars)
+    r_ty = infer_type_full(recv[0], vars, sigs)
     return match r_ty {
-        Type.Struct(sname) => "Dot_" + sname + "_" + name + "(" + emit_expr(recv[0], vars) + method_args_join(args, vars, 0) + ")"
+        Type.Struct(sname) => "Dot_" + sname + "_" + name + "(" + emit_expr_full(recv[0], vars, sigs) + method_args_join(args, vars, 0, sigs) + ")"
         _ => "<TODO>"
     }
 }
 
-fn method_args_join(args []Expr, vars []VarInfo, i int) -> string {
+fn method_args_join(args []Expr, vars []VarInfo, i int, sigs []FnSig) -> string {
     if i >= args.len {
         return ""
     }
-    return ", " + emit_expr(args[i], vars) + method_args_join(args, vars, i + 1)
+    return ", " + emit_expr_full(args[i], vars, sigs) + method_args_join(args, vars, i + 1, sigs)
 }
 
-fn emit_first_arg(args []Expr, vars []VarInfo, zero string) -> string {
+fn emit_first_arg(args []Expr, vars []VarInfo, zero string, sigs []FnSig) -> string {
     if args.len > 0 {
-        return emit_expr(args[0], vars)
+        return emit_expr_full(args[0], vars, sigs)
     }
     return zero
 }
 
-fn emit_plain_args(args []Expr, vars []VarInfo) -> string {
-    return plain_args_join(args, vars, 0)
+fn emit_plain_args(args []Expr, vars []VarInfo, sigs []FnSig) -> string {
+    return plain_args_join(args, vars, 0, sigs)
 }
 
-fn plain_args_join(args []Expr, vars []VarInfo, i int) -> string {
+fn plain_args_join(args []Expr, vars []VarInfo, i int, sigs []FnSig) -> string {
     if i >= args.len {
         return ""
     }
-    cur = emit_expr(args[i], vars)
+    cur = emit_expr_full(args[i], vars, sigs)
     if i == args.len - 1 {
         return cur
     }
-    return cur + ", " + plain_args_join(args, vars, i + 1)
+    return cur + ", " + plain_args_join(args, vars, i + 1, sigs)
 }
 
 // emit_variadic_pack renders dot_slice_pack(N, (DotAny[]){...}) for a
@@ -489,25 +552,25 @@ fn plain_args_join(args []Expr, vars []VarInfo, i int) -> string {
 // through DotAny slots as intptr_t, exactly like Go emitVariadicCall
 // (isPointerLike check); heap values (string/slice/struct/...) pass through
 // as pointers.
-fn emit_variadic_pack(args []Expr, vars []VarInfo) -> string {
-    packed = pack_args(args, vars, 0)
+fn emit_variadic_pack(args []Expr, vars []VarInfo, sigs []FnSig) -> string {
+    packed = pack_args(args, vars, 0, sigs)
     return "dot_slice_pack(" + int_to_str(args.len) + ", (DotAny[]){{" + packed + "}})"
 }
 
-fn pack_args(args []Expr, vars []VarInfo, i int) -> string {
+fn pack_args(args []Expr, vars []VarInfo, i int, sigs []FnSig) -> string {
     if i >= args.len {
         return ""
     }
-    one = pack_arg(args, vars, i)
+    one = pack_arg(args, vars, i, sigs)
     if i == args.len - 1 {
         return one
     }
-    return one + ", " + pack_args(args, vars, i + 1)
+    return one + ", " + pack_args(args, vars, i + 1, sigs)
 }
 
-fn pack_arg(args []Expr, vars []VarInfo, i int) -> string {
-    val = emit_expr(args[i], vars)
-    if is_heap(infer_type(args[i], vars)) {
+fn pack_arg(args []Expr, vars []VarInfo, i int, sigs []FnSig) -> string {
+    val = emit_expr_full(args[i], vars, sigs)
+    if is_heap(infer_type_full(args[i], vars, sigs)) {
         return val
     }
     return "(DotAny)(intptr_t)(" + val + ")"
@@ -534,16 +597,16 @@ fn is_range_op_of(op TokenType) -> bool {
 // emit_index: strings index into the DotString payload (Go emitIndex
 // KindString branch); slices and fixed arrays go through dot_slice_get (the
 // MVP lowers Array to DotSlice* too, see codegen_types.dot).
-fn emit_index(left []Expr, index []Expr, vars []VarInfo) -> string {
+fn emit_index(left []Expr, index []Expr, vars []VarInfo, sigs []FnSig) -> string {
     if left.len == 0 or index.len == 0 {
         return "<TODO>"
     }
     if is_range_index(index[0]) {
-        return emit_slice_expr(left[0], index[0], vars)
+        return emit_slice_expr(left[0], index[0], vars, sigs)
     }
-    obj = emit_expr(left[0], vars)
-    idx = emit_expr(index[0], vars)
-    left_ty = infer_type(left[0], vars)
+    obj = emit_expr_full(left[0], vars, sigs)
+    idx = emit_expr_full(index[0], vars, sigs)
+    left_ty = infer_type_full(left[0], vars, sigs)
     return match left_ty {
         Type.String => "((DotString*)" + obj + ")->data[" + idx + "]"
         Type.Slice(_) => emit_slice_get(obj, idx, left_ty)
@@ -586,35 +649,35 @@ fn is_scalar_ty(t Type) -> bool {
 // helper in the runtime, so the Go form rebuilds a DotString from the
 // sub-sliced bytes. Missing bounds default to 0 / dot_slice_len(obj); ..=
 // (DotDotEq) makes the range inclusive.
-fn emit_slice_expr(obj_e Expr, range_e Expr, vars []VarInfo) -> string {
+fn emit_slice_expr(obj_e Expr, range_e Expr, vars []VarInfo, sigs []FnSig) -> string {
     return match range_e {
-        Expr.Binary(lo, op, hi, _) => emit_slice_parts(obj_e, lo, op, hi, vars)
+        Expr.Binary(lo, op, hi, _) => emit_slice_parts(obj_e, lo, op, hi, vars, sigs)
         _ => "<TODO>"
     }
 }
 
-fn emit_slice_parts(obj_e Expr, lo []Expr, op TokenType, hi []Expr, vars []VarInfo) -> string {
-    obj = emit_expr(obj_e, vars)
-    lo_s = slice_lo(lo, vars)
-    hi_s = slice_hi(hi, obj, vars)
+fn emit_slice_parts(obj_e Expr, lo []Expr, op TokenType, hi []Expr, vars []VarInfo, sigs []FnSig) -> string {
+    obj = emit_expr_full(obj_e, vars, sigs)
+    lo_s = slice_lo(lo, vars, sigs)
+    hi_s = slice_hi(hi, obj, vars, sigs)
     inc_s = range_inc_str(op)
     sub = "dot_slice_sub(" + obj + ", " + lo_s + ", " + hi_s + ", " + inc_s + ")"
-    if is_string_ty(infer_type(obj_e, vars)) {
+    if is_string_ty(infer_type_full(obj_e, vars, sigs)) {
         return "dot_string_from_bytes(dot_slice_sub(dot_string_to_bytes(" + obj + "), " + lo_s + ", " + hi_s + ", " + inc_s + "))"
     }
     return sub
 }
 
-fn slice_lo(lo []Expr, vars []VarInfo) -> string {
+fn slice_lo(lo []Expr, vars []VarInfo, sigs []FnSig) -> string {
     if lo.len > 0 {
-        return emit_expr(lo[0], vars)
+        return emit_expr_full(lo[0], vars, sigs)
     }
     return "0"
 }
 
-fn slice_hi(hi []Expr, obj string, vars []VarInfo) -> string {
+fn slice_hi(hi []Expr, obj string, vars []VarInfo, sigs []FnSig) -> string {
     if hi.len > 0 {
-        return emit_expr(hi[0], vars)
+        return emit_expr_full(hi[0], vars, sigs)
     }
     return "dot_slice_len(" + obj + ")"
 }
@@ -629,12 +692,12 @@ fn range_inc_str(op TokenType) -> string {
 // emit_field: struct fields are dot_-prefixed C members reached through the
 // heap pointer (cFieldName types.go:301); strings and slices expose the
 // .len (and slices .cap) builtin props (Go emitBuiltinProp).
-fn emit_field(left []Expr, name string, vars []VarInfo) -> string {
+fn emit_field(left []Expr, name string, vars []VarInfo, sigs []FnSig) -> string {
     if left.len == 0 {
         return "<TODO>"
     }
-    obj = emit_expr(left[0], vars)
-    t = infer_type(left[0], vars)
+    obj = emit_expr_full(left[0], vars, sigs)
+    t = infer_type_full(left[0], vars, sigs)
     return match t {
         Type.String => {
             if str_eq(name, "len") {
@@ -672,16 +735,16 @@ fn emit_slice_prop(obj string, name string) -> string {
 // enum-match lands (stages 5-6). A match with zero arms emits "<TODO>": it
 // has no result value (Go leaves _match_res uninitialized) and the checker
 // rejects it anyway.
-fn emit_match(value []Expr, arms []MatchArm, vars []VarInfo) -> string {
+fn emit_match(value []Expr, arms []MatchArm, vars []VarInfo, sigs []FnSig) -> string {
     if value.len == 0 {
         return "<TODO>"
     }
     if arms.len == 0 {
         return "<TODO>"
     }
-    subj = emit_expr(value[0], vars)
-    subj_ty = ty_tag(infer_type(value[0], vars))
-    return emit_match_arms(arms, 0, subj, subj_ty, vars)
+    subj = emit_expr_full(value[0], vars, sigs)
+    subj_ty = ty_tag(infer_type_full(value[0], vars, sigs))
+    return emit_match_arms(arms, 0, subj, subj_ty, vars, sigs)
 }
 
 // emit_match_arms folds the arm list right-to-left into nested ternaries
@@ -689,18 +752,18 @@ fn emit_match(value []Expr, arms []MatchArm, vars []VarInfo) -> string {
 // and ends the chain; if the last arm still has a cond, the chain falls
 // back to "0" (the same "no matching arm" gap as Go's uninitialized
 // _match_res; the checker guarantees a catch-all arm in practice).
-fn emit_match_arms(arms []MatchArm, i int, subj string, subj_ty string, vars []VarInfo) -> string {
+fn emit_match_arms(arms []MatchArm, i int, subj string, subj_ty string, vars []VarInfo, sigs []FnSig) -> string {
     if i >= arms.len {
         return "0"
     }
     arm = arms[i]
     cond = match_arm_cond(arm, subj, subj_ty)
-    body = match_arm_body(arm, subj, vars)
-    cond = match_guard_cond(cond, arm, subj, vars)
+    body = match_arm_body(arm, subj, vars, sigs)
+    cond = match_guard_cond(cond, arm, subj, vars, sigs)
     if cond.len == 0 {
         return body
     }
-    return ifexpr_to_c(cond, body, emit_match_arms(arms, i + 1, subj, subj_ty, vars))
+    return ifexpr_to_c(cond, body, emit_match_arms(arms, i + 1, subj, subj_ty, vars, sigs))
 }
 
 // match_arm_cond renders the dispatch condition of one arm. Ident and
@@ -715,8 +778,8 @@ fn match_arm_cond(arm MatchArm, subj string, subj_ty string) -> string {
     }
 }
 
-fn match_arm_body(arm MatchArm, subj string, vars []VarInfo) -> string {
-    body = emit_expr(arm.body, vars)
+fn match_arm_body(arm MatchArm, subj string, vars []VarInfo, sigs []FnSig) -> string {
+    body = emit_expr_full(arm.body, vars, sigs)
     if is_ident_pattern(arm.pattern) {
         return str_replace_all(body, ident_pattern_name(arm.pattern), "(" + subj + ")")
     }
@@ -760,11 +823,11 @@ fn ident_pattern_name(p Pattern) -> string {
 // match_guard_cond folds the optional arm guard into the dispatch
 // condition. Ident-pattern guards get the same subject substitution as the
 // body, so they can mention the binding.
-fn match_guard_cond(cond string, arm MatchArm, subj string, vars []VarInfo) -> string {
+fn match_guard_cond(cond string, arm MatchArm, subj string, vars []VarInfo, sigs []FnSig) -> string {
     if not arm.guard.is_some() {
         return cond
     }
-    g = emit_expr(arm.guard.unwrap(), vars)
+    g = emit_expr_full(arm.guard.unwrap(), vars, sigs)
     if is_ident_pattern(arm.pattern) {
         g = str_replace_all(g, ident_pattern_name(arm.pattern), "(" + subj + ")")
     }
@@ -799,20 +862,20 @@ fn str_replace_all(s string, old string, new string) -> string {
 // the heap yet (Go emitBoxValue allocates a heap copy), so a struct
 // compound literal inside an array literal is wrong on the MVP — that
 // arrives with ARC/retain on stage 6.
-fn emit_array_lit(elements []Expr, vars []VarInfo) -> string {
-    packed = array_pack_args(elements, vars, 0)
+fn emit_array_lit(elements []Expr, vars []VarInfo, sigs []FnSig) -> string {
+    packed = array_pack_args(elements, vars, 0, sigs)
     return "dot_slice_from_array(" + int_to_str(elements.len) + ", (DotAny[]){{" + packed + "}})"
 }
 
-fn array_pack_args(elements []Expr, vars []VarInfo, i int) -> string {
+fn array_pack_args(elements []Expr, vars []VarInfo, i int, sigs []FnSig) -> string {
     if i >= elements.len {
         return ""
     }
-    one = array_pack_arg(elements, vars, i)
+    one = array_pack_arg(elements, vars, i, sigs)
     if i == elements.len - 1 {
         return one
     }
-    return one + ", " + array_pack_args(elements, vars, i + 1)
+    return one + ", " + array_pack_args(elements, vars, i + 1, sigs)
 }
 
 // [РЕШЕНИЕ] ARC (6b): a heap-typed IDENT element must be retained — the
@@ -822,9 +885,9 @@ fn array_pack_args(elements []Expr, vars []VarInfo, i int) -> string {
 // dot_string_concat, fn returns are +1), so they pass through as-is — an
 // extra retain would leak a ref. Go mirrors this via emitRetain (lvalue path)
 // vs plain emitExpr (rvalue path); here Ident is the lvalue proxy.
-fn array_pack_arg(elements []Expr, vars []VarInfo, i int) -> string {
-    val = emit_expr(elements[i], vars)
-    if is_heap(infer_type(elements[i], vars)) {
+fn array_pack_arg(elements []Expr, vars []VarInfo, i int, sigs []FnSig) -> string {
+    val = emit_expr_full(elements[i], vars, sigs)
+    if is_heap(infer_type_full(elements[i], vars, sigs)) {
         if is_ident_expr(elements[i]) {
             return "dot_retain((DotRefcnt*)(" + val + "))"
         }
@@ -847,9 +910,9 @@ fn array_pack_arg(elements []Expr, vars []VarInfo, i int) -> string {
 // RHS, a call argument and a return value. (Known MVP hazard: dot_release
 // on the payload pointer reads a garbage refcnt — struct release semantics
 // land with a later ARC stage; the box itself is leaked.)
-fn emit_struct_lit(name string, fields []StructLitField, vars []VarInfo) -> string {
+fn emit_struct_lit(name string, fields []StructLitField, vars []VarInfo, sigs []FnSig) -> string {
     fnames = struct_lit_field_names(fields, 0, []string{})
-    fvals = struct_lit_field_values(fields, 0, vars, []string{})
+    fvals = struct_lit_field_values(fields, 0, vars, sigs, []string{})
     lit = struct_literal_to_c(name, fnames, fvals)
     return "dot_box_payload(dot_box_struct(sizeof(Dot" + name + "), &" + lit + "))"
 }
@@ -862,20 +925,20 @@ fn struct_lit_field_names(fields []StructLitField, i int, acc []string) -> []str
     return struct_lit_field_names(fields, i + 1, acc)
 }
 
-fn struct_lit_field_values(fields []StructLitField, i int, vars []VarInfo, acc []string) -> []string {
+fn struct_lit_field_values(fields []StructLitField, i int, vars []VarInfo, sigs []FnSig, acc []string) -> []string {
     if i >= fields.len {
         return acc
     }
     // [РЕШЕНИЕ] ARC (6b): same ownership rule as array_pack_arg — a
     // heap-typed IDENT field value is retained on the way into the literal
     // (the struct owns the ref); literals and calls pass through unchanged.
-    val = emit_expr(fields[i].value, vars)
-    if is_heap(infer_type(fields[i].value, vars)) and is_ident_expr(fields[i].value) {
+    val = emit_expr_full(fields[i].value, vars, sigs)
+    if is_heap(infer_type_full(fields[i].value, vars, sigs)) and is_ident_expr(fields[i].value) {
         acc.push("dot_retain((DotRefcnt*)(" + val + "))")
     } else {
         acc.push(val)
     }
-    return struct_lit_field_values(fields, i + 1, vars, acc)
+    return struct_lit_field_values(fields, i + 1, vars, sigs, acc)
 }
 
 // [РЕШЕНИЕ]: map literals mirror Go emitMapLit exactly — an empty literal
@@ -892,7 +955,7 @@ fn emit_map_lit(entries []MapEntryNode) -> string {
 // [РЕШЕНИЕ]: Go emitAssignExpr falls back to a plain "=" for
 // %/bitwise/shift assigns; here every assign op maps to its real C
 // compound operator. Multi-target assignments stay "<TODO>".
-fn emit_assign(left []Expr, op TokenType, right []Expr, vars []VarInfo) -> string {
+fn emit_assign(left []Expr, op TokenType, right []Expr, vars []VarInfo, sigs []FnSig) -> string {
     if left.len == 0 or right.len == 0 {
         return "<TODO>"
     }
@@ -900,7 +963,7 @@ fn emit_assign(left []Expr, op TokenType, right []Expr, vars []VarInfo) -> strin
     if op_s.len == 0 {
         return "<TODO>"
     }
-    return "(" + emit_expr(left[0], vars) + " " + op_s + " " + emit_expr(right[0], vars) + ")"
+    return "(" + emit_expr_full(left[0], vars, sigs) + " " + op_s + " " + emit_expr_full(right[0], vars, sigs) + ")"
 }
 
 fn assign_op_str(op TokenType) -> string {
@@ -924,44 +987,44 @@ fn assign_op_str(op TokenType) -> string {
 
 // array_lit_elem_ty folds element types like checker.check_array_elems:
 // the first non-Unknown element type wins.
-fn array_lit_elem_ty(elements []Expr, i int, acc Type, vars []VarInfo) -> Type {
+fn array_lit_elem_ty(elements []Expr, i int, acc Type, vars []VarInfo, sigs []FnSig) -> Type {
     if i >= elements.len {
         return acc
     }
-    t = infer_type(elements[i], vars)
+    t = infer_type_full(elements[i], vars, sigs)
     next = if is_unknown_ty(acc) { t } else { acc }
-    return array_lit_elem_ty(elements, i + 1, next, vars)
+    return array_lit_elem_ty(elements, i + 1, next, vars, sigs)
 }
 
 // tuple_lit_ty mirrors checker.tuple_type: the first element's type (the
 // checker has no Type.Tuple yet).
-fn tuple_lit_ty(elements []TupleElem, vars []VarInfo) -> Type {
+fn tuple_lit_ty(elements []TupleElem, vars []VarInfo, sigs []FnSig) -> Type {
     if elements.len > 0 {
-        return infer_type(elements[0].value, vars)
+        return infer_type_full(elements[0].value, vars, sigs)
     }
     return Type.Void
 }
 
 // match_first_arm_ty: the match type is the first arm's body type (the
 // checker folds all arms and requires them compatible).
-fn match_first_arm_ty(arms []MatchArm, vars []VarInfo) -> Type {
+fn match_first_arm_ty(arms []MatchArm, vars []VarInfo, sigs []FnSig) -> Type {
     if arms.len > 0 {
-        return infer_type(arms[0].body, vars)
+        return infer_type_full(arms[0].body, vars, sigs)
     }
     return Type.Unknown
 }
 
-fn assign_value_ty(right []Expr, vars []VarInfo) -> Type {
+fn assign_value_ty(right []Expr, vars []VarInfo, sigs []FnSig) -> Type {
     if right.len > 0 {
-        return infer_type(right[0], vars)
+        return infer_type_full(right[0], vars, sigs)
     }
     return Type.Unknown
 }
 
-fn map_lit_ty(entries []MapEntryNode, vars []VarInfo) -> Type {
+fn map_lit_ty(entries []MapEntryNode, vars []VarInfo, sigs []FnSig) -> Type {
     if entries.len > 0 {
-        k = infer_type(entries[0].key, vars)
-        v = infer_type(entries[0].value, vars)
+        k = infer_type_full(entries[0].key, vars, sigs)
+        v = infer_type_full(entries[0].value, vars, sigs)
         return Type.Map([]Type{k}, []Type{v})
     }
     return Type.Map([]Type{Type.Unknown}, []Type{Type.Unknown})
