@@ -1495,4 +1495,188 @@ pub fn main() {
     } else {
         print("ERR: infer field unknown")
     }
+
+    // --- codegen_expr (T-051, stage 3c: Match/ArrayLit/StructLit/MapLit/Assign) ---
+
+    m3_arms = []MatchArm{}
+    m3_arms.push(MatchArm { pattern: Pattern.IntLit(5), guard: None, body: mki(10) })
+    m3_arms.push(MatchArm { pattern: Pattern.IntLit(7), guard: None, body: mki(20) })
+    m3_arms.push(MatchArm { pattern: Pattern.CatchAll, guard: None, body: mki(30) })
+    c204 = emit_expr(Expr.Match([mki(7)], m3_arms, s0()), []VarInfo{})
+    if str_eq(c204, "(((7 == 5)) ? (10) : ((((7 == 7)) ? (20) : (30))))") {
+        print("OK: emit match int arms")
+    } else {
+        print("ERR: emit match int arms: " + c204)
+    }
+
+    m1_arms = []MatchArm{}
+    m1_arms.push(MatchArm { pattern: Pattern.IntLit(42), guard: None, body: mki(10) })
+    c205 = emit_expr(Expr.Match([mki(42)], m1_arms, s0()), []VarInfo{})
+    if str_eq(c205, "(((42 == 42)) ? (10) : (0))") {
+        print("OK: emit match one arm")
+    } else {
+        print("ERR: emit match one arm: " + c205)
+    }
+
+    mg_arms = []MatchArm{}
+    mg_arms.push(MatchArm { pattern: Pattern.IntLit(7), guard: Some(mkbin(mki(7), TokenType.Gt, mki(5))), body: mki(10) })
+    mg_arms.push(MatchArm { pattern: Pattern.CatchAll, guard: None, body: mki(30) })
+    c206 = emit_expr(Expr.Match([mki(7)], mg_arms, s0()), []VarInfo{})
+    if str_eq(c206, "(((7 == 7) && ((7 > 5))) ? (10) : (30))") {
+        print("OK: emit match guard")
+    } else {
+        print("ERR: emit match guard: " + c206)
+    }
+
+    mi_arms = []MatchArm{}
+    mi_arms.push(MatchArm { pattern: Pattern.Ident("n"), guard: None, body: mkbin(mkid("n"), TokenType.Plus, mki(1)) })
+    c207 = emit_expr(Expr.Match([mki(42)], mi_arms, s0()), []VarInfo{})
+    if str_eq(c207, "((true) ? (((42) + 1)) : (0))") {
+        print("OK: emit match ident pattern")
+    } else {
+        print("ERR: emit match ident pattern: " + c207)
+    }
+
+    mv_arms = []MatchArm{}
+    mv_arms.push(MatchArm { pattern: Pattern.Variant("Option.Some", ["v"]), guard: None, body: mki(99) })
+    mv_arms.push(MatchArm { pattern: Pattern.CatchAll, guard: None, body: mki(0) })
+    c208 = emit_expr(Expr.Match([mki(1)], mv_arms, s0()), []VarInfo{})
+    if str_eq(c208, "/* <TODO variant match> */ 0") {
+        print("OK: emit match variant pattern")
+    } else {
+        print("ERR: emit match variant pattern: " + c208)
+    }
+
+    c209 = emit_expr(Expr.Match([mki(1)], []MatchArm{}, s0()), []VarInfo{})
+    if str_eq(c209, "<TODO>") {
+        print("OK: emit match no arms")
+    } else {
+        print("ERR: emit match no arms: " + c209)
+    }
+
+    c210 = emit_expr(Expr.ArrayLit([mki(1), mki(2), mki(3)], s0()), []VarInfo{})
+    if str_eq(c210, "dot_slice_from_array(3, (DotAny[]){{(DotAny)(intptr_t)(1), (DotAny)(intptr_t)(2), (DotAny)(intptr_t)(3)}})") {
+        print("OK: emit array lit ints")
+    } else {
+        print("ERR: emit array lit ints: " + c210)
+    }
+
+    c211 = emit_expr(Expr.ArrayLit([mks("a"), mks("b")], s0()), []VarInfo{})
+    if str_eq(c211, "dot_slice_from_array(2, (DotAny[]){{dot_string_from_lit(\"a\", 1), dot_string_from_lit(\"b\", 1)}})") {
+        print("OK: emit array lit strings")
+    } else {
+        print("ERR: emit array lit strings: " + c211)
+    }
+
+    c212 = emit_expr(Expr.ArrayLit([]Expr{}, s0()), []VarInfo{})
+    if str_eq(c212, "dot_slice_from_array(0, (DotAny[]){{}})") {
+        print("OK: emit array lit empty")
+    } else {
+        print("ERR: emit array lit empty: " + c212)
+    }
+
+    sl_fields = []StructLitField{}
+    sl_fields.push(StructLitField { name: "x", value: mki(1) })
+    sl_fields.push(StructLitField { name: "y", value: mkbin(mki(2), TokenType.Star, mki(3)) })
+    c213 = emit_expr(Expr.StructLit("Point", sl_fields, s0()), []VarInfo{})
+    if str_eq(c213, "((DotPoint){{ .dot_x = 1, .dot_y = (2 * 3) }})") {
+        print("OK: emit struct lit")
+    } else {
+        print("ERR: emit struct lit: " + c213)
+    }
+
+    c214 = emit_expr(Expr.MapLit([]MapEntryNode{}, s0()), []VarInfo{})
+    if str_eq(c214, "dot_map_new()") {
+        print("OK: emit map lit empty")
+    } else {
+        print("ERR: emit map lit empty: " + c214)
+    }
+
+    mp_entries = []MapEntryNode{}
+    mp_entries.push(MapEntryNode { key: mks("a"), value: mki(1) })
+    mp_entries.push(MapEntryNode { key: mks("b"), value: mki(2) })
+    c215 = emit_expr(Expr.MapLit(mp_entries, s0()), []VarInfo{})
+    if str_eq(c215, "/* map literal with 2 entries */ dot_map_new()") {
+        print("OK: emit map lit entries")
+    } else {
+        print("ERR: emit map lit entries: " + c215)
+    }
+
+    c216 = emit_expr(Expr.Assign([mkid("x")], TokenType.Assign, [mki(5)], s0()), []VarInfo{})
+    if str_eq(c216, "(x = 5)") {
+        print("OK: emit assign eq")
+    } else {
+        print("ERR: emit assign eq: " + c216)
+    }
+
+    c217 = emit_expr(Expr.Assign([mkid("x")], TokenType.PlusAssign, [mki(5)], s0()), []VarInfo{})
+    if str_eq(c217, "(x += 5)") {
+        print("OK: emit assign plus")
+    } else {
+        print("ERR: emit assign plus: " + c217)
+    }
+
+    c218 = emit_expr(Expr.Assign([mkid("x")], TokenType.ShrAssign, [mki(2)], s0()), []VarInfo{})
+    if str_eq(c218, "(x >>= 2)") {
+        print("OK: emit assign shr")
+    } else {
+        print("ERR: emit assign shr: " + c218)
+    }
+
+    c219 = emit_expr(Expr.Assign([mkid("x")], TokenType.PercentAssign, [mki(2)], s0()), []VarInfo{})
+    if str_eq(c219, "(x %= 2)") {
+        print("OK: emit assign mod")
+    } else {
+        print("ERR: emit assign mod: " + c219)
+    }
+
+    c220 = emit_expr(Expr.Assign([mkid("x")], TokenType.PipeAssign, [mki(1)], s0()), []VarInfo{})
+    if str_eq(c220, "(x |= 1)") {
+        print("OK: emit assign pipe")
+    } else {
+        print("ERR: emit assign pipe: " + c220)
+    }
+
+    c221 = emit_expr(Expr.TupleLit([TupleElem { name: None, value: mki(1) }], s0()), []VarInfo{})
+    if str_eq(c221, "<TODO>") {
+        print("OK: emit tuple todo")
+    } else {
+        print("ERR: emit tuple todo: " + c221)
+    }
+
+    it_arr = infer_type(Expr.ArrayLit([mki(1), mki(2)], s0()), []VarInfo{})
+    if Type.Array(elem: []Type{Type.Int}).equals(it_arr) {
+        print("OK: infer array lit")
+    } else {
+        print("ERR: infer array lit")
+    }
+
+    match_arm_int = MatchArm { pattern: Pattern.IntLit(5), guard: None, body: mki(10) }
+    it_match = infer_type(Expr.Match([mki(5)], [match_arm_int], s0()), []VarInfo{})
+    if Type.Int.equals(it_match) {
+        print("OK: infer match arm")
+    } else {
+        print("ERR: infer match arm")
+    }
+
+    it_assign = infer_type(Expr.Assign([mkid("x")], TokenType.Assign, [mki(5)], s0()), []VarInfo{})
+    if Type.Int.equals(it_assign) {
+        print("OK: infer assign")
+    } else {
+        print("ERR: infer assign")
+    }
+
+    it_struct = infer_type(Expr.StructLit("Point", []StructLitField{}, s0()), []VarInfo{})
+    if Type.Struct(name: "Point").equals(it_struct) {
+        print("OK: infer struct lit")
+    } else {
+        print("ERR: infer struct lit")
+    }
+
+    it_map = infer_type(Expr.MapLit([MapEntryNode { key: mks("a"), value: mki(1) }], s0()), []VarInfo{})
+    if Type.Map(key: []Type{Type.String}, val: []Type{Type.Int}).equals(it_map) {
+        print("OK: infer map lit")
+    } else {
+        print("ERR: infer map lit")
+    }
 }

@@ -1,10 +1,10 @@
-// stdlib/codegen_expr.dot - T-051 stages 3a+3b: expression emitter for the
+// stdlib/codegen_expr.dot - T-051 stages 3a-3c: expression emitter for the
 // self-hosted C codegen. Port of Go codegen/emit_expr.go. Covered: literals,
-// ident, unary, binary, if-expr (3a) and Call (plain + builtins), Index,
+// ident, unary, binary, if-expr (3a); Call (plain + builtins), Index,
 // Slice s[a..b] (Index with a DotDot range, see parser_pratt.dot), Field
-// with .len/.cap builtin props (3b).
-// ArrayLit/TupleLit/Match/Assign/FnLit/StructLit/MapLit land in stage 3c
-// and emit a "<TODO>" marker for now.
+// with .len/.cap builtin props (3b); Match (ternary chain), ArrayLit,
+// StructLit, MapLit, Assign (3c). TupleLit stays "<TODO>" (the checker has
+// no Type.Tuple yet), as does FnLit until closures land.
 //
 // NOTE [РЕШЕНИЕ]: vars is a []VarInfo of name/type pairs, NOT map[string]Type.
 // The stdlib stays map-free so the self-hosted codegen never has to emit map
@@ -37,6 +37,12 @@ pub fn infer_type(e Expr, vars []VarInfo) -> Type {
         Expr.Call(_, _, _) => Type.Unknown
         Expr.Index(left, index, _) => infer_index_type(left, index, vars)
         Expr.Field(_, _, _) => Type.Unknown
+        Expr.ArrayLit(elements, _) => Type.Array([]Type{array_lit_elem_ty(elements, 0, Type.Unknown, vars)})
+        Expr.TupleLit(elements, _) => tuple_lit_ty(elements, vars)
+        Expr.Match(_, arms, _) => match_first_arm_ty(arms, vars)
+        Expr.Assign(_, _, right, _) => assign_value_ty(right, vars)
+        Expr.StructLit(name, _, _) => Type.Struct(name)
+        Expr.MapLit(entries, _) => map_lit_ty(entries, vars)
         _ => Type.Unknown
     }
 }
@@ -186,6 +192,16 @@ pub fn emit_expr(e Expr, vars []VarInfo) -> string {
         Expr.Call(callee, args, _) => emit_call(callee, args, vars)
         Expr.Index(left, index, _) => emit_index(left, index, vars)
         Expr.Field(left, name, _) => emit_field(left, name, vars)
+        Expr.Match(value, arms, _) => emit_match(value, arms, vars)
+        Expr.ArrayLit(elements, _) => emit_array_lit(elements, vars)
+        // [РЕШЕНИЕ]: TupleLit stays "<TODO>": the self-hosted checker has no
+        // Type.Tuple (tuple_type is a placeholder returning the first
+        // element's type), and C tuples need DotTuple_N typedef
+        // registration from the declaration pass (stage 5).
+        Expr.TupleLit(_, _) => "<TODO>"
+        Expr.StructLit(name, fields, _) => emit_struct_lit(name, fields, vars)
+        Expr.MapLit(entries, _) => emit_map_lit(entries)
+        Expr.Assign(left, op, right, _) => emit_assign(left, op, right, vars)
         _ => "<TODO>"
     }
 }
@@ -641,4 +657,292 @@ fn emit_slice_prop(obj string, name string) -> string {
         return "dot_slice_cap(" + obj + ")"
     }
     return "<TODO>"
+}
+
+// --- Stage 3c: Match / ArrayLit / StructLit / MapLit / Assign ---
+
+// [РЕШЕНИЕ]: a match renders as a ternary chain (Go emits a GCC statement
+// expression with _match_res; the MVP avoids statement expressions). An
+// Ident pattern is implemented by TEXTUALLY substituting the subject into
+// the arm body (and guard): the subject text may be duplicated, side
+// effects re-evaluated, and the replace is a naive substring match (a short
+// binding name inside a longer identifier gets replaced too). Proper C
+// temporaries/bindings need statement codegen (stages 4-5). A Variant
+// pattern lowers to the tail arm with a "<TODO variant match>" marker until
+// enum-match lands (stages 5-6). A match with zero arms emits "<TODO>": it
+// has no result value (Go leaves _match_res uninitialized) and the checker
+// rejects it anyway.
+fn emit_match(value []Expr, arms []MatchArm, vars []VarInfo) -> string {
+    if value.len == 0 {
+        return "<TODO>"
+    }
+    if arms.len == 0 {
+        return "<TODO>"
+    }
+    subj = emit_expr(value[0], vars)
+    subj_ty = ty_tag(infer_type(value[0], vars))
+    return emit_match_arms(arms, 0, subj, subj_ty, vars)
+}
+
+// emit_match_arms folds the arm list right-to-left into nested ternaries
+// via ifexpr_to_c. A cond-less arm (CatchAll / Variant) becomes the tail
+// and ends the chain; if the last arm still has a cond, the chain falls
+// back to "0" (the same "no matching arm" gap as Go's uninitialized
+// _match_res; the checker guarantees a catch-all arm in practice).
+fn emit_match_arms(arms []MatchArm, i int, subj string, subj_ty string, vars []VarInfo) -> string {
+    if i >= arms.len {
+        return "0"
+    }
+    arm = arms[i]
+    cond = match_arm_cond(arm, subj, subj_ty)
+    body = match_arm_body(arm, subj, vars)
+    cond = match_guard_cond(cond, arm, subj, vars)
+    if cond.len == 0 {
+        return body
+    }
+    return ifexpr_to_c(cond, body, emit_match_arms(arms, i + 1, subj, subj_ty, vars))
+}
+
+// match_arm_cond renders the dispatch condition of one arm. Ident and
+// CatchAll patterns always match; IntLit compares through the стаб
+// match_cond_to_c; Variant arms get no cond ("") and act as tail arms.
+fn match_arm_cond(arm MatchArm, subj string, subj_ty string) -> string {
+    return match arm.pattern {
+        Pattern.IntLit(v) => match_cond_to_c(subj, subj_ty, int_to_str(v))
+        Pattern.Ident(_) => "true"
+        Pattern.CatchAll => ""
+        Pattern.Variant(_, _) => ""
+    }
+}
+
+fn match_arm_body(arm MatchArm, subj string, vars []VarInfo) -> string {
+    body = emit_expr(arm.body, vars)
+    if is_ident_pattern(arm.pattern) {
+        return str_replace_all(body, ident_pattern_name(arm.pattern), "(" + subj + ")")
+    }
+    if is_variant_pattern(arm.pattern) {
+        return "/* <TODO variant match> */ 0"
+    }
+    return body
+}
+
+// NOTE [РЕШЕНИЕ]: the pattern checks and payload extraction are if-based
+// (with expression-match helpers), NOT `return match ...` chains: the Go
+// compiler's ARC does not retain the _match_res temp of a match value, so
+// an arm returning a local heap string (e.g. `_ => body`) dangles after the
+// local is released at scope end (use-after-free, observed as corrupted
+// strings). Constants and fresh call/concat results are unaffected; if
+// statements return locals through the normal retained return path.
+fn is_ident_pattern(p Pattern) -> bool {
+    return match p {
+        Pattern.Ident(_) => true
+        _ => false
+    }
+}
+
+fn is_variant_pattern(p Pattern) -> bool {
+    return match p {
+        Pattern.Variant(_, _) => true
+        _ => false
+    }
+}
+
+// ident_pattern_name extracts the binding name of an Ident pattern ("" for
+// any other pattern). The returned string borrows the pattern's payload;
+// the caller must only read it while the pattern object is alive.
+fn ident_pattern_name(p Pattern) -> string {
+    return match p {
+        Pattern.Ident(name) => name
+        _ => ""
+    }
+}
+
+// match_guard_cond folds the optional arm guard into the dispatch
+// condition. Ident-pattern guards get the same subject substitution as the
+// body, so they can mention the binding.
+fn match_guard_cond(cond string, arm MatchArm, subj string, vars []VarInfo) -> string {
+    if not arm.guard.is_some() {
+        return cond
+    }
+    g = emit_expr(arm.guard.unwrap(), vars)
+    if is_ident_pattern(arm.pattern) {
+        g = str_replace_all(g, ident_pattern_name(arm.pattern), "(" + subj + ")")
+    }
+    if cond.len == 0 {
+        return "(" + g + ")"
+    }
+    return cond + " && (" + g + ")"
+}
+
+// str_replace_all replaces every occurrence of old in s with new.
+fn str_replace_all(s string, old string, new string) -> string {
+    if old.len == 0 {
+        return s
+    }
+    b = new_builder()
+    i = 0
+    for i < s.len {
+        if str_match_at(s, old, i) {
+            bwrite(b, new)
+            i += old.len
+        } else {
+            b.buf.push(s[i] as uint8)
+            i += 1
+        }
+    }
+    return bfinish(b)
+}
+
+// [РЕШЕНИЕ]: array literals reuse the emit_variadic_pack slot rule: heap
+// values (string/slice/struct/map) pass through as pointers, scalars are
+// smuggled via (DotAny)(intptr_t). Struct/enum ELEMENTS are not boxed to
+// the heap yet (Go emitBoxValue allocates a heap copy), so a struct
+// compound literal inside an array literal is wrong on the MVP — that
+// arrives with ARC/retain on stage 6.
+fn emit_array_lit(elements []Expr, vars []VarInfo) -> string {
+    packed = array_pack_args(elements, vars, 0)
+    return "dot_slice_from_array(" + int_to_str(elements.len) + ", (DotAny[]){{" + packed + "}})"
+}
+
+fn array_pack_args(elements []Expr, vars []VarInfo, i int) -> string {
+    if i >= elements.len {
+        return ""
+    }
+    one = array_pack_arg(elements, vars, i)
+    if i == elements.len - 1 {
+        return one
+    }
+    return one + ", " + array_pack_args(elements, vars, i + 1)
+}
+
+fn array_pack_arg(elements []Expr, vars []VarInfo, i int) -> string {
+    val = emit_expr(elements[i], vars)
+    if is_heap(infer_type(elements[i], vars)) {
+        return val
+    }
+    return "(DotAny)(intptr_t)(" + val + ")"
+}
+
+// [РЕШЕНИЕ]: struct literals go through the codegen стаб
+// struct_literal_to_c, but field names are passed WITH the dot_ prefix the
+// rest of the emitter already uses (emit_field -> obj->dot_name, Go
+// cFieldName) — the стаб itself writes the bare name. The стаб's redundant
+// double braces around the initializer are valid C, so its output is taken
+// verbatim.
+fn emit_struct_lit(name string, fields []StructLitField, vars []VarInfo) -> string {
+    fnames = struct_lit_field_names(fields, 0, []string{})
+    fvals = struct_lit_field_values(fields, 0, vars, []string{})
+    return struct_literal_to_c(name, fnames, fvals)
+}
+
+fn struct_lit_field_names(fields []StructLitField, i int, acc []string) -> []string {
+    if i >= fields.len {
+        return acc
+    }
+    acc.push("dot_" + fields[i].name)
+    return struct_lit_field_names(fields, i + 1, acc)
+}
+
+fn struct_lit_field_values(fields []StructLitField, i int, vars []VarInfo, acc []string) -> []string {
+    if i >= fields.len {
+        return acc
+    }
+    acc.push(emit_expr(fields[i].value, vars))
+    return struct_lit_field_values(fields, i + 1, vars, acc)
+}
+
+// [РЕШЕНИЕ]: map literals mirror Go emitMapLit exactly — an empty literal
+// is dot_map_new(), a populated one drops its entries with a comment. The
+// expression emitter cannot issue the dot_map_set statements an in-place
+// build needs; entry insertion arrives with statement codegen (stage 4).
+fn emit_map_lit(entries []MapEntryNode) -> string {
+    if entries.len == 0 {
+        return "dot_map_new()"
+    }
+    return "/* map literal with " + int_to_str(entries.len) + " entries */ dot_map_new()"
+}
+
+// [РЕШЕНИЕ]: Go emitAssignExpr falls back to a plain "=" for
+// %/bitwise/shift assigns; here every assign op maps to its real C
+// compound operator. Multi-target assignments stay "<TODO>".
+fn emit_assign(left []Expr, op TokenType, right []Expr, vars []VarInfo) -> string {
+    if left.len == 0 or right.len == 0 {
+        return "<TODO>"
+    }
+    op_s = assign_op_str(op)
+    if op_s.len == 0 {
+        return "<TODO>"
+    }
+    return "(" + emit_expr(left[0], vars) + " " + op_s + " " + emit_expr(right[0], vars) + ")"
+}
+
+fn assign_op_str(op TokenType) -> string {
+    return match op {
+        TokenType.Assign => "="
+        TokenType.PlusAssign => "+="
+        TokenType.MinusAssign => "-="
+        TokenType.StarAssign => "*="
+        TokenType.SlashAssign => "/="
+        TokenType.PercentAssign => "%="
+        TokenType.AmpAssign => "&="
+        TokenType.PipeAssign => "|="
+        TokenType.CaretAssign => "^="
+        TokenType.ShlAssign => "<<="
+        TokenType.ShrAssign => ">>="
+        _ => ""
+    }
+}
+
+// --- Stage 3c: infer_type helpers ---
+
+// array_lit_elem_ty folds element types like checker.check_array_elems:
+// the first non-Unknown element type wins.
+fn array_lit_elem_ty(elements []Expr, i int, acc Type, vars []VarInfo) -> Type {
+    if i >= elements.len {
+        return acc
+    }
+    t = infer_type(elements[i], vars)
+    next = if is_unknown_ty(acc) { t } else { acc }
+    return array_lit_elem_ty(elements, i + 1, next, vars)
+}
+
+// tuple_lit_ty mirrors checker.tuple_type: the first element's type (the
+// checker has no Type.Tuple yet).
+fn tuple_lit_ty(elements []TupleElem, vars []VarInfo) -> Type {
+    if elements.len > 0 {
+        return infer_type(elements[0].value, vars)
+    }
+    return Type.Void
+}
+
+// match_first_arm_ty: the match type is the first arm's body type (the
+// checker folds all arms and requires them compatible).
+fn match_first_arm_ty(arms []MatchArm, vars []VarInfo) -> Type {
+    if arms.len > 0 {
+        return infer_type(arms[0].body, vars)
+    }
+    return Type.Unknown
+}
+
+fn assign_value_ty(right []Expr, vars []VarInfo) -> Type {
+    if right.len > 0 {
+        return infer_type(right[0], vars)
+    }
+    return Type.Unknown
+}
+
+fn map_lit_ty(entries []MapEntryNode, vars []VarInfo) -> Type {
+    if entries.len > 0 {
+        k = infer_type(entries[0].key, vars)
+        v = infer_type(entries[0].value, vars)
+        return Type.Map([]Type{k}, []Type{v})
+    }
+    return Type.Map([]Type{Type.Unknown}, []Type{Type.Unknown})
+}
+
+fn is_unknown_ty(t Type) -> bool {
+    return match t {
+        Type.Unknown => true
+        _ => false
+    }
 }
