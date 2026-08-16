@@ -3,6 +3,7 @@ import "../stdlib/codegen.dot"
 import "../stdlib/codegen_types.dot"
 import "../stdlib/codegen_expr.dot"
 import "../stdlib/codegen_stmt.dot"
+import "../stdlib/codegen_decl.dot"
 
 fn s0() -> Span {
     p = Position.new("", 0, 0, 0)
@@ -39,6 +40,14 @@ fn mkun(op TokenType, r Expr) -> Expr {
 
 fn mkif(c Expr, t Expr, e Expr) -> Expr {
     return Expr.If([c], [Stmt.ExprStmt(t, s0())], [e], s0())
+}
+
+fn tn(name string) -> TypeNode {
+    return TypeNode.Named(name, s0())
+}
+
+fn mkparam(n string, ty string) -> Param {
+    return Param { name: n, ty: tn(ty) }
 }
 
 pub fn main() {
@@ -1960,5 +1969,269 @@ pub fn main() {
         print("OK: stmt nested for")
     } else {
         print("ERR: stmt nested for: " + c249)
+    }
+
+    // --- codegen_decl (T-051, stage 5a1+5a2) ---
+
+    b250 = new_builder()
+    f250 = []FieldDef{}
+    f250.push(FieldDef { name: "x", ty: tn("int") })
+    f250.push(FieldDef { name: "name", ty: tn("string") })
+    emit_struct_def("Point", f250, b250, 0)
+    c250 = bfinish(b250)
+    if str_eq(c250, "struct DotPoint {{\n    int64_t dot_x;\n    DotString* dot_name;\n}};\n\n") {
+        print("OK: decl struct def")
+    } else {
+        print("ERR: decl struct def: " + c250)
+    }
+
+    b251 = new_builder()
+    emit_struct_def("Empty", []FieldDef{}, b251, 0)
+    c251 = bfinish(b251)
+    if str_eq(c251, "struct DotEmpty {{\n}};\n\n") {
+        print("OK: decl struct empty")
+    } else {
+        print("ERR: decl struct empty: " + c251)
+    }
+
+    b252 = new_builder()
+    v252 = []VariantDef{}
+    v252.push(VariantDef { name: "Red", params: []Param{} })
+    v252.push(VariantDef { name: "Green", params: []Param{} })
+    v252.push(VariantDef { name: "Blue", params: []Param{} })
+    emit_enum_def("Color", v252, b252, 0)
+    c252 = bfinish(b252)
+    if str_eq(c252, "struct DotColor {{\n    DotRefcnt _rc;\n    int32_t tag;\n}};\n\n") {
+        print("OK: decl enum all unit")
+    } else {
+        print("ERR: decl enum all unit: " + c252)
+    }
+
+    b253 = new_builder()
+    v253 = []VariantDef{}
+    v253.push(VariantDef { name: "Circle", params: [Param { name: "r", ty: tn("int") }] })
+    v253.push(VariantDef { name: "Rect", params: [Param { name: "w", ty: tn("int") }, Param { name: "h", ty: tn("int") }] })
+    v253.push(VariantDef { name: "Point", params: []Param{} })
+    emit_enum_def("Shape", v253, b253, 0)
+    c253 = bfinish(b253)
+    if str_eq(c253, "struct DotShape {{\n    DotRefcnt _rc;\n    int32_t tag;\n    union {{\n        struct {{ /* Circle */\n            int64_t dot_Circle_r;\n        }};\n        struct {{ /* Rect */\n            int64_t dot_Rect_w;\n            int64_t dot_Rect_h;\n        }};\n    }};\n}};\n\n") {
+        print("OK: decl enum union")
+    } else {
+        print("ERR: decl enum union: " + c253)
+    }
+
+    b254 = new_builder()
+    emit_type_fwd("Point", b254, 0)
+    emit_type_fwd("Color", b254, 1)
+    c254 = bfinish(b254)
+    if str_eq(c254, "typedef struct DotPoint DotPoint;\n    typedef struct DotColor DotColor;\n") {
+        print("OK: decl type fwd")
+    } else {
+        print("ERR: decl type fwd: " + c254)
+    }
+
+    b255 = new_builder()
+    d255 = Decl.Fn("add", [mkparam("a", "int"), mkparam("b", "int")], []string{}, Some(tn("int")), []Stmt{}, s0())
+    emit_fn_decl(d255, b255, 0)
+    c255 = bfinish(b255)
+    if str_eq(c255, "int64_t Dot_add(int64_t, int64_t);\n") {
+        print("OK: decl fn decl params")
+    } else {
+        print("ERR: decl fn decl params: " + c255)
+    }
+
+    b256 = new_builder()
+    d256 = Decl.Fn("main", []Param{}, []string{}, None, []Stmt{}, s0())
+    emit_fn_decl(d256, b256, 0)
+    c256 = bfinish(b256)
+    if str_eq(c256, "void Dot_main(void);\n") {
+        print("OK: decl fn decl void")
+    } else {
+        print("ERR: decl fn decl void: " + c256)
+    }
+
+    b257 = new_builder()
+    d257 = Decl.Fn("name", [mkparam("p", "Point")], []string{}, Some(tn("string")), []Stmt{}, s0())
+    emit_fn_decl(d257, b257, 0)
+    c257 = bfinish(b257)
+    if str_eq(c257, "DotString* Dot_name(DotPoint*);\n") {
+        print("OK: decl fn decl struct")
+    } else {
+        print("ERR: decl fn decl struct: " + c257)
+    }
+
+    b258 = new_builder()
+    body258 = []Stmt{}
+    body258.push(Stmt.Let("c", Some(tn("int")), mkbin(mkid("a"), TokenType.Plus, mkid("b")), false, s0()))
+    body258.push(Stmt.Return(Some(mkid("c")), s0()))
+    d258 = Decl.Fn("add", [mkparam("a", "int"), mkparam("b", "int")], []string{}, Some(tn("int")), body258, s0())
+    emit_fn_def(d258, b258, 0)
+    c258 = bfinish(b258)
+    if str_eq(c258, "int64_t Dot_add(int64_t a, int64_t b) {{\n    int64_t c = (a + b);\n    return c;\n}}\n\n") {
+        print("OK: decl fn def body")
+    } else {
+        print("ERR: decl fn def body: " + c258)
+    }
+
+    b259 = new_builder()
+    d259 = Decl.Fn("noop", []Param{}, []string{}, None, []Stmt{}, s0())
+    emit_fn_def(d259, b259, 0)
+    c259 = bfinish(b259)
+    if str_eq(c259, "void Dot_noop() {{\n}}\n\n") {
+        print("OK: decl fn def empty")
+    } else {
+        print("ERR: decl fn def empty: " + c259)
+    }
+
+    b260 = new_builder()
+    body260 = []Stmt{}
+    body260.push(Stmt.ExprStmt(mki(42), s0()))
+    d260 = Decl.Fn("t", []Param{}, []string{}, Some(tn("int")), body260, s0())
+    emit_fn_def(d260, b260, 0)
+    c260 = bfinish(b260)
+    if str_eq(c260, "int64_t Dot_t() {{\n    int64_t _dot_ret_tail_1 = 42;\n    return _dot_ret_tail_1;\n}}\n\n") {
+        print("OK: decl fn def tail")
+    } else {
+        print("ERR: decl fn def tail: " + c260)
+    }
+
+    b261 = new_builder()
+    body261 = []Stmt{}
+    body261.push(Stmt.ExprStmt(mkid("a"), s0()))
+    d261 = Decl.Fn("id", [mkparam("a", "int")], []string{}, Some(tn("int")), body261, s0())
+    emit_fn_def(d261, b261, 0)
+    c261 = bfinish(b261)
+    if str_eq(c261, "int64_t Dot_id(int64_t a) {{\n    int64_t _dot_ret_tail_1 = a;\n    return _dot_ret_tail_1;\n}}\n\n") {
+        print("OK: decl fn def tail param")
+    } else {
+        print("ERR: decl fn def tail param: " + c261)
+    }
+
+    b262 = new_builder()
+    body262 = []Stmt{}
+    body262.push(Stmt.Let("x", Some(tn("int")), mki(5), false, s0()))
+    body262.push(Stmt.ExprStmt(mkid("x"), s0()))
+    d262 = Decl.Fn("t2", []Param{}, []string{}, Some(tn("int")), body262, s0())
+    emit_fn_def(d262, b262, 0)
+    c262 = bfinish(b262)
+    if str_eq(c262, "int64_t Dot_t2() {{\n    int64_t x = 5;\n    int64_t _dot_ret_tail_1 = x;\n    return _dot_ret_tail_1;\n}}\n\n") {
+        print("OK: decl fn def tail local")
+    } else {
+        print("ERR: decl fn def tail local: " + c262)
+    }
+
+    b263 = new_builder()
+    body263 = []Stmt{}
+    body263.push(Stmt.Let("r", Some(tn("int")), mkbin(Expr.Field([mkid("self")], "x", s0()), TokenType.Plus, mkid("dx")), false, s0()))
+    body263.push(Stmt.Return(Some(mkid("r")), s0()))
+    m263 = Decl.Fn("add_x", [mkparam("self", "Point"), mkparam("dx", "int")], []string{}, Some(tn("int")), body263, s0())
+    d263 = Decl.Impl(None, tn("Point"), [m263], s0())
+    emit_impl_def(d263, b263, 0)
+    c263 = bfinish(b263)
+    if str_eq(c263, "int64_t Dot_Point_add_x(DotPoint* self, int64_t dx) {{\n    int64_t r = (self->dot_x + dx);\n    return r;\n}}\n\n") {
+        print("OK: decl impl def self")
+    } else {
+        print("ERR: decl impl def self: " + c263)
+    }
+
+    b264 = new_builder()
+    body264 = []Stmt{}
+    body264.push(Stmt.Return(Some(mki(0)), s0()))
+    m264 = Decl.Fn("origin", []Param{}, []string{}, Some(tn("int")), body264, s0())
+    d264 = Decl.Impl(None, tn("Point"), [m264], s0())
+    emit_impl_def(d264, b264, 0)
+    c264 = bfinish(b264)
+    if str_eq(c264, "int64_t Dot_Point_origin() {{\n    return 0;\n}}\n\n") {
+        print("OK: decl impl def static")
+    } else {
+        print("ERR: decl impl def static: " + c264)
+    }
+
+    b265 = new_builder()
+    m265 = Decl.Fn("add_x", [mkparam("self", "Point"), mkparam("dx", "int")], []string{}, Some(tn("int")), []Stmt{}, s0())
+    d265 = Decl.Impl(None, tn("Point"), [m265], s0())
+    emit_impl_decl(d265, b265, 0)
+    c265 = bfinish(b265)
+    if str_eq(c265, "int64_t Dot_Point_add_x(DotPoint*, int64_t);\n") {
+        print("OK: decl impl decl self")
+    } else {
+        print("ERR: decl impl decl self: " + c265)
+    }
+
+    b266 = new_builder()
+    m266 = Decl.Fn("origin", []Param{}, []string{}, Some(tn("int")), []Stmt{}, s0())
+    d266 = Decl.Impl(None, tn("Point"), [m266], s0())
+    emit_impl_decl(d266, b266, 0)
+    c266 = bfinish(b266)
+    if str_eq(c266, "int64_t Dot_Point_origin(void);\n") {
+        print("OK: decl impl decl static")
+    } else {
+        print("ERR: decl impl decl static: " + c266)
+    }
+
+    b267 = new_builder()
+    m267 = Decl.Fn("add_x", [mkparam("self", "Point")], []string{}, Some(tn("int")), []Stmt{}, s0())
+    d267 = Decl.Impl(None, TypeNode.Pointer([tn("int")], s0()), [m267], s0())
+    emit_impl_def(d267, b267, 0)
+    c267 = bfinish(b267)
+    if str_eq(c267, "/* <TODO 5b: impl on unsupported target> */\n") {
+        print("OK: decl impl unsupported")
+    } else {
+        print("ERR: decl impl unsupported: " + c267)
+    }
+
+    b268 = new_builder()
+    body268 = []Stmt{}
+    body268.push(Stmt.ExprStmt(mki(7), s0()))
+    d268 = Decl.Fn("t", []Param{}, []string{}, Some(tn("int")), body268, s0())
+    emit_type_decl(d268, b268, 0)
+    c268 = bfinish(b268)
+    if str_eq(c268, "int64_t Dot_t() {{\n    int64_t _dot_ret_tail_1 = 7;\n    return _dot_ret_tail_1;\n}}\n\n") {
+        print("OK: decl dispatch fn")
+    } else {
+        print("ERR: decl dispatch fn: " + c268)
+    }
+
+    b269 = new_builder()
+    d269 = Decl.Trait("Eq", []Decl{}, s0())
+    emit_type_decl(d269, b269, 0)
+    c269 = bfinish(b269)
+    if str_eq(c269, "/* <TODO 5b: trait vtable Eq> */\n") {
+        print("OK: decl dispatch trait")
+    } else {
+        print("ERR: decl dispatch trait: " + c269)
+    }
+
+    b270 = new_builder()
+    d270 = Decl.Struct("Point", f250, s0())
+    emit_type_decl(d270, b270, 0)
+    c270 = bfinish(b270)
+    if str_eq(c270, "struct DotPoint {{\n    int64_t dot_x;\n    DotString* dot_name;\n}};\n\n") {
+        print("OK: decl dispatch struct")
+    } else {
+        print("ERR: decl dispatch struct: " + c270)
+    }
+
+    b271 = new_builder()
+    body271 = []Stmt{}
+    body271.push(Stmt.Return(Some(mkid("self")), s0()))
+    m271a = Decl.Fn("clone", [mkparam("self", "Point")], []string{}, Some(tn("Point")), body271, s0())
+    m271b = Decl.Fn("origin", []Param{}, []string{}, Some(tn("int")), body264, s0())
+    d271 = Decl.Impl(None, tn("Point"), [m271a, m271b], s0())
+    emit_impl_def(d271, b271, 0)
+    c271 = bfinish(b271)
+    if str_eq(c271, "DotPoint* Dot_Point_clone(DotPoint* self) {{\n    return self;\n}}\n\nint64_t Dot_Point_origin() {{\n    return 0;\n}}\n\n") {
+        print("OK: decl impl two methods")
+    } else {
+        print("ERR: decl impl two methods: " + c271)
+    }
+
+    b272 = new_builder()
+    emit_fn_def(d269, b272, 0)
+    c272 = bfinish(b272)
+    if str_eq(c272, "") {
+        print("OK: decl fn def non fn")
+    } else {
+        print("ERR: decl fn def non fn: " + c272)
     }
 }

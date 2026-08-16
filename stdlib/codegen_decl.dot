@@ -1,0 +1,443 @@
+// stdlib/codegen_decl.dot - T-051 stage 5a1+5a2: declaration + definition
+// emitter for the self-hosted C codegen. Port of Go codegen/emit_decl.go
+// (emitStructDef, emitEnumDef, emitStructFwd/emitEnumFwd, emitFuncDecls,
+// emitFuncDef) and codegen/types.go (cFieldName, variantFieldName). Covered:
+// named struct definitions, tagged-union enum definitions (DotRefcnt header
+// + int32_t tag + payload union), fn forward declarations + definitions
+// (incl. tail-expression materialisation) and impl method declarations +
+// definitions (Dot_<Recv>_<Method> with Dot<Recv>* self). Trait stays a TODO
+// marker until 5b/6.
+//
+// [РЕШЕНИЕ] Definition forms are copied verbatim from the Go compiler's
+// actual C output (verified with `dot build` of a struct+enum sample):
+// named types render as `struct Dot<Name> { ... };` and the typedef name
+// comes from emit_type_fwd (the Go emitStructFwd/emitEnumFwd pair, grouped
+// by the driver before definitions as in emit_types.go). The anonymous
+// `typedef struct { ... } Dot<Name>;` form is NOT used here — that one is
+// Go's cAnonStruct for inline types like DotFn_*.
+//
+// [РЕШЕНИЕ] Field names carry the dot_ prefix (c_field_name) and enum
+// payload members are dot_<Variant>_<field> (variant_field_name): every
+// variant of an enum shares one C union, so bare field names would be
+// ambiguous (IntLit(value) vs StringLit(value)).
+import ast
+import codegen
+import codegen_types
+import codegen_stmt
+import codegen_expr
+
+// emit_type_decl renders one top-level Decl that defines a type or a
+// function (the 5b driver's definition pass). Struct/Enum produce full
+// definitions, Fn/Impl route to the 5a2 emitters; Trait stays a TODO
+// marker until the vtable pass (5b/6).
+pub fn emit_type_decl(d Decl, out CBuilder, depth int) {
+    match d {
+        Decl.Struct(name, fields, _) => emit_struct_def(name, fields, out, depth)
+        Decl.Enum(name, variants, _) => emit_enum_def(name, variants, out, depth)
+        Decl.Trait(name, _, _) => bwriteln(out, depth, "/* <TODO 5b: trait vtable " + name + "> */")
+        Decl.Impl(_, target, methods, _) => emit_impl_def_from(target, methods, out, depth)
+        Decl.Fn(name, params, _, ret_ty, body, _) => emit_fn_def_from(name, params, ret_ty, body, out, depth)
+    }
+}
+
+// emit_struct_def renders a named struct definition, verbatim Go form
+// (emitStructDef): `struct Dot<Name> { <ctype> dot_<field>; ... };`. The
+// Dot<Name> typedef name itself is emitted separately by emit_type_fwd so
+// the driver can group all forwards before any definition (Go emit_types.go).
+pub fn emit_struct_def(name string, fields []FieldDef, out CBuilder, depth int) {
+    bwriteln(out, depth, "struct Dot" + name + " {{")
+    for f in fields {
+        bwriteln(out, depth + 1, ty_to_c(tynode_to_ty(f.ty)) + " " + c_field_name(f.name) + ";")
+    }
+    bwriteln(out, depth, "}};")
+    bwriteln(out, depth, "")
+}
+
+// emit_enum_def renders a tagged-union enum definition, verbatim Go form
+// (emitEnumDef + cAnonEnum payload grouping): the DotRefcnt header sits at
+// offset 0 so dot_retain/dot_release work on the object pointer directly,
+// then the int32_t tag, then a union with one anonymous struct per payload
+// variant so multi-field variants do not overlap. Unit variants contribute
+// nothing to the union (Go skips variants with zero fields).
+pub fn emit_enum_def(name string, variants []VariantDef, out CBuilder, depth int) {
+    bwriteln(out, depth, "struct Dot" + name + " {{")
+    bwriteln(out, depth + 1, "DotRefcnt _rc;")
+    bwriteln(out, depth + 1, "int32_t tag;")
+    emit_enum_union(variants, out, depth + 1)
+    bwriteln(out, depth, "}};")
+    bwriteln(out, depth, "")
+}
+
+// emit_enum_union emits the `union { ... };` block at the given depth, only
+// when at least one variant carries a payload (Go emitEnumDef hasPayload
+// guard).
+fn emit_enum_union(variants []VariantDef, out CBuilder, depth int) {
+    if not enum_has_payload(variants) {
+        return
+    }
+    bwriteln(out, depth, "union {{")
+    for v in variants {
+        if v.params.len > 0 {
+            bwriteln(out, depth + 1, "struct {{ /* " + v.name + " */")
+            for p in v.params {
+                bwriteln(out, depth + 2, ty_to_c(tynode_to_ty(p.ty)) + " " + variant_field_name(v.name, p.name) + ";")
+            }
+            bwriteln(out, depth + 1, "}};")
+        }
+    }
+    bwriteln(out, depth, "}};")
+}
+
+// enum_has_payload reports whether any variant carries payload fields.
+fn enum_has_payload(variants []VariantDef) -> bool {
+    for v in variants {
+        if v.params.len > 0 {
+            return true
+        }
+    }
+    return false
+}
+
+// emit_type_fwd emits the forward typedef for a named struct or enum so
+// pointer fields and parameters can reference the type before its full
+// definition appears (Go emitStructFwd/emitEnumFwd — identical for both).
+pub fn emit_type_fwd(name string, out CBuilder, depth int) {
+    bwriteln(out, depth, "typedef struct Dot" + name + " Dot" + name + ";")
+}
+
+// c_field_name prefixes a Dot field name to avoid conflicts with C keywords
+// and Dot builtins (e.g. `len`, `tag`) — Go cFieldName.
+fn c_field_name(name string) -> string {
+    return "dot_" + name
+}
+
+// variant_field_name returns the unique C union member name for one payload
+// field of an enum variant (dot_<Variant>_<field>). This is the single
+// source of truth for the naming scheme; definition emission and every
+// payload access must use it (Go variantFieldName).
+fn variant_field_name(variant string, field string) -> string {
+    return "dot_" + variant + "_" + field
+}
+
+// --- Stage 5a2: Fn/Impl declarations + definitions ---
+//
+// [РЕШЕНИЕ] Signature types go through ty_to_c, so struct params/returns
+// render as `Dot<Name>*` (pointer) — Go's cNamed renders them BY VALUE
+// (`DotPoint`, no star; only enums and the receiver are pointers). The
+// self-hosted Type has no Enum kind (checker folds enums into Type.Struct)
+// and stage 2 locked Struct→`Dot<Name>*` (test c105), so a per-position
+// value/pointer split is impossible here; keeping the pointer keeps every
+// body emitter (`self->dot_x`) consistent. Reconcile with Go when struct
+// value semantics land (stage 6/7).
+
+// [РЕШЕНИЕ] Forward declarations carry parameter TYPES only, no names —
+// verified against Go output (`dot build` of tmp_fn.dot): Go emitFuncDecls
+// uses emitForwardParams (emit_decl.go:243), while named params belong to
+// definitions only (emitParams). Empty param list renders as `void`.
+pub fn emit_fn_decl(d Decl, out CBuilder, depth int) {
+    match d {
+        Decl.Fn(name, params, _, ret_ty, _, _) => {
+            ret_c = ty_to_c(fn_ret_ty(ret_ty))
+            bwriteln(out, depth, ret_c + " Dot_" + name + "(" + fn_decl_params_c(params) + ");")
+        }
+        _ => {}
+    }
+}
+
+// emit_fn_def renders one free function definition (Go emitFuncDef):
+// `Ret Dot_<Name>(<named params>) { <body> }`. Parameters are registered in
+// vars so the body sees their types; a trailing expression statement in a
+// value-returning fn is materialised into a temp and returned (Go
+// emitBodyStmts tail handling).
+pub fn emit_fn_def(d Decl, out CBuilder, depth int) {
+    match d {
+        Decl.Fn(name, params, _, ret_ty, body, _) => emit_fn_def_from(name, params, ret_ty, body, out, depth)
+        _ => {}
+    }
+}
+
+// emit_impl_decl renders forward declarations for every method of an impl
+// block (Go emitFuncDecls ImplDecl arm): `Ret Dot_<Recv>_<Method>(<types>);`
+// with `Dot<Recv>*` prepended for methods taking self.
+pub fn emit_impl_decl(d Decl, out CBuilder, depth int) {
+    match d {
+        Decl.Impl(_, target, methods, _) => {
+            recv = impl_recv_name(target)
+            if recv.len == 0 {
+                bwriteln(out, depth, "/* <TODO 5b: impl on unsupported target> */")
+                return
+            }
+            emit_impl_decls(recv, methods, 0, out, depth)
+        }
+        _ => {}
+    }
+}
+
+// emit_impl_def renders the definitions of all methods of an impl block
+// (Go emitFuncDefs ImplDecl arm): `Ret Dot_<Recv>_<Method>(Dot<Recv>* self,
+// ...) { <body> }`. self is registered in vars as the struct type so field
+// access `self.x` lowers to `self->dot_x`.
+pub fn emit_impl_def(d Decl, out CBuilder, depth int) {
+    match d {
+        Decl.Impl(_, target, methods, _) => {
+            recv = impl_recv_name(target)
+            if recv.len == 0 {
+                bwriteln(out, depth, "/* <TODO 5b: impl on unsupported target> */")
+                return
+            }
+            emit_impl_defs(recv, methods, 0, out, depth)
+        }
+        _ => {}
+    }
+}
+
+// emit_fn_def_from renders one free fn with its unpacked fields.
+fn emit_fn_def_from(name string, params []Param, ret_ty Option[TypeNode], body []Stmt, out CBuilder, depth int) {
+    ret_c = ty_to_c(fn_ret_ty(ret_ty))
+    params_c = fn_params_c(params, 0, "")
+    bwriteln(out, depth, ret_c + " Dot_" + name + "(" + params_c + ") {{")
+    vars = fn_params_vars(params, 0, []VarInfo{})
+    emit_fn_body(body, ret_ty, vars, out, depth + 1)
+    bwriteln(out, depth, "}}")
+    bwriteln(out, depth, "")
+}
+
+fn emit_impl_def_from(target TypeNode, methods []Decl, out CBuilder, depth int) {
+    recv = impl_recv_name(target)
+    if recv.len == 0 {
+        bwriteln(out, depth, "/* <TODO 5b: impl on unsupported target> */")
+        return
+    }
+    emit_impl_defs(recv, methods, 0, out, depth)
+}
+
+// [РЕШЕНИЕ] Body emission: the self-hosted AST has no ExprBody — the parser
+// always builds a []Stmt block (parser.parse_fn_body), so the Go ExprBody
+// branch of emitFuncDef does not exist here. Its tail-expression
+// equivalent is handled by emit_fn_body: when the fn returns a value and
+// its last statement is a non-void expression, that tail is materialised
+// into a temp and returned (Go emitBodyStmts). The init statements run
+// FIRST so their Lets land in vars — the tail's infer_type must see local
+// variables, not just parameters (bug c262). Everything else is emitted
+// statement by statement; an empty body renders as an empty C block.
+fn emit_fn_body(body []Stmt, ret_ty Option[TypeNode], vars []VarInfo, out CBuilder, depth int) {
+    if body.len == 0 {
+        emit_stmts(body, vars, out, depth)
+        return
+    }
+    r_ty = fn_ret_ty(ret_ty)
+    if is_bad_ret_ty(r_ty) {
+        emit_stmts(body, vars, out, depth)
+        return
+    }
+    // init = all but the last statement, emitted with vars accumulation
+    // (emit_stmts threads Let bindings through); the tail then sees them.
+    init_vars = emit_stmts(body[0..body.len - 1], vars, out, depth)
+    if fn_body_tail(body[body.len - 1], init_vars, out, depth) {
+        return
+    }
+    emit_stmt(body[body.len - 1], init_vars, out, depth)
+}
+
+// fn_body_tail materialises one trailing ExprStmt into a `_dot_ret_tail_N`
+// temp plus a return. Assignments and void/unknown-typed expressions are
+// NOT tails: Go keeps AssignStmt a statement (emitBodyStmts only matches
+// ast.ExprStmt), and a void call (print) or untyped expr has no value to
+// return.
+fn fn_body_tail(last Stmt, vars []VarInfo, out CBuilder, depth int) -> bool {
+    match last {
+        Stmt.ExprStmt(e, _) => {
+            if is_assign_expr(e) {
+                return false
+            }
+            vt = infer_type(e, vars)
+            if is_unknown_ty(vt) or is_void_ty(vt) {
+                return false
+            }
+            // [РЕШЕНИЕ] temp name embeds depth instead of Go's global
+            // unusedIdx counter: two tail temps can never share one C scope
+            // (one tail per fn body), and depth keeps them unique there.
+            tmp = "_dot_ret_tail_" + int_to_str(depth)
+            bwriteln(out, depth, ty_to_c(vt) + " " + tmp + " = " + emit_expr(e, vars) + ";")
+            bwriteln(out, depth, "return " + tmp + ";")
+            return true
+        }
+        _ => {}
+    }
+    return false
+}
+
+// impl_recv_name extracts the receiver struct name from the impl target
+// TypeNode; "" marks a target the codegen cannot lower (generic inst).
+fn impl_recv_name(target TypeNode) -> string {
+    return match target {
+        TypeNode.Named(name, _) => name
+        _ => ""
+    }
+}
+
+fn emit_impl_decls(recv string, methods []Decl, i int, out CBuilder, depth int) {
+    if i >= methods.len {
+        return
+    }
+    emit_method_decl(recv, methods[i], out, depth)
+    emit_impl_decls(recv, methods, i + 1, out, depth)
+}
+
+fn emit_impl_defs(recv string, methods []Decl, i int, out CBuilder, depth int) {
+    if i >= methods.len {
+        return
+    }
+    emit_method_def(recv, methods[i], out, depth)
+    emit_impl_defs(recv, methods, i + 1, out, depth)
+}
+
+fn emit_method_decl(recv string, m Decl, out CBuilder, depth int) {
+    match m {
+        Decl.Fn(name, params, _, ret_ty, _, _) => {
+            ret_c = ty_to_c(fn_ret_ty(ret_ty))
+            bwriteln(out, depth, ret_c + " Dot_" + recv + "_" + name + "(" + method_decl_params_c(recv, params) + ");")
+        }
+        _ => {}
+    }
+}
+
+fn emit_method_def(recv string, m Decl, out CBuilder, depth int) {
+    match m {
+        Decl.Fn(name, params, _, ret_ty, body, _) => {
+            ret_c = ty_to_c(fn_ret_ty(ret_ty))
+            bwriteln(out, depth, ret_c + " Dot_" + recv + "_" + name + "(" + method_params_c(recv, params) + ") {{")
+            vars = method_body_vars(recv, params)
+            emit_fn_body(body, ret_ty, vars, out, depth + 1)
+            bwriteln(out, depth, "}}")
+            bwriteln(out, depth, "")
+        }
+        _ => {}
+    }
+}
+
+// method_has_self reports whether the method takes the `self` receiver.
+// The self-hosted AST keeps self as the first regular Param (parser
+// parse_params names it "self"), unlike Go's separate Sig.Recv — the
+// convention here is exactly params[0].name == "self".
+fn method_has_self(params []Param) -> bool {
+    if params.len == 0 {
+        return false
+    }
+    return str_eq(params[0].name, "self")
+}
+
+fn method_param_start(params []Param) -> int {
+    if method_has_self(params) {
+        return 1
+    }
+    return 0
+}
+
+// fn_params_c renders the named C parameter list of a definition
+// (`TY name, ...`, Go emitParams); an empty list renders as "" — Go
+// definitions use bare parens, only declarations use `void`.
+fn fn_params_c(params []Param, i int, acc string) -> string {
+    if i >= params.len {
+        return acc
+    }
+    p = ty_to_c(tynode_to_ty(params[i].ty)) + " " + params[i].name
+    if acc.len == 0 {
+        return fn_params_c(params, i + 1, p)
+    }
+    return fn_params_c(params, i + 1, acc + ", " + p)
+}
+
+// fn_param_types_c renders the type-only C parameter list of a forward
+// declaration (Go emitForwardParams).
+fn fn_param_types_c(params []Param, i int, acc string) -> string {
+    if i >= params.len {
+        return acc
+    }
+    p = ty_to_c(tynode_to_ty(params[i].ty))
+    if acc.len == 0 {
+        return fn_param_types_c(params, i + 1, p)
+    }
+    return fn_param_types_c(params, i + 1, acc + ", " + p)
+}
+
+// fn_decl_params_c: forward-declaration params render as `void` when empty
+// (Go emitForwardParams emit_decl.go:245).
+fn fn_decl_params_c(params []Param) -> string {
+    if params.len == 0 {
+        return "void"
+    }
+    return fn_param_types_c(params, 0, "")
+}
+
+// method_params_c renders the named C parameter list of a method
+// definition: `Dot<Recv>* self` first when the method takes self.
+fn method_params_c(recv string, params []Param) -> string {
+    rest = fn_params_c(params, method_param_start(params), "")
+    if method_has_self(params) {
+        if rest.len == 0 {
+            return "Dot" + recv + "* self"
+        }
+        return "Dot" + recv + "* self, " + rest
+    }
+    return rest
+}
+
+// method_decl_params_c renders the type-only C parameter list of a method
+// forward declaration: `Dot<Recv>*` first when the method takes self
+// (Go emitFuncDecls prepends the receiver type to emitForwardParams).
+fn method_decl_params_c(recv string, params []Param) -> string {
+    if method_has_self(params) {
+        rest = fn_param_types_c(params, 1, "")
+        if rest.len == 0 {
+            return "Dot" + recv + "*"
+        }
+        return "Dot" + recv + "*" + ", " + rest
+    }
+    return fn_decl_params_c(params)
+}
+
+// fn_params_vars registers params[i..] as VarInfo locals.
+fn fn_params_vars(params []Param, i int, vars []VarInfo) -> []VarInfo {
+    if i >= params.len {
+        return vars
+    }
+    vars.push(VarInfo { name: params[i].name, ty: tynode_to_ty(params[i].ty) })
+    return fn_params_vars(params, i + 1, vars)
+}
+
+// method_body_vars registers the method locals: self first (so `self.x`
+// lowers through the Struct branch of emit_field), then the explicit params.
+fn method_body_vars(recv string, params []Param) -> []VarInfo {
+    vars = []VarInfo{}
+    if method_has_self(params) {
+        vars.push(VarInfo { name: "self", ty: Type.Struct(recv) })
+    }
+    return fn_params_vars(params, method_param_start(params), vars)
+}
+
+// fn_ret_ty resolves the declared return Type; no annotation means void.
+fn fn_ret_ty(ret_ty Option[TypeNode]) -> Type {
+    if r = ret_ty {
+        return tynode_to_ty(r)
+    }
+    return Type.Void
+}
+
+// is_bad_ret_ty: void/unknown/error return types never get a materialised
+// tail (Go emitBodyStmts want==nil/invalid/void guard).
+fn is_bad_ret_ty(t Type) -> bool {
+    return match t {
+        Type.Void => true
+        Type.Unknown => true
+        Type.Error => true
+        _ => false
+    }
+}
+
+fn is_void_ty(t Type) -> bool {
+    return match t {
+        Type.Void => true
+        _ => false
+    }
+}
