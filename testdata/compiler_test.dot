@@ -1589,7 +1589,7 @@ pub fn main() {
     sl_fields.push(StructLitField { name: "x", value: mki(1) })
     sl_fields.push(StructLitField { name: "y", value: mkbin(mki(2), TokenType.Star, mki(3)) })
     c213 = emit_expr(Expr.StructLit("Point", sl_fields, s0()), []VarInfo{})
-    if str_eq(c213, "((DotPoint){{ .dot_x = 1, .dot_y = (2 * 3) }})") {
+    if str_eq(c213, "dot_box_payload(dot_box_struct(sizeof(DotPoint), &((DotPoint){{ .dot_x = 1, .dot_y = (2 * 3) }})))") {
         print("OK: emit struct lit")
     } else {
         print("ERR: emit struct lit: " + c213)
@@ -2491,7 +2491,7 @@ pub fn main() {
     slf293 = []StructLitField{}
     slf293.push(StructLitField { name: "name", value: mkid("s") })
     c293 = emit_expr(Expr.StructLit("User", slf293, s0()), vars_s293)
-    if str_eq(c293, "((DotUser){{ .dot_name = dot_retain((DotRefcnt*)(s)) }})") {
+    if str_eq(c293, "dot_box_payload(dot_box_struct(sizeof(DotUser), &((DotUser){{ .dot_name = dot_retain((DotRefcnt*)(s)) }})))") {
         print("OK: arc struct lit ident retain")
     } else {
         print("ERR: arc struct lit ident retain: " + c293)
@@ -2500,7 +2500,7 @@ pub fn main() {
     slf294 = []StructLitField{}
     slf294.push(StructLitField { name: "name", value: mks("abc") })
     c294 = emit_expr(Expr.StructLit("User", slf294, s0()), []VarInfo{})
-    if str_eq(c294, "((DotUser){{ .dot_name = dot_string_from_lit(\"abc\", 3) }})") {
+    if str_eq(c294, "dot_box_payload(dot_box_struct(sizeof(DotUser), &((DotUser){{ .dot_name = dot_string_from_lit(\"abc\", 3) }})))") {
         print("OK: arc struct lit literal no retain")
     } else {
         print("ERR: arc struct lit literal no retain: " + c294)
@@ -2513,5 +2513,59 @@ pub fn main() {
         print("OK: arc array lit int ident no retain")
     } else {
         print("ERR: arc array lit int ident no retain: " + c295)
+    }
+
+    // --- struct-lit boxing (stage 7a) ---
+
+    c296 = emit_expr(Expr.StructLit("Empty", []StructLitField{}, s0()), []VarInfo{})
+    if str_eq(c296, "dot_box_payload(dot_box_struct(sizeof(DotEmpty), &((DotEmpty){{  }})))") {
+        print("OK: struct lit empty box")
+    } else {
+        print("ERR: struct lit empty box: " + c296)
+    }
+
+    slf297 = []StructLitField{}
+    slf297.push(StructLitField { name: "x", value: mki(1) })
+    slf297.push(StructLitField { name: "name", value: mks("hi") })
+    c297 = emit_expr(Expr.StructLit("User", slf297, s0()), []VarInfo{})
+    if str_eq(c297, "dot_box_payload(dot_box_struct(sizeof(DotUser), &((DotUser){{ .dot_x = 1, .dot_name = dot_string_from_lit(\"hi\", 2) }})))") {
+        print("OK: struct lit multi field box")
+    } else {
+        print("ERR: struct lit multi field box: " + c297)
+    }
+
+    vars_s298 = []VarInfo{}
+    vars_s298.push(VarInfo { name: "s", ty: Type.String })
+    slf298 = []StructLitField{}
+    slf298.push(StructLitField { name: "name", value: mkid("s") })
+    slf298.push(StructLitField { name: "age", value: mki(14) })
+    c298 = emit_expr(Expr.StructLit("User", slf298, s0()), vars_s298)
+    if str_eq(c298, "dot_box_payload(dot_box_struct(sizeof(DotUser), &((DotUser){{ .dot_name = dot_retain((DotRefcnt*)(s)), .dot_age = 14 }})))") {
+        print("OK: struct lit box retain inside init")
+    } else {
+        print("ERR: struct lit box retain inside init: " + c298)
+    }
+
+    slf299 = []StructLitField{}
+    slf299.push(StructLitField { name: "x", value: mki(1) })
+    c299 = emit_expr(Expr.Call([mkid("f")], [Expr.StructLit("User", slf299, s0())], s0()), []VarInfo{})
+    if str_eq(c299, "Dot_f(dot_box_payload(dot_box_struct(sizeof(DotUser), &((DotUser){{ .dot_x = 1 }}))))") {
+        print("OK: struct lit call arg box")
+    } else {
+        print("ERR: struct lit call arg box: " + c299)
+    }
+
+    b300 = new_builder()
+    body300 = []Stmt{}
+    slf300 = []StructLitField{}
+    slf300.push(StructLitField { name: "x", value: mki(7) })
+    body300.push(Stmt.ExprStmt(Expr.StructLit("Point", slf300, s0()), s0()))
+    d300 = Decl.Fn("mk", []Param{}, []string{}, Some(tn("Point")), body300, s0())
+    emit_fn_def(d300, b300, 0)
+    c300 = bfinish(b300)
+    if str_eq(c300, "DotPoint* Dot_mk() {{\n    DotPoint* _dot_ret_tail_1 = dot_box_payload(dot_box_struct(sizeof(DotPoint), &((DotPoint){{ .dot_x = 7 }})));\n    return _dot_ret_tail_1;\n}}\n\n") {
+        print("OK: struct lit return tail box")
+    } else {
+        print("ERR: struct lit return tail box: " + c300)
     }
 }

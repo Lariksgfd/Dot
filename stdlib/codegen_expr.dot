@@ -833,16 +833,25 @@ fn array_pack_arg(elements []Expr, vars []VarInfo, i int) -> string {
     return "(DotAny)(intptr_t)(" + val + ")"
 }
 
-// [РЕШЕНИЕ]: struct literals go through the codegen стаб
-// struct_literal_to_c, but field names are passed WITH the dot_ prefix the
-// rest of the emitter already uses (emit_field -> obj->dot_name, Go
-// cFieldName) — the стаб itself writes the bare name. The стаб's redundant
-// double braces around the initializer are valid C, so its output is taken
-// verbatim.
+// [РЕШЕНИЕ] 7a struct-lit BOXING: field names go through the codegen стаб
+// struct_literal_to_c WITH the dot_ prefix (the стаб itself writes the bare
+// name), and the resulting VALUE compound literal is boxed onto the heap.
+// The stdlib locks Struct -> Dot<Name>* (ty_to_c stage 2), i.e. every
+// struct pointer must point AT the fields (emit_field emits `p->dot_x`,
+// c193), so the expression yields the PAYLOAD pointer, not the ARC header
+// pointer: dot_box_struct(sizeof(Dot<Name>), &lit) returns the header
+// pointer, dot_box_payload offsets past DotRefcnt. The compound literal is
+// a C99 block-scope lvalue, so &lit is valid and the box memcpy's from it
+// immediately (no Go-style statement-expression temp needed). Boxing lives
+// IN the expression itself, so a struct-lit works as a let-init, an assign
+// RHS, a call argument and a return value. (Known MVP hazard: dot_release
+// on the payload pointer reads a garbage refcnt — struct release semantics
+// land with a later ARC stage; the box itself is leaked.)
 fn emit_struct_lit(name string, fields []StructLitField, vars []VarInfo) -> string {
     fnames = struct_lit_field_names(fields, 0, []string{})
     fvals = struct_lit_field_values(fields, 0, vars, []string{})
-    return struct_literal_to_c(name, fnames, fvals)
+    lit = struct_literal_to_c(name, fnames, fvals)
+    return "dot_box_payload(dot_box_struct(sizeof(Dot" + name + "), &" + lit + "))"
 }
 
 fn struct_lit_field_names(fields []StructLitField, i int, acc []string) -> []string {

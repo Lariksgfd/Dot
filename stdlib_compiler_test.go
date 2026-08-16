@@ -313,6 +313,11 @@ func TestStdlibCompiler(t *testing.T) {
 			"OK: arc struct lit ident retain",
 			"OK: arc struct lit literal no retain",
 			"OK: arc array lit int ident no retain",
+			"OK: struct lit empty box",
+			"OK: struct lit multi field box",
+			"OK: struct lit box retain inside init",
+			"OK: struct lit call arg box",
+			"OK: struct lit return tail box",
 		} {
 				if !strings.Contains(out, want) {
 					t.Errorf("expected %q in output, got: %s", want, out)
