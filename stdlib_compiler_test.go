@@ -328,9 +328,14 @@ func TestStdlibCompiler(t *testing.T) {
 			"OK: extern fn decl no def",
 			"OK: extern struct no def",
 			"OK: extern non-C arg parsed as normal fn",
-			"OK: extern fn params ret int",
-			"OK: extern fn ret int no missing return",
-		} {
+		"OK: extern fn params ret int",
+		"OK: extern fn ret int no missing return",
+		"OK: escape nl decoded len3",
+		"OK: escape combo decoded len11",
+		"OK: escape unknown drops slash",
+		"OK: escape unicode utf8 4bytes",
+		"OK: escape plain regression len2",
+	} {
 				if !strings.Contains(out, want) {
 					t.Errorf("expected %q in output, got: %s", want, out)
 				}

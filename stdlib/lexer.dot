@@ -276,13 +276,20 @@ impl Lexer {
         } else if ch == 34 { // "
             self.advance()
             start = self.offset - 1
+            buf = []byte{}
             for self.ch != 34 and self.ch != -1 {
-                self.advance()
+                if self.ch == 92 { // backslash: escape sequence
+                    self.read_escape(buf)
+                } else {
+                    buf.push(self.ch as uint8)
+                    self.advance()
+                }
             }
-            val = self.src[start..self.offset - 1]
+            val = buf as string
+            raw = self.src[start..self.offset - 1]
             if self.ch == 34 { self.advance() }
             end_pos = Position.new(self.file, self.line, self.col, self.offset)
-            return Token { kind: TokenType.String, lexeme: val, value: val, base: 0, suffix: "", parts: nil, pos, end: end_pos }
+            return Token { kind: TokenType.String, lexeme: raw, value: val, base: 0, suffix: "", parts: nil, pos, end: end_pos }
         } else if ch == 96 { // `
             self.advance()
             start = self.offset - 1
@@ -503,5 +510,97 @@ impl Lexer {
             return self.src[start..self.src.len]
         }
         return self.src[start..self.offset - 1]
+    }
+
+    // Reads one escape sequence. The cursor sits on the backslash; the
+    // decoded byte(s) are pushed into buf. A truncated escape at EOF writes
+    // nothing. Unknown escapes decode to the escaped character itself (like
+    // lexer/string.go decodeEscape), so scanning can continue.
+    fn read_escape(mut self, buf []byte) {
+        self.advance() // consume the backslash
+        c = self.ch
+        if c == -1 {
+            return
+        }
+        self.advance() // consume the escaped character
+        if c == 110 { // \n
+            buf.push(10 as uint8)
+        } else if c == 116 { // \t
+            buf.push(9 as uint8)
+        } else if c == 114 { // \r
+            buf.push(13 as uint8)
+        } else if c == 48 { // \0
+            buf.push(0 as uint8)
+        } else if c == 92 or c == 34 or c == 96 or c == 39 { // \\ \" \` \'
+            buf.push(c as uint8)
+        } else if c == 120 { // \x
+            self.read_hex_escape(buf)
+        } else if c == 117 { // \u
+            self.read_unicode_escape(buf)
+        } else {
+            buf.push(c as uint8)
+        }
+    }
+
+    fn hex_value(ch int) -> int {
+        if ch >= 48 and ch <= 57 { return ch - 48 } // 0-9
+        if ch >= 97 and ch <= 102 { return ch - 97 + 10 } // a-f
+        if ch >= 65 and ch <= 70 { return ch - 65 + 10 } // A-F
+        return -1
+    }
+
+    // \xNN: exactly two hex digits. An invalid escape writes nothing.
+    fn read_hex_escape(mut self, buf []byte) {
+        d1 = Lexer.hex_value(self.ch)
+        self.advance()
+        d2 = Lexer.hex_value(self.ch)
+        self.advance()
+        if d1 >= 0 and d2 >= 0 {
+            buf.push((d1 * 16 + d2) as uint8)
+        }
+    }
+
+    // \u{1F600}: code point in braces, 1-6 hex digits. Values above 10FFFF
+    // and surrogates D800-DFFF are rejected (nothing is written). The code
+    // point is UTF-8 encoded into buf.
+    fn read_unicode_escape(mut self, buf []byte) {
+        if self.ch != 123 { return } // '{'
+        self.advance()
+        v = 0
+        digits = 0
+        for Lexer.hex_value(self.ch) >= 0 and digits < 7 {
+            v = v * 16 + Lexer.hex_value(self.ch)
+            digits += 1
+            self.advance()
+        }
+        if digits == 0 or digits > 6 {
+            return
+        }
+        if self.ch != 125 { return } // '}'
+        self.advance()
+        if v > 1114111 or (v >= 55296 and v <= 57343) { // >10FFFF or surrogate
+            return
+        }
+        Lexer.push_utf8(buf, v)
+    }
+
+    // UTF-8 encodes a code point into buf (1-4 bytes, no bitwise ops: the
+    // self-hosted pipeline must compile this too).
+    fn push_utf8(buf []byte, r int) {
+        if r <= 127 {
+            buf.push(r as uint8)
+        } else if r <= 2047 {
+            buf.push((192 + r / 64) as uint8)
+            buf.push((128 + r % 64) as uint8)
+        } else if r <= 65535 {
+            buf.push((224 + r / 4096) as uint8)
+            buf.push((128 + (r / 64) % 64) as uint8)
+            buf.push((128 + r % 64) as uint8)
+        } else {
+            buf.push((240 + r / 262144) as uint8)
+            buf.push((128 + (r / 4096) % 64) as uint8)
+            buf.push((128 + (r / 64) % 64) as uint8)
+            buf.push((128 + r % 64) as uint8)
+        }
     }
 }

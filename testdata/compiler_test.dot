@@ -2685,4 +2685,46 @@ pub fn main() {
     } else {
         print("ERR: extern fn ret int no missing return: " + c312)
     }
+
+    // --- escape handling (T-051, stage 7e: lexer read_escape) ---
+
+    esc313 = "fn main() {{\n    s = \"a\\nb\"\n    print(s)\n}}\n"
+    c313 = compile_to_c(esc313)
+    if str_contains(c313, "dot_string_from_lit(\"a\\nb\", 3)") {
+        print("OK: escape nl decoded len3")
+    } else {
+        print("ERR: escape nl decoded len3: " + c313)
+    }
+
+    esc314 = "fn main() {{\n    s = \"x\\t\\ry\\0z\\\\q\\\"w\\x42\"\n    print(s)\n}}\n"
+    c314 = compile_to_c(esc314)
+    if str_contains(c314, "dot_string_from_lit(\"x\\t\\ry\\000z\\\\q\\\"wB\", 11)") {
+        print("OK: escape combo decoded len11")
+    } else {
+        print("ERR: escape combo decoded len11: " + c314)
+    }
+
+    esc315 = "fn main() {{\n    s = \"\\q\"\n    print(s)\n}}\n"
+    c315 = compile_to_c(esc315)
+    if str_contains(c315, "dot_string_from_lit(\"q\", 1)") {
+        print("OK: escape unknown drops slash")
+    } else {
+        print("ERR: escape unknown drops slash: " + c315)
+    }
+
+    esc316 = "fn main() {{\n    s = \"\\u{{1F600}}\"\n    print(s)\n}}\n"
+    c316 = compile_to_c(esc316)
+    if str_contains(c316, "dot_string_from_lit(\"\\360\\237\\230\\200\", 4)") {
+        print("OK: escape unicode utf8 4bytes")
+    } else {
+        print("ERR: escape unicode utf8 4bytes: " + c316)
+    }
+
+    esc317 = "fn main() {{\n    print(\"hi\")\n}}\n"
+    c317 = compile_to_c(esc317)
+    if str_contains(c317, "dot_string_from_lit(\"hi\", 2)") {
+        print("OK: escape plain regression len2")
+    } else {
+        print("ERR: escape plain regression len2: " + c317)
+    }
 }
