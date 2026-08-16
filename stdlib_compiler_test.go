@@ -307,6 +307,12 @@ func TestStdlibCompiler(t *testing.T) {
 			"OK: arc self assign no release",
 			"OK: arc tail ident move",
 			"OK: arc tail complex temp",
+			"OK: arc array lit ident retain",
+			"OK: arc array lit literal no retain",
+			"OK: arc array lit mixed retain",
+			"OK: arc struct lit ident retain",
+			"OK: arc struct lit literal no retain",
+			"OK: arc array lit int ident no retain",
 		} {
 				if !strings.Contains(out, want) {
 					t.Errorf("expected %q in output, got: %s", want, out)

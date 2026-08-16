@@ -815,9 +815,19 @@ fn array_pack_args(elements []Expr, vars []VarInfo, i int) -> string {
     return one + ", " + array_pack_args(elements, vars, i + 1)
 }
 
+// [РЕШЕНИЕ] ARC (6b): a heap-typed IDENT element must be retained — the
+// literal's DotAny slot takes ownership of the reference, so releasing the
+// variable later (block exit / return) must not free the value behind the
+// slot. Literals and calls already yield retained values (dot_string_from_lit,
+// dot_string_concat, fn returns are +1), so they pass through as-is — an
+// extra retain would leak a ref. Go mirrors this via emitRetain (lvalue path)
+// vs plain emitExpr (rvalue path); here Ident is the lvalue proxy.
 fn array_pack_arg(elements []Expr, vars []VarInfo, i int) -> string {
     val = emit_expr(elements[i], vars)
     if is_heap(infer_type(elements[i], vars)) {
+        if is_ident_expr(elements[i]) {
+            return "dot_retain((DotRefcnt*)(" + val + "))"
+        }
         return val
     }
     return "(DotAny)(intptr_t)(" + val + ")"
@@ -847,7 +857,15 @@ fn struct_lit_field_values(fields []StructLitField, i int, vars []VarInfo, acc [
     if i >= fields.len {
         return acc
     }
-    acc.push(emit_expr(fields[i].value, vars))
+    // [РЕШЕНИЕ] ARC (6b): same ownership rule as array_pack_arg — a
+    // heap-typed IDENT field value is retained on the way into the literal
+    // (the struct owns the ref); literals and calls pass through unchanged.
+    val = emit_expr(fields[i].value, vars)
+    if is_heap(infer_type(fields[i].value, vars)) and is_ident_expr(fields[i].value) {
+        acc.push("dot_retain((DotRefcnt*)(" + val + "))")
+    } else {
+        acc.push(val)
+    }
     return struct_lit_field_values(fields, i + 1, vars, acc)
 }
 

@@ -2458,4 +2458,60 @@ pub fn main() {
     } else {
         print("ERR: arc tail complex temp: " + c289)
     }
+
+    // --- ARC (T-051, stage 6b: array/struct lit retain) ---
+
+    vars_s290 = []VarInfo{}
+    vars_s290.push(VarInfo { name: "s", ty: Type.String })
+    c290 = emit_expr(Expr.ArrayLit([mkid("s")], s0()), vars_s290)
+    if str_eq(c290, "dot_slice_from_array(1, (DotAny[]){{dot_retain((DotRefcnt*)(s))}})") {
+        print("OK: arc array lit ident retain")
+    } else {
+        print("ERR: arc array lit ident retain: " + c290)
+    }
+
+    c291 = emit_expr(Expr.ArrayLit([mks("abc")], s0()), []VarInfo{})
+    if str_eq(c291, "dot_slice_from_array(1, (DotAny[]){{dot_string_from_lit(\"abc\", 3)}})") {
+        print("OK: arc array lit literal no retain")
+    } else {
+        print("ERR: arc array lit literal no retain: " + c291)
+    }
+
+    vars_s292 = []VarInfo{}
+    vars_s292.push(VarInfo { name: "s", ty: Type.String })
+    c292 = emit_expr(Expr.ArrayLit([mkid("s"), mks("x")], s0()), vars_s292)
+    if str_eq(c292, "dot_slice_from_array(2, (DotAny[]){{dot_retain((DotRefcnt*)(s)), dot_string_from_lit(\"x\", 1)}})") {
+        print("OK: arc array lit mixed retain")
+    } else {
+        print("ERR: arc array lit mixed retain: " + c292)
+    }
+
+    vars_s293 = []VarInfo{}
+    vars_s293.push(VarInfo { name: "s", ty: Type.String })
+    slf293 = []StructLitField{}
+    slf293.push(StructLitField { name: "name", value: mkid("s") })
+    c293 = emit_expr(Expr.StructLit("User", slf293, s0()), vars_s293)
+    if str_eq(c293, "((DotUser){{ .dot_name = dot_retain((DotRefcnt*)(s)) }})") {
+        print("OK: arc struct lit ident retain")
+    } else {
+        print("ERR: arc struct lit ident retain: " + c293)
+    }
+
+    slf294 = []StructLitField{}
+    slf294.push(StructLitField { name: "name", value: mks("abc") })
+    c294 = emit_expr(Expr.StructLit("User", slf294, s0()), []VarInfo{})
+    if str_eq(c294, "((DotUser){{ .dot_name = dot_string_from_lit(\"abc\", 3) }})") {
+        print("OK: arc struct lit literal no retain")
+    } else {
+        print("ERR: arc struct lit literal no retain: " + c294)
+    }
+
+    vars_n295 = []VarInfo{}
+    vars_n295.push(VarInfo { name: "n", ty: Type.Int })
+    c295 = emit_expr(Expr.ArrayLit([mkid("n")], s0()), vars_n295)
+    if str_eq(c295, "dot_slice_from_array(1, (DotAny[]){{(DotAny)(intptr_t)(n)}})") {
+        print("OK: arc array lit int ident no retain")
+    } else {
+        print("ERR: arc array lit int ident no retain: " + c295)
+    }
 }
