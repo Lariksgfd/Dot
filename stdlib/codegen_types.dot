@@ -1,0 +1,75 @@
+// stdlib/codegen_types.dot - T-051 stage 2: type bridge from checker Type
+// values (enum in std.types) to C type names. Port of codegen/types.go
+// (cType/cBasic/cNamed) and codegen/builtins.go zeroValue, adapted to the
+// self-hosted checker's Type enum.
+//
+// NOTE [РЕШЕНИЕ]: the mapper is named ty_to_c, NOT type_to_c, because
+// std.codegen already exports a string-based type_to_c and all stdlib
+// functions share one flat namespace after import.
+//
+// NOTE [РЕШЕНИЕ]: `import types` (bare name) and not `import std.types`, so
+// the import dedup key matches the one checker.dot uses; importing the same
+// stdlib file via two different path spellings would double-load the Type enum.
+import types
+
+// ty_to_c maps a checker Type to its C representation.
+fn ty_to_c(t Type) -> string {
+    return match t {
+        Type.Unknown => "void*" // Stub: Unknown never reaches codegen.
+        Type.Error => "void*"   // Stub: Error never reaches codegen.
+        Type.Void => "void"
+        Type.Int => "int64_t"
+        Type.Float => "double"
+        Type.Bool => "bool"
+        Type.String => "DotString*"
+        Type.Nil => "void*"
+        // Stub [РЕШЕНИЕ]: fn-as-value has no C lowering yet; DotFn* placeholder
+        // until closures get a real representation (cFnPtr/cFnName port).
+        Type.Func(params, ret_ty) => "DotFn*"
+        // [РЕШЕНИЕ]: Type.Array carries no length in the self-hosted checker,
+        // so a fixed-size C array (Go emits struct { T data[N]; int64_t len; })
+        // cannot be generated. MVP: reuse the heap representation DotSlice*,
+        // same as Type.Slice. Revisit when Array gets a len payload.
+        Type.Array(elem) => "DotSlice*"
+        Type.Slice(elem) => "DotSlice*"
+        // Structs are always heap-allocated; C name is the Dot-prefixed
+        // typedef, used through a pointer (see Go cNamed).
+        Type.Struct(name) => "Dot" + name + "*"
+        Type.TypeVar(name) => "void*"
+        Type.Map(key, val) => "DotMap*"
+        _ => "void*"
+    }
+}
+
+// is_heap reports whether a value of type t lives on the heap in C (pointer
+// representation), i.e. its zero value is NULL.
+fn is_heap(t Type) -> bool {
+    return match t {
+        Type.String => true
+        Type.Func(params, ret_ty) => true
+        Type.Array(elem) => true
+        Type.Slice(elem) => true
+        Type.Struct(name) => true
+        Type.Map(key, val) => true
+        _ => false
+    }
+}
+
+// zero_c_value returns the C zero-value literal for a Dot type. Heap types
+// are NULL; Void has no value at all.
+fn zero_c_value(t Type) -> string {
+    return match t {
+        Type.Int => "0"
+        Type.Float => "0.0"
+        Type.Bool => "false"
+        Type.Void => ""
+        Type.String => "NULL"
+        Type.Nil => "NULL"
+        Type.Func(params, ret_ty) => "NULL"
+        Type.Array(elem) => "NULL"
+        Type.Slice(elem) => "NULL"
+        Type.Struct(name) => "NULL"
+        Type.Map(key, val) => "NULL"
+        _ => "0"
+    }
+}

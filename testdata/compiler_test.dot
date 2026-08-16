@@ -1,5 +1,6 @@
 import "../stdlib/compiler.dot"
 import std.codegen
+import "../stdlib/codegen_types.dot"
 
 pub fn main() {
     c = Compiler.new()
@@ -699,5 +700,253 @@ pub fn main() {
         print("OK: int_to_str pos")
     } else {
         print("ERR: int_to_str pos")
+    }
+
+    c95 = ty_to_c(Type.Int)
+    if str_eq(c95, "int64_t") {
+        print("OK: ty_to_c int")
+    } else {
+        print("ERR: ty_to_c int: " + c95)
+    }
+
+    c96 = ty_to_c(Type.Float)
+    if str_eq(c96, "double") {
+        print("OK: ty_to_c float")
+    } else {
+        print("ERR: ty_to_c float: " + c96)
+    }
+
+    c97 = ty_to_c(Type.Bool)
+    if str_eq(c97, "bool") {
+        print("OK: ty_to_c bool")
+    } else {
+        print("ERR: ty_to_c bool: " + c97)
+    }
+
+    c98 = ty_to_c(Type.String)
+    if str_eq(c98, "DotString*") {
+        print("OK: ty_to_c string")
+    } else {
+        print("ERR: ty_to_c string: " + c98)
+    }
+
+    c99 = ty_to_c(Type.Void)
+    if str_eq(c99, "void") {
+        print("OK: ty_to_c void")
+    } else {
+        print("ERR: ty_to_c void: " + c99)
+    }
+
+    c100 = ty_to_c(Type.Nil)
+    if str_eq(c100, "void*") {
+        print("OK: ty_to_c nil")
+    } else {
+        print("ERR: ty_to_c nil: " + c100)
+    }
+
+    c101 = ty_to_c(Type.Unknown)
+    if str_eq(c101, "void*") {
+        print("OK: ty_to_c unknown")
+    } else {
+        print("ERR: ty_to_c unknown: " + c101)
+    }
+
+    c102 = ty_to_c(Type.Error)
+    if str_eq(c102, "void*") {
+        print("OK: ty_to_c error")
+    } else {
+        print("ERR: ty_to_c error: " + c102)
+    }
+
+    c103 = ty_to_c(Type.Slice(elem: []Type{Type.Int}))
+    if str_eq(c103, "DotSlice*") {
+        print("OK: ty_to_c slice")
+    } else {
+        print("ERR: ty_to_c slice: " + c103)
+    }
+
+    c104 = ty_to_c(Type.Map(key: []Type{Type.String}, val: []Type{Type.Int}))
+    if str_eq(c104, "DotMap*") {
+        print("OK: ty_to_c map")
+    } else {
+        print("ERR: ty_to_c map: " + c104)
+    }
+
+    c105 = ty_to_c(Type.Struct(name: "Foo"))
+    if str_eq(c105, "DotFoo*") {
+        print("OK: ty_to_c struct")
+    } else {
+        print("ERR: ty_to_c struct: " + c105)
+    }
+
+    c106 = ty_to_c(Type.Func(params: []Type{Type.Int}, ret_ty: []Type{Type.Void}))
+    if str_eq(c106, "DotFn*") {
+        print("OK: ty_to_c func")
+    } else {
+        print("ERR: ty_to_c func: " + c106)
+    }
+
+    c107 = ty_to_c(Type.Array(elem: []Type{Type.Int}))
+    if str_eq(c107, "DotSlice*") {
+        print("OK: ty_to_c array")
+    } else {
+        print("ERR: ty_to_c array: " + c107)
+    }
+
+    c108 = ty_to_c(Type.TypeVar(name: "T"))
+    if str_eq(c108, "void*") {
+        print("OK: ty_to_c typevar")
+    } else {
+        print("ERR: ty_to_c typevar: " + c108)
+    }
+
+    if is_heap(Type.String) {
+        print("OK: is_heap true string")
+    } else {
+        print("ERR: is_heap true string")
+    }
+
+    if is_heap(Type.Func(params: []Type{}, ret_ty: []Type{})) {
+        print("OK: is_heap true func")
+    } else {
+        print("ERR: is_heap true func")
+    }
+
+    if is_heap(Type.Array(elem: []Type{Type.Int})) {
+        print("OK: is_heap true array")
+    } else {
+        print("ERR: is_heap true array")
+    }
+
+    if is_heap(Type.Slice(elem: []Type{Type.Int})) {
+        print("OK: is_heap true slice")
+    } else {
+        print("ERR: is_heap true slice")
+    }
+
+    if is_heap(Type.Struct(name: "Foo")) {
+        print("OK: is_heap true struct")
+    } else {
+        print("ERR: is_heap true struct")
+    }
+
+    if is_heap(Type.Map(key: []Type{}, val: []Type{})) {
+        print("OK: is_heap true map")
+    } else {
+        print("ERR: is_heap true map")
+    }
+
+    if not is_heap(Type.Int) {
+        print("OK: is_heap false int")
+    } else {
+        print("ERR: is_heap false int")
+    }
+
+    if not is_heap(Type.Float) {
+        print("OK: is_heap false float")
+    } else {
+        print("ERR: is_heap false float")
+    }
+
+    if not is_heap(Type.Bool) {
+        print("OK: is_heap false bool")
+    } else {
+        print("ERR: is_heap false bool")
+    }
+
+    if not is_heap(Type.Void) {
+        print("OK: is_heap false void")
+    } else {
+        print("ERR: is_heap false void")
+    }
+
+    if not is_heap(Type.Nil) {
+        print("OK: is_heap false nil")
+    } else {
+        print("ERR: is_heap false nil")
+    }
+
+    c120 = zero_c_value(Type.Int)
+    if str_eq(c120, "0") {
+        print("OK: zero_c_value int")
+    } else {
+        print("ERR: zero_c_value int: " + c120)
+    }
+
+    c121 = zero_c_value(Type.Float)
+    if str_eq(c121, "0.0") {
+        print("OK: zero_c_value float")
+    } else {
+        print("ERR: zero_c_value float: " + c121)
+    }
+
+    c122 = zero_c_value(Type.Bool)
+    if str_eq(c122, "false") {
+        print("OK: zero_c_value bool")
+    } else {
+        print("ERR: zero_c_value bool: " + c122)
+    }
+
+    c123 = zero_c_value(Type.String)
+    if str_eq(c123, "NULL") {
+        print("OK: zero_c_value string")
+    } else {
+        print("ERR: zero_c_value string: " + c123)
+    }
+
+    c124 = zero_c_value(Type.Nil)
+    if str_eq(c124, "NULL") {
+        print("OK: zero_c_value nil")
+    } else {
+        print("ERR: zero_c_value nil: " + c124)
+    }
+
+    c125 = zero_c_value(Type.Slice(elem: []Type{Type.Int}))
+    if str_eq(c125, "NULL") {
+        print("OK: zero_c_value slice")
+    } else {
+        print("ERR: zero_c_value slice: " + c125)
+    }
+
+    c126 = zero_c_value(Type.Map(key: []Type{}, val: []Type{}))
+    if str_eq(c126, "NULL") {
+        print("OK: zero_c_value map")
+    } else {
+        print("ERR: zero_c_value map: " + c126)
+    }
+
+    c127 = zero_c_value(Type.Struct(name: "Foo"))
+    if str_eq(c127, "NULL") {
+        print("OK: zero_c_value struct")
+    } else {
+        print("ERR: zero_c_value struct: " + c127)
+    }
+
+    c128 = zero_c_value(Type.Func(params: []Type{}, ret_ty: []Type{}))
+    if str_eq(c128, "NULL") {
+        print("OK: zero_c_value func")
+    } else {
+        print("ERR: zero_c_value func: " + c128)
+    }
+
+    c129 = zero_c_value(Type.Array(elem: []Type{Type.Int}))
+    if str_eq(c129, "NULL") {
+        print("OK: zero_c_value array")
+    } else {
+        print("ERR: zero_c_value array: " + c129)
+    }
+
+    c130 = zero_c_value(Type.Void)
+    if str_eq(c130, "") {
+        print("OK: zero_c_value void")
+    } else {
+        print("ERR: zero_c_value void: " + c130)
+    }
+
+    c131 = zero_c_value(Type.TypeVar(name: "T"))
+    if str_eq(c131, "0") {
+        print("OK: zero_c_value fallthrough typevar")
+    } else {
+        print("ERR: zero_c_value fallthrough typevar: " + c131)
     }
 }
