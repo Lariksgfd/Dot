@@ -2234,4 +2234,73 @@ pub fn main() {
     } else {
         print("ERR: decl fn def non fn: " + c272)
     }
+
+    // --- codegen_decl driver + compile_to_c (T-051, stage 5b) ---
+
+    decls_273 = []Decl{}
+    decls_273.push(Decl.Struct("Point", f250, s0()))
+    body273 = []Stmt{}
+    body273.push(Stmt.Return(Some(Expr.Field([mkid("p")], "x", s0())), s0()))
+    decls_273.push(Decl.Fn("area", [mkparam("p", "Point")], []string{}, Some(tn("int")), body273, s0()))
+    c273 = emit_program(decls_273)
+    if str_eq(c273, "#include \"dot_runtime.h\"\n\ntypedef struct DotPoint DotPoint;\nstruct DotPoint {{\n    int64_t dot_x;\n    DotString* dot_name;\n}};\n\nint64_t Dot_area(DotPoint*);\nint64_t Dot_area(DotPoint* p) {{\n    return p->dot_x;\n}}\n\nint main(void) {{\n    async_init();\n    /* no main function defined */\n    async_run();\n    dot_atexit_cleanup();\n    return 0;\n}}\n") {
+        print("OK: emit_program struct fn no main")
+    } else {
+        print("ERR: emit_program struct fn no main: " + c273)
+    }
+
+    i_fwd273 = str_index_of(c273, "typedef struct DotPoint DotPoint;")
+    i_def273 = str_index_of(c273, "struct DotPoint {{")
+    i_proto273 = str_index_of(c273, "int64_t Dot_area(DotPoint*);")
+    i_body273 = str_index_of(c273, "int64_t Dot_area(DotPoint* p) {{")
+    i_main273 = str_index_of(c273, "int main(void) {{")
+    if i_fwd273 > 0 and i_fwd273 < i_def273 and i_def273 < i_proto273 and i_proto273 < i_body273 and i_body273 < i_main273 {
+        print("OK: emit_program phase order")
+    } else {
+        print("ERR: emit_program phase order: fwd=" + int_to_str(i_fwd273) + " def=" + int_to_str(i_def273) + " proto=" + int_to_str(i_proto273) + " body=" + int_to_str(i_body273) + " main=" + int_to_str(i_main273))
+    }
+
+    decls_274 = []Decl{}
+    body274 = []Stmt{}
+    body274.push(Stmt.ExprStmt(Expr.Call([mkid("print")], [mks("hi")], s0()), s0()))
+    decls_274.push(Decl.Fn("main", []Param{}, []string{}, None, body274, s0()))
+    c274 = emit_program(decls_274)
+    if str_eq(c274, "#include \"dot_runtime.h\"\n\nvoid Dot_main(void);\nvoid Dot_main() {{\n    dot_print(dot_slice_pack(1, (DotAny[]){{dot_string_from_lit(\"hi\", 2)}}));\n}}\n\nint main(void) {{\n    async_init();\n    Dot_main();\n    async_run();\n    dot_atexit_cleanup();\n    return 0;\n}}\n") {
+        print("OK: emit_program main driver")
+    } else {
+        print("ERR: emit_program main driver: " + c274)
+    }
+
+    i_ai274 = str_index_of(c274, "async_init();")
+    i_dm274 = str_index_of(c274, "Dot_main();")
+    i_ar274 = str_index_of(c274, "async_run();")
+    i_at274 = str_index_of(c274, "dot_atexit_cleanup();")
+    i_rt274 = str_index_of(c274, "return 0;")
+    if i_ai274 > 0 and i_ai274 < i_dm274 and i_dm274 < i_ar274 and i_ar274 < i_at274 and i_at274 < i_rt274 {
+        print("OK: emit_program main call order")
+    } else {
+        print("ERR: emit_program main call order")
+    }
+
+    hello275 = "fn main() {{\n    print(\"hi\")\n}}\n"
+    c275 = compile_to_c(hello275)
+    if str_eq(c275, c274) {
+        print("OK: compile_to_c hello matches driver")
+    } else {
+        print("ERR: compile_to_c hello matches driver: " + c275)
+    }
+
+    c276 = compile_to_c("x = ;")
+    if str_eq(c276, "") {
+        print("OK: compile_to_c syntax err empty")
+    } else {
+        print("ERR: compile_to_c syntax err empty: " + c276)
+    }
+
+    c277 = compile_to_c("fn bad() -> int {{\n    return \"s\"\n}}\n")
+    if str_eq(c277, "") {
+        print("OK: compile_to_c type err empty")
+    } else {
+        print("ERR: compile_to_c type err empty: " + c277)
+    }
 }

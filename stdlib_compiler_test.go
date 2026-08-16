@@ -288,6 +288,13 @@ func TestStdlibCompiler(t *testing.T) {
 			"OK: decl dispatch struct",
 			"OK: decl impl two methods",
 			"OK: decl fn def non fn",
+			"OK: emit_program struct fn no main",
+			"OK: emit_program phase order",
+			"OK: emit_program main driver",
+			"OK: emit_program main call order",
+			"OK: compile_to_c hello matches driver",
+			"OK: compile_to_c syntax err empty",
+			"OK: compile_to_c type err empty",
 		} {
 				if !strings.Contains(out, want) {
 					t.Errorf("expected %q in output, got: %s", want, out)

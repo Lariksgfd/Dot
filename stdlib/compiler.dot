@@ -2,6 +2,7 @@ import lexer
 import parser
 import checker
 import ast
+import codegen_decl
 
 pub struct Compiler {
     errors []string
@@ -44,4 +45,25 @@ impl Compiler {
         
         return program
     }
+}
+
+// compile_to_c runs the full pipeline — lex → parse → check → C codegen —
+// and returns the generated C source. Returns "" when parsing or type
+// checking fails (errors land in the Compiler.errors of the caller via
+// Compiler.compile, not here; the driver stage keeps it minimal).
+pub fn compile_to_c(source string) -> string {
+    l = Lexer.new(source, "<input>")
+    p = Parser.new(l)
+    program = p.parse_program()
+    if p.errors.len > 0 {
+        return ""
+    }
+    c = Checker.new()
+    for decl in program {
+        c.check_decl(decl)
+    }
+    if c.errors.len > 0 {
+        return ""
+    }
+    return emit_program(program)
 }

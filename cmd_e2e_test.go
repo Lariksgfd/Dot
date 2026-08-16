@@ -230,6 +230,42 @@ func TestE2E_CG38EnumEq(t *testing.T) {
 	}
 }
 
+// TestE2E_SelfHostCodegen runs the whole self-hosted pipeline end to end:
+// the Go compiler builds the self-hosted compiler (testdata/
+// selfhost_codegen_test.dot), which compiles an embedded hello source to C
+// via stdlib/compiler.dot compile_to_c; the test then feeds that C to gcc
+// (same flags as compileToBinary) and runs the exe, expecting "Hello from
+// Dot codegen!".
+func TestE2E_SelfHostCodegen(t *testing.T) {
+	if _, err := exec.LookPath("gcc"); err != nil {
+		t.Skip("gcc not found in PATH, skipping self-host codegen E2E test")
+	}
+
+	out, err := buildAndRun(t, "testdata/selfhost_codegen_test.dot", false)
+	if err != nil {
+		t.Fatalf("self-host compiler run failed: %v\noutput: %s", err, out)
+	}
+	if len(out) == 0 {
+		t.Fatal("self-host compiler produced empty C source")
+	}
+
+	exePath := filepath.Join(t.TempDir(), "selfhost_hello.exe")
+	if err := compileToBinary(out, exePath); err != nil {
+		t.Fatalf("gcc compile of generated C failed: %v\nC source:\n%s", err, out)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	runOut, err := exec.CommandContext(ctx, exePath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("running generated exe: %v\noutput: %s", err, string(runOut))
+	}
+	if !contains(string(runOut), "Hello from Dot codegen!") {
+		t.Errorf("expected 'Hello from Dot codegen!' in output, got: %s", string(runOut))
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchSubstring(s, substr)
 }

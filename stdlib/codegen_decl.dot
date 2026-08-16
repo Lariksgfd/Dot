@@ -441,3 +441,102 @@ fn is_void_ty(t Type) -> bool {
         _ => false
     }
 }
+
+// --- Stage 5b: emit_program — the C translation-unit driver ---
+//
+// Port of Go codegen.go emitAll: the fixed phase order is header → type
+// forwards → type definitions → fn/impl prototypes → fn/impl definitions →
+// main(), so every C reference has a prior declaration (Go emitTypes,
+// emitFuncDecls, emitFunctionBodies, emitMain).
+
+// emit_program renders a complete C translation unit from a checked
+// program ([]Decl) and returns the C source as a string.
+pub fn emit_program(decls []Decl) -> string {
+    out = new_builder()
+    bwriteln(out, 0, "#include \"dot_runtime.h\"")
+    bwriteln(out, 0, "")
+    emit_type_fwds(decls, out)
+    emit_type_defs(decls, out)
+    emit_fn_decls(decls, out)
+    emit_fn_defs(decls, out)
+    emit_main_driver(decls, out)
+    return bfinish(out)
+}
+
+// Phase 1: forward typedefs for every named struct/enum so pointer fields
+// and signatures can reference types defined later (Go emitStructFwd /
+// emitEnumFwd — identical forms, grouped before all definitions).
+fn emit_type_fwds(decls []Decl, out CBuilder) {
+    for d in decls {
+        match d {
+            Decl.Struct(name, _, _) => emit_type_fwd(name, out, 0)
+            Decl.Enum(name, _, _) => emit_type_fwd(name, out, 0)
+            _ => {}
+        }
+    }
+}
+
+// Phase 2: full struct/enum definitions; traits stay a TODO marker until
+// the vtable pass (stage 6/7).
+fn emit_type_defs(decls []Decl, out CBuilder) {
+    for d in decls {
+        match d {
+            Decl.Struct(name, fields, _) => emit_struct_def(name, fields, out, 0)
+            Decl.Enum(name, variants, _) => emit_enum_def(name, variants, out, 0)
+            Decl.Trait(name, _, _) => bwriteln(out, 0, "/* <TODO 5b: trait vtable " + name + "> */")
+            _ => {}
+        }
+    }
+}
+
+// Phase 3: prototypes of every free fn and impl method. The per-decl
+// emitters no-op on non-matching Decl variants, so no dispatch is needed.
+fn emit_fn_decls(decls []Decl, out CBuilder) {
+    for d in decls {
+        emit_fn_decl(d, out, 0)
+        emit_impl_decl(d, out, 0)
+    }
+}
+
+// Phase 4: definitions of every free fn and impl method.
+fn emit_fn_defs(decls []Decl, out CBuilder) {
+    for d in decls {
+        emit_fn_def(d, out, 0)
+        emit_impl_def(d, out, 0)
+    }
+}
+
+// Phase 5: the C entry point (Go emitMain, codegen.go:320). The exact line
+// set and indentation were verified against the Go compiler's real output
+// on testdata/hello.dot (`dot build`).
+fn emit_main_driver(decls []Decl, out CBuilder) {
+    bwriteln(out, 0, "int main(void) {{")
+    bwriteln(out, 1, "async_init();")
+    if has_main_fn(decls) {
+        bwriteln(out, 1, "Dot_main();")
+    } else {
+        bwriteln(out, 1, "/* no main function defined */")
+    }
+    bwriteln(out, 1, "async_run();")
+    bwriteln(out, 1, "dot_atexit_cleanup();")
+    bwriteln(out, 1, "return 0;")
+    bwriteln(out, 0, "}}")
+}
+
+// has_main_fn reports whether the program defines fn main (Go emitMain
+// hasMain scan over prog.Decls).
+fn has_main_fn(decls []Decl) -> bool {
+    for d in decls {
+        if decl_is_main(d) {
+            return true
+        }
+    }
+    return false
+}
+
+fn decl_is_main(d Decl) -> bool {
+    return match d {
+        Decl.Fn(name, _, _, _, _, _) => str_eq(name, "main")
+        _ => false
+    }
+}

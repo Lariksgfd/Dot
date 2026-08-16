@@ -1,0 +1,12 @@
+// testdata/selfhost_codegen_test.dot — E2E driver for the self-hosted
+// compiler (T-051 stage 5b): compiles an embedded hello source through
+// stdlib/compiler.dot compile_to_c and prints the generated C to stdout.
+// TestE2E_SelfHostCodegen (cmd_e2e_test.go) feeds that C to gcc, runs the
+// resulting exe and expects "Hello from Dot codegen!".
+import "../stdlib/compiler.dot"
+
+pub fn main() {
+    hello = "fn main() {{\n    print(\"Hello from Dot codegen!\")\n}}\n"
+    c = compile_to_c(hello)
+    print(c)
+}
