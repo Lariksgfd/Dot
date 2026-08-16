@@ -69,6 +69,10 @@ pub enum Pattern {
     Ident(name string)
     IntLit(value int)
     CatchAll
+    // Enum variant pattern with payload bindings, e.g. the match arm
+    // `Type.Func(oparams, oret) => oparams`. name is the full dotted path;
+    // bindings are the new names bound to the variant's payload fields.
+    Variant(name string, bindings []string)
 }
 
 pub enum Stmt {

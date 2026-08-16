@@ -90,7 +90,7 @@ impl Parser {
 
     fn parse_prefix(mut self) -> Option[Expr] {
         if self.cur_token_is(TokenType.Ident) {
-            if self.peek_token_is(TokenType.LBrace) {
+            if self.peek_token_is(TokenType.LBrace) and not self.no_struct_lit {
                 return self.parse_struct_lit(self.cur_tok.lexeme, self.cur_tok.pos)
             }
             return Some(Expr.Ident(self.cur_tok.lexeme, Span.new(self.cur_tok.pos, self.cur_tok.end)))
@@ -430,13 +430,17 @@ fn parse_array_elements(mut self, end_tok TokenType) -> []Expr {
     }
 
     // match value { pat => expr, _ => other } -> Expr.Match.
-    // Only Literal (int), Ident / Enum-variant-path and Wildcard patterns
-    // are supported: ast.dot has no EnumPattern-with-payload variant.
+    // Literal (int), Ident / Enum-variant-path, variant-with-payload
+    // (Shape.Circle(r)) and Wildcard patterns are supported.
     fn parse_match_expr(mut self) -> Option[Expr] {
         start = self.cur_tok.pos
 
         self.next_token()
+        // A subject like `x {` would otherwise be parsed as a struct literal
+        // `x { ... }`; the flag suppresses that while the subject is parsed.
+        self.no_struct_lit = true
         subject = self.parse_expr(PREC_LOWEST)
+        self.no_struct_lit = false
         if subject.is_none() {
             return None
         }
@@ -520,25 +524,64 @@ fn parse_array_elements(mut self, end_tok TokenType) -> []Expr {
             return Some(Pattern.IntLit(str_to_int(self.cur_tok.lexeme)))
         }
         if self.cur_token_is(TokenType.Ident) {
-            // Enum variant paths (Color.Red) are folded into a single name
-            // string; payload bindings (Shape.Circle(r)) are not
-            // representable in ast.dot yet.
-            return self.parse_pattern_path(self.cur_tok.lexeme)
+            path = self.parse_pattern_path(self.cur_tok.lexeme)
+            // Payload bindings `Shape.Circle(r) => r` / `Type.Func(a, b) => a`. Without
+            // parentheses the path stays a plain name (Enum.Variant folded
+            // into one string, checked as a unit variant by the checker).
+            if self.peek_token_is(TokenType.LParen) {
+                self.next_token() // cur = LParen
+                bindings = self.parse_pattern_bindings()
+                return Some(Pattern.Variant(path, bindings))
+            }
+            return Some(Pattern.Ident(path))
         }
         self.errors.push("unsupported pattern token")
         return None
     }
 
-    fn parse_pattern_path(mut self, name string) -> Option[Pattern] {
+    fn parse_pattern_path(mut self, name string) -> string {
         if not self.peek_token_is(TokenType.Dot) {
-            return Some(Pattern.Ident(name))
+            return name
         }
         self.next_token() // cur = Dot
         if not self.peek_token_is(TokenType.Ident) {
-            return Some(Pattern.Ident(name))
+            return name
         }
         self.next_token() // cur = Ident
         return self.parse_pattern_path(name + "." + self.cur_tok.lexeme)
+    }
+
+    // Binding names inside a variant pattern's parentheses. `_` counts as a
+    // binding slot (it keeps the arity intact) and is dropped by the checker.
+    fn parse_pattern_bindings(mut self) -> []string {
+        names = []string{}
+
+        if self.peek_token_is(TokenType.RParen) {
+            self.next_token() // cur = RParen
+            return names
+        }
+
+        self.next_token() // cur = first binding
+        for not self.cur_token_is(TokenType.RParen) and not self.cur_token_is(TokenType.EOF) {
+            if self.cur_token_is(TokenType.Ident) {
+                names.push(self.cur_tok.lexeme)
+            } else if self.cur_token_is(TokenType.Underscore) {
+                names.push("_")
+            }
+            if self.peek_token_is(TokenType.Comma) {
+                self.next_token() // cur = Comma
+                self.next_token() // cur = next binding
+            } else if self.peek_token_is(TokenType.RParen) or self.peek_token_is(TokenType.EOF) {
+                self.next_token()
+            } else {
+                self.next_token()
+            }
+        }
+
+        if not self.cur_token_is(TokenType.RParen) {
+            self.expect_peek(TokenType.RParen)
+        }
+        return names
     }
 
     // fn(x int) -> int { x + 1 } -> Expr.FnLit. A missing body (no block)

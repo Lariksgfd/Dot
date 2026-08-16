@@ -376,4 +376,68 @@ pub fn main() {
     } else {
         print("ERR: tuple trailing comma: " + c47.errors[0])
     }
+
+    c48 = Compiler.new()
+    c48.compile("enum Type {{ Func(oparams string, oret string) }}\nfn m() -> string {{ t = Func(\"ab\", \"cd\") return match t {{ Type.Func(oparams, oret) => oret + oparams, _ => \"\" }} }}")
+    if c48.errors.len == 0 {
+        print("OK: match payload qualified")
+    } else {
+        print("ERR: match payload qualified: " + c48.errors[0])
+    }
+
+    c49 = Compiler.new()
+    c49.compile("enum MyOpt {{ None Some(n int) }}\nfn m() -> int {{ o = Some(7) return match o {{ Some(n) => n, None => 0 }} }}")
+    if c49.errors.len == 0 {
+        print("OK: match payload unqualified")
+    } else {
+        print("ERR: match payload unqualified: " + c49.errors[0])
+    }
+
+    c50 = Compiler.new()
+    c50.compile("enum MyOpt {{ None Some(n int) }}\nfn m() -> int {{ o = Some(3) return match o {{ Some(_) => 0, None => 1 }} }}")
+    if c50.errors.len == 0 {
+        print("OK: match payload underscore")
+    } else {
+        print("ERR: match payload underscore: " + c50.errors[0])
+    }
+
+    c51 = Compiler.new()
+    c51.compile("enum Type {{ Func(oparams string, oret string) }}\nfn m() -> string {{ t = Func(\"ab\", \"cd\") return match t {{ Type.Func(a, b) if a.len > 0 => b, _ => \"\" }} }}")
+    if c51.errors.len == 0 {
+        print("OK: match payload guard")
+    } else {
+        print("ERR: match payload guard: " + c51.errors[0])
+    }
+
+    c52 = Compiler.new()
+    c52.compile("enum Shape {{ Circle(r int) Rect(w int, h int) Point }}\nfn m() -> int {{ s = Rect(2, 3) return match s {{ Shape.Circle(r) => r, Shape.Rect(w, h) => w + h, Shape.Point => 0, _ => -1 }} }}")
+    if c52.errors.len == 0 {
+        print("OK: match payload multi")
+    } else {
+        print("ERR: match payload multi: " + c52.errors[0])
+    }
+
+    c53 = Compiler.new()
+    c53.compile("enum Shape {{ Rect(w int, h int) }}\nfn m() -> int {{ s = Rect(1, 2) return match s {{ Shape.Rect(w) => w, _ => 0 }} }}")
+    if c53.errors.len > 0 {
+        print("OK: match payload arity")
+    } else {
+        print("ERR: match payload arity")
+    }
+
+    c54 = Compiler.new()
+    c54.compile("enum Shape {{ Circle(r int) }}\nfn m() -> int {{ s = Circle(1) return match s {{ Shape.Triangle(x) => x, _ => 0 }} }}")
+    if c54.errors.len > 0 {
+        print("OK: match payload unknown variant")
+    } else {
+        print("ERR: match payload unknown variant")
+    }
+
+    c55 = Compiler.new()
+    c55.compile("fn m() -> int {{ x = 5 return match x {{ Some(v) => v, _ => 0 }} }}")
+    if c55.errors.len > 0 {
+        print("OK: match payload non-enum")
+    } else {
+        print("ERR: match payload non-enum")
+    }
 }

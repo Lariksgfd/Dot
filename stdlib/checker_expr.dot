@@ -577,11 +577,17 @@ impl Checker {
     }
 
     fn check_match_expr(mut self, value []Expr, arms []MatchArm, span Span) -> Type {
-        sel_ty = Type.Unknown
-        if value.len > 0 {
-            sel_ty = self.check_expr(value[0])
-        }
+        sel_ty = self.match_sel_ty(value)
         return self.check_match_arms(arms, 0, sel_ty, Type.Unknown, span)
+    }
+
+    // The selector type, in a helper: a bare `sel_ty = ...` inside an
+    // if-body would declare a shadow variable (Dot scoping), not reassign it.
+    fn match_sel_ty(mut self, value []Expr) -> Type {
+        if value.len > 0 {
+            return self.check_expr(value[0])
+        }
+        return Type.Unknown
     }
 
     fn check_match_arms(mut self, arms []MatchArm, i int, sel_ty Type, result_ty Type, span Span) -> Type {
@@ -619,6 +625,9 @@ impl Checker {
                 }
             }
             Pattern.CatchAll => {}
+            Pattern.Variant(name, bindings) => {
+                self.check_variant_pattern(name, bindings, sel_ty, span)
+            }
         }
 
         if guard = arm.guard {
@@ -635,6 +644,58 @@ impl Checker {
         }
         next_ty = if is_unknown(result_ty) { arm_ty } else { result_ty }
         return self.check_match_arms(arms, i + 1, sel_ty, next_ty, span)
+    }
+
+    // Enum variant pattern with payload bindings: the match arm
+    // `Type.Func(oparams, oret) => oparams`.
+    // The variant's payload types come from the enum entry in structs (each
+    // variant is stored as a Func whose params are its payload types, see
+    // check_enum_decl). Arity must match and every binding name is defined in
+    // the current scope with its payload type.
+    fn check_variant_pattern(mut self, name string, bindings []string, sel_ty Type, span Span) {
+        dot_idx = index_of_char(name, 46)
+        enum_name = self.variant_enum_name(name, dot_idx, sel_ty)
+        variant_name = variant_name_of(name, dot_idx)
+        v_ty = self.find_struct_field(enum_name, variant_name)
+        if is_unknown(v_ty) {
+            self.error(span, "Unknown enum variant: {name}")
+            return
+        }
+        payload = variant_payload(v_ty)
+        if bindings.len != payload.len {
+            self.error(span, "Variant {name} takes a different number of values than the pattern binds")
+        }
+        self.bind_variant_bindings(bindings, payload, 0)
+    }
+
+    // The qualifier of a variant pattern: the part before the dot, or the
+    // subject's enum name for an unqualified variant (Ok(n)).
+    fn variant_enum_name(self, name string, dot_idx int, sel_ty Type) -> string {
+        if dot_idx >= 0 {
+            return name[0..dot_idx]
+        }
+        match sel_ty {
+            Type.Struct(n) => { return n }
+            _ => {}
+        }
+        return name
+    }
+
+    fn bind_variant_bindings(mut self, names []string, tys []Type, i int) {
+        if i >= names.len {
+            return
+        }
+        if i < tys.len {
+            if names[i] != "_" {
+                self.current_scope[0].define(Symbol {
+                    name: names[i],
+                    kind: SymbolKind.Variable,
+                    ty: tys[i],
+                    is_mut: false,
+                })
+            }
+        }
+        return self.bind_variant_bindings(names, tys, i + 1)
     }
 
     fn find_struct_field(self, struct_name string, field_name string) -> Type {
@@ -783,4 +844,23 @@ pub fn result_method(name string) -> Type {
         return Type.Func(params: []Type{Type.Func(params: []Type{Type.Unknown}, ret_ty: []Type{Type.Unknown})}, ret_ty: []Type{Type.Struct(name: "Result")})
     }
     return Type.Unknown
+}
+
+// The payload types of an enum variant: check_enum_decl stores each variant
+// in structs as a Func whose params are its payload types.
+pub fn variant_payload(v_ty Type) -> []Type {
+    match v_ty {
+        Type.Func(params, _) => { return params }
+        _ => {}
+    }
+    return []Type{}
+}
+
+// The variant part of a pattern path: the text after the last dot, or the
+// whole name for an unqualified variant.
+pub fn variant_name_of(name string, dot_idx int) -> string {
+    if dot_idx >= 0 {
+        return name[dot_idx + 1..name.len]
+    }
+    return name
 }

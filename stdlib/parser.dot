@@ -8,6 +8,9 @@ pub struct Parser {
     peek_tok  Token
     peek2_tok Token
     errors    []string
+    // True while parsing a match subject: `match x { ... }` must not be
+    // misread as a struct literal `x { ... }`.
+    no_struct_lit bool
 }
 
 impl Parser {
@@ -17,7 +20,8 @@ impl Parser {
             cur_tok: Token { kind: TokenType.Illegal, lexeme: "", value: "", base: 0, suffix: "", parts: nil, pos: Position.new("", 0, 0, 0), end: Position.new("", 0, 0, 0) },
             peek_tok: Token { kind: TokenType.Illegal, lexeme: "", value: "", base: 0, suffix: "", parts: nil, pos: Position.new("", 0, 0, 0), end: Position.new("", 0, 0, 0) },
             peek2_tok: Token { kind: TokenType.Illegal, lexeme: "", value: "", base: 0, suffix: "", parts: nil, pos: Position.new("", 0, 0, 0), end: Position.new("", 0, 0, 0) },
-            errors: []string{}
+            errors: []string{},
+            no_struct_lit: false
         }
         p.next_token()
         p.next_token()

@@ -84,21 +84,23 @@ impl Checker {
     // match arms on Enum.Variant can be resolved by name. Each variant also
     // gets a constructor whose params are its real payload types (T-064c2);
     // a payload-less variant gets an empty params list, so a zero-arg call
-    // passes the arity check.
+    // passes the arity check. The variant's structs entry stores the payload
+    // types as the params of a Func so match patterns can bind them
+    // (T-051 stage 0).
     fn check_enum_decl(mut self, name string, variants []VariantDef, span Span) {
         enum_ty = Type.Struct(name: name)
         fields = []Symbol{}
         for v in variants {
-            fields.push(Symbol {
-                name: v.name,
-                kind: SymbolKind.Variable,
-                ty: enum_ty,
-                is_mut: false,
-            })
             payload_types = []Type{}
             for p in v.params {
                 payload_types.push(self.resolve_type(p.ty, []string{}))
             }
+            fields.push(Symbol {
+                name: v.name,
+                kind: SymbolKind.Variable,
+                ty: Type.Func(params: payload_types, ret_ty: []Type{enum_ty}),
+                is_mut: false,
+            })
             self.current_scope[0].define(Symbol {
                 name: v.name,
                 kind: SymbolKind.Function,
