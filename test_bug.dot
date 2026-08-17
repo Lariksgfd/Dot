@@ -1,6 +1,0 @@
-fn foo() -> Option[string] {
-    return Option.None
-}
-fn main() {
-    x = foo()
-}

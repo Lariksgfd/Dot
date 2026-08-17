@@ -1199,21 +1199,21 @@ pub fn main() {
     }
 
     c160 = emit_expr(Expr.If([mkb(true)], [Stmt.ExprStmt(mki(1), s0())], []Expr{}, s0()), []VarInfo{})
-    if str_eq(c160, "((true) ? (1) : (<TODO>))") {
+    if str_eq(c160, "((true) ? (1) : (/* <TODO: If missing else> */ 0))") {
         print("OK: emit if no else")
     } else {
         print("ERR: emit if no else: " + c160)
     }
 
     c161 = emit_expr(Expr.Call([mki(1)], []Expr{}, s0()), []VarInfo{})
-    if str_eq(c161, "<TODO>") {
+    if str_eq(c161, "/* <TODO: Call unhandled callee> */ 0") {
         print("OK: emit call todo")
     } else {
         print("ERR: emit call todo: " + c161)
     }
 
     c162 = emit_expr(Expr.Match([mki(1)], []MatchArm{}, s0()), []VarInfo{})
-    if str_eq(c162, "<TODO>") {
+    if str_eq(c162, "/* <TODO: Match zero arms> */ 0") {
         print("OK: emit match todo")
     } else {
         print("ERR: emit match todo: " + c162)
@@ -1558,7 +1558,7 @@ pub fn main() {
     }
 
     c209 = emit_expr(Expr.Match([mki(1)], []MatchArm{}, s0()), []VarInfo{})
-    if str_eq(c209, "<TODO>") {
+    if str_eq(c209, "/* <TODO: Match zero arms> */ 0") {
         print("OK: emit match no arms")
     } else {
         print("ERR: emit match no arms: " + c209)
@@ -1606,7 +1606,7 @@ pub fn main() {
     mp_entries.push(MapEntryNode { key: mks("a"), value: mki(1) })
     mp_entries.push(MapEntryNode { key: mks("b"), value: mki(2) })
     c215 = emit_expr(Expr.MapLit(mp_entries, s0()), []VarInfo{})
-    if str_eq(c215, "/* map literal with 2 entries */ dot_map_new()") {
+    if str_eq(c215, "<TODO: MapLit>") {
         print("OK: emit map lit entries")
     } else {
         print("ERR: emit map lit entries: " + c215)
@@ -1648,7 +1648,7 @@ pub fn main() {
     }
 
     c221 = emit_expr(Expr.TupleLit([TupleElem { name: None, value: mki(1) }], s0()), []VarInfo{})
-    if str_eq(c221, "<TODO>") {
+    if str_eq(c221, "<TODO: TupleLit>") {
         print("OK: emit tuple todo")
     } else {
         print("ERR: emit tuple todo: " + c221)

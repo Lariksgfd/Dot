@@ -1,6 +1,0 @@
-import a.b
-import c
-
-fn main() {
-    print(b_func() + c_func())
-}
