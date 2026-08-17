@@ -1,31 +1,41 @@
-# Build artifacts and junk
+# Build artifacts
 *.exe
 *.o
 *.obj
 *.a
+dot
+dot.test
 
-# Debug/junk files from agent sessions
+# Compiler output and temporary files
+*.c.txt
 err.txt
 out.txt
-*.c.txt
-dot.test.exe
-test_gc.exe
-
-# Python scripts used for one-off fixes
-fix*.py
-gen_fmt.py
-update.py
-
-# Junk test files
-testdata/tmp_sync_test_HappyPath.dot
-testdata/debug.txt
+check_ok_out.txt
+test10_cgen.txt
+testdata/scratch*.dot
 testdata/out.txt
+testdata/debug.txt
 testdata/regex_out.txt
 testdata/structs_out.txt
+testdata/tmp_sync_test_HappyPath.dot
 
-# Junk in root
+# Scratch and debug programs
+a/
 c.dot
 lib.dot
 main.dot
-JOURNAL_test.md
+test_bug.dot
+test_fmt*.dot
+test_if.dot
+test_import.dot
 --help/
+
+# Session notes
+JOURNAL.md
+JOURNAL_test.md
+PROGRESS.md
+
+# One-off helper scripts
+fix*.py
+gen_fmt.py
+update.py
